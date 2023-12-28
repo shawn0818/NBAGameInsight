@@ -3,97 +3,119 @@ from datetime import datetime,timedelta
 from pytz import timezone
 import re
 import pandas as pd
+import numpy as np
+import os
+import json
 
-#判断今天是否有湖人比赛
-#第一步得到 nba 的日程表，然后根据球队 id 进行筛选
+
+
 #可以创建一个日程表的类，默认参数为日期和球队
+#调用方法：先实例化 nba_schedule = NBASchedule()
+#team_schedule = nba_schedule.filter_team_schedule(team_id=team_id,game_date=game_date)
 class NBASchedule:
-    def __init__(self, gamedate=None, team_id=None):
-        self.base_url = "https://core-api.nba.com/cp/api/v1.3/feeds/gamecardfeed"
-        self.team_id = team_id
-        self.gamedate = self.parse_date(gamedate) if gamedate else self.get_yesterday_eastern_date()
-        self.headers = {
-        "Accept": "application/json",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Accept-Language": "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2",
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-        "DNT": "1",
-        "Host": "core-api.nba.com",
-        "Ocp-Apim-Subscription-Key": "747fa6900c6c4e89a58b81b72f36eb96",
-        "Origin": "https://www.nba.com",
-        "Pragma": "no-cache",
-        "Referer": "https://www.nba.com/",
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "same-site",
-        "Sec-GPC": "1",
-        "TE": "trailers",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0"
-        }
-
+    def __init__(self):
+        self.json_file_path = r"C:\Users\tong\lebron_bot\nba_schedule.json"
+        self.schedule_url = "https://cdn.nba.com/static/json/staticData/scheduleLeagueV2_1.json"
+        self.schedule_headers = {
+            "Accept-Encoding": "gzip, deflate, br",
+            "Accept-Language": "zh-CN,zh;q=0.8",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "DNT": "1",
+            "Origin": "https://www.nba.com",
+            "Pragma": "no-cache",
+            "Referer": "https://www.nba.com/",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-site",
+            "User-Agent": "Mozilla/5.0 (Your User Agent)"  
+            }
+                  
+    def get_nba_schedule(self):      
+        if os.path.exists(self.json_file_path):
+            with open(self.json_file_path, "r") as file:
+                schedule_data = json.load(file)
+            return schedule_data       
+        try:
+            response = requests.get(url=self.schedule_url,headers=self.schedule_headers)
+            response.raise_for_status()
+            schedule_data = response.json()
+            with open(self.json_file_path, "w") as file:
+                json.dump(schedule_data, file)
+            return schedule_data        
+        except requests.RequestException as e:
+            print(f"Error fetching NBA static schedule: {e}")
+            return {} 
+        
     @staticmethod
-    def parse_date(date_str):
+    def parse_input_date(date_str)-> datetime.date:
+        #输入的时间是按照北京时间日期来输入
         if not date_str:
-            return None
+            return None       
         for fmt in ("%m/%d/%Y", "%Y-%m-%d"):
             try:
                 # 解析日期字符串
                 dt = datetime.strptime(date_str, fmt)
                 # 将得到的日期减去一天，以调整为北京时间的前一天
-                adjusted_dt = dt - timedelta(days=1)
+                adjusted_dt = dt - timedelta(days=1)               
+                adjusted_dt = adjusted_dt.date()
                 return adjusted_dt
             except ValueError:
                 continue
         raise ValueError(f"Date format for {date_str} is not supported.")
 
-    @staticmethod
-    def get_yesterday_eastern_date() -> datetime.date:
-        beijing_tz = timezone('Asia/Shanghai')
-        beijing_date_now = datetime.now(beijing_tz).date()
-        eastern_date = beijing_date_now - timedelta(days=1)
-        return eastern_date
-    
-    def is_team_playing(self, game_card: dict) -> bool:
-        home_team = game_card["cardData"]["homeTeam"]
-        away_team = game_card["cardData"]["awayTeam"]
-        return home_team["teamId"] == int(self.team_id) or away_team["teamId"] == int(self.team_id)
+    def filter_team_schedule(self,team_id=None,game_date=None) ->  pd.DataFrame:      
+        #获取所有的日程
+        all_team_schedule = self.get_nba_schedule()
+        all_team_schedule_df = pd.json_normalize(all_team_schedule,record_path=["leagueSchedule","gameDates","games"],errors="ignore",sep='_')
+        all_team_schedule_df = all_team_schedule_df.copy()   
+        #将 gameDateUTC 列转换为日期类型
+        all_team_schedule_df['gameDateUTC'] = pd.to_datetime(all_team_schedule_df['gameDateUTC']).dt.date
+        #将 gameTimeUTC 列转换为日期时间类型    
+        all_team_schedule_df['gameDateTimeUTC'] = pd.to_datetime(all_team_schedule_df['gameDateTimeUTC'])  
+                    
+        #创建筛选条件              
+        if team_id:
+            team_filter = ((all_team_schedule_df['homeTeam_teamId'] == int(team_id)) | (all_team_schedule_df['awayTeam_teamId'] == int(team_id)))           
+            team_schedule_df = all_team_schedule_df[team_filter]
+            team_schedule_df = team_schedule_df.copy()
+            #判断主场客场，生成新的列  
+            team_schedule_df['home_or_away'] =np.where(team_schedule_df['homeTeam_teamId'] == int(team_id), 'home', 'away')           
 
-    def get_all_game_cards(self) -> list:
-        gamedate_formatted = self.gamedate.strftime("%m/%d/%Y")
-        params = {
-            "gamedate": gamedate_formatted,
-            "platform": "web",
-        }
-        try:
-            response = requests.get(self.base_url, params=params, headers=self.headers)
-            response.raise_for_status()
-            #如果 'modules' 存在，它将返回其值；如果不存在，它将返回一个空列表 
-            nba_schedule = response.json().get('modules', [])
-            #最终返回的内容将是一个包含'cards'信息的列表
-            #如果在响应中没有找到这些信息，或者请求失败，函数将返回一个空列表。
-            all_game_cards = nba_schedule[0].get("cards", [])
-            return all_game_cards if nba_schedule else []
+            if game_date:
+                #处理输入的日期文本
+                game_date = self.parse_input_date(game_date) 
+                given_date_filter = team_schedule_df['gameDateUTC'] == game_date
+                # 检查结果的类型
+                team_date_schedule_df = team_schedule_df[given_date_filter] 
+                team_date_schedule_df.reset_index(drop=True, inplace=True)
+                return team_date_schedule_df
+            
+            else:
+                               
+                auto_from_now_filter = team_schedule_df['gameDateTimeUTC'] >= datetime.now(timezone('UTC'))
+                team_date_schedule_df = team_schedule_df[auto_from_now_filter] 
+                team_date_schedule_df.reset_index(drop=True, inplace=True)
+                return team_date_schedule_df
+            
+        else:
+            all_team_schedule_df = all_team_schedule_df['gameDateTimeUTC'] >= datetime.now(timezone('UTC'))
+            all_team_schedule_df.reset_index(drop=True, inplace=True)
+            return all_team_schedule_df
+
         
-        except requests.RequestException as e:
-            print(f"Error fetching NBA schedule: {e}")
-            return []
-                             
-    def filter_one_gamecard(self) -> str:
-        game_cards = self.get_all_game_cards()
-        for game_card in game_cards:
-            if self.is_team_playing(game_card):
-                game_id = game_card['cardData']['gameId']
-                game_images = game_card["cardData"]["images"]["640x360"]
-                game_simple_card = {
-                    "game_id":game_id,
-                    "game_images":game_images
-                }
-                return game_simple_card
-        return None
+#如果查询到比赛的话，这里使用 TeamScheduleDataParser 来解析比赛的信息
+#这部分最重要的功能是获取到 game_id，还有比赛时间场馆等静态信息。后续还可以添加功能功能，比如近几场比赛信息等。
+#获取 game_id = team_schedule_dict["gameId"]
+class TeamScheduleDataParser:
+   
+    @staticmethod    
+    def get_schedule_as_dict(team_schedule_data):
+        team_schedule_dict = team_schedule_data.to_dict(orient='records')[0]
+        return team_schedule_dict 
 
 
-#如果有比赛的话，返回比赛信息，这里使用类来获取比赛的信息
+#使用 GameDataFetcher 获得某一场比赛 game_id 的动态信息，比如实时比分，实时 playbyplay 等。
 class GameDataFetcher:
     def __init__(self, game_id):
         self.game_id = game_id
@@ -125,63 +147,80 @@ class GameDataFetcher:
             return None
           
     ### 获取 playbypaly 的 json 数据
-    def fetch_playbyplay(self):
+    def fetch_game_playbyplay(self):
         endpoint = "playbyplay/playbyplay"
         return self.fetch_data(endpoint)
     ### 获取 boxscore 的 json 数据
-    def fetch_boxscore(self):
+    def fetch_game_boxscore(self):
         endpoint = "boxscore/boxscore"
         return self.fetch_data(endpoint)
 
-
 #获取数据之后进行数据解析
 class GameDataParser:
+    
+    def __init__(self):
+        # 初始化时设置属性
+        self.game_info_df = None
+        self.home_all_df = None
+        self.away_all_df = None
+        self.home_player_df = None
+        self.away_player_df = None
 
     @staticmethod
     def convert_utc_to_local(utc_time_str, local_tz='Asia/Shanghai'):
         utc_time = datetime.strptime(utc_time_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone('UTC'))
         local_time = utc_time.astimezone(timezone(local_tz))
         return local_time.strftime('%Y-%m-%d %H:%M:%S')
-    
-    @staticmethod
-    def build_team_statistics_df(team_data):
-        team_statistics_df = pd.DataFrame(team_data["statistics"])
-        team_statistics_df['team_name'] = team_data["teamName"]
-        team_statistics_df['team_id'] = team_data["teamId"]
-        return team_statistics_df
-    
-    @staticmethod
-    def build_player_statistics_df(players, team):
-        player_df = pd.DataFrame([player['statistics'] for player in players])
-        player_df['team'] = team
-        player_df['player_id'] = [player['personId'] for player in players]
-        player_df['player_name'] = [player['name'] for player in players]
-        player_df['player_status'] = [player['status'] for player in players]
-        return player_df
-  
-    def parse_game_info(self,game_info_data):
-        if game_info_data:
-            game_info = game_info_data['game']
-            # game_info['gameTimeUTC'] 是一个字符串，包含了 UTC 时间
-            utc_time_str = game_info['gameTimeUTC']
-            #转成本地北京时间
-            game_time_beijing = GameDataParser.convert_utc_to_local(utc_time_str)                         
-            #比赛地点
-            game_place_city = game_info['arena']["arenaCity"]
-            game_place_arena = game_info['arena']["arenaName"]
-            #比赛双方
-            home_team_name = game_info["homeTeam"]["teamName"]
-            away_team_name = game_info["awayTeam"]["teamName"]           
-            #最终需要的比赛信息
-            game_info_parsed = {
-            "time": game_time_beijing,
-            "place_city": game_place_city,
-            "place_arena": game_place_arena,
-            "home_team_name": home_team_name,
-            "away_team_name": away_team_name}
+      
+    def parse_game_data(self,game_data):
+        game_df = pd.json_normalize(game_data,errors="ignore",sep='_')
+        self.game_info_df = game_df.iloc[:, 4:24]  
+        self.home_all_df = game_df.iloc[:, 26:96] 
+        self.away_all_df =  game_df.iloc[:, 97:166] 
+        
+        home_record_path = ["game","homeTeam","players"]
+        home_meta = [["game","homeTeam","teamId"],["game","homeTeam","teamName"],["game","homeTeam","teamCity"],["game","homeTeam","teamTricode"],["game","homeTeam","score"]]
+        self.home_player_df = pd.json_normalize(game_data,record_path=home_record_path,meta=home_meta,errors="ignore",sep='_')
 
-            return game_info_parsed
-               
+        away_record_path = ["game","awayTeam","players"]
+        away_meta = [["game","awayTeam","teamId"],["game","awayTeam","teamName"],["game","awayTeam","teamCity"],["game","awayTeam","teamTricode"],["game","awayTeam","score"]]
+        self.away_player_df = pd.json_normalize(game_data,record_path=away_record_path,meta=away_meta,errors="ignore",sep='_')
+        
+       
+    def parse_game_info(self,game_info_data):
+            
+        game_info_data = self.parse_game_data().game_info_df
+        # game_info['gameTimeUTC'] 是一个字符串，包含了 UTC 时间
+        utc_time_str = game_info['gameTimeUTC']
+        #转成本地北京时间
+        game_time_beijing = GameDataParser.convert_utc_to_local(utc_time_str)                         
+        #比赛地点
+        game_place_city = game_info['arena']["arenaCity"]
+        game_place_arena = game_info['arena']["arenaName"]
+        #比赛双方
+        home_team_name = game_info["homeTeam"]["teamName"]
+        away_team_name = game_info["awayTeam"]["teamName"]
+        # 判断查询的 team_id 是主队还是客队
+        team_role = None
+        team_role = None
+        home_team_role = "主场"
+        away_team_role = "客场"            
+        if game_info["homeTeam"]["teamId"] == team_id:
+            team_role = home_team_role
+        elif game_info["awayTeam"]["teamId"] == team_id:
+            team_role = away_team_role          
+        #最终需要的比赛信息
+        game_info_parsed = {
+        "time": game_time_beijing,
+        "place_city": game_place_city,
+        "place_arena": game_place_arena,
+        "home_team": f"{home_team_name} ({home_team_role})",
+        "away_team": f"{away_team_name} ({away_team_role})",
+        "team_role": team_role
+        }
+
+        return game_info_parsed
+            
     def parse_realtime_score(self, score_data):
         if score_data:
             # 这里假设'score_data' JSON 结构中有'homeTeam'和'awayTeam'的得分信息
@@ -258,10 +297,12 @@ class GameDataDisplay:
     def display_game_info(game_info_parsed):
 
         if game_info_parsed:
-            game_info_text = f"""今日{game_info_parsed['home_team_name']}队比赛：
-            时间：北京时间 {game_info_parsed['time']}
-            地点：{game_info_parsed['place_city']}，{game_info_parsed['place_arena']}
-            比赛双方：{game_info_parsed['home_team_name']} vs {game_info_parsed['away_team_name']}"""
+            game_info_text = (
+            "【今日比赛】 \n"
+            f"时间：北京时间 {game_info_parsed['time']}\n"
+            f"地点：{game_info_parsed['place_city']}，{game_info_parsed['place_arena']}\n"
+            f"比赛双方：{game_info_parsed['home_team']} vs {game_info_parsed['away_team']}"
+            )
             return game_info_text
         return None
     
@@ -294,40 +335,41 @@ class GameDataDisplay:
 #而不是在 main 函数中手动管理这些实例和它们之间的交互
 class NBADataProcessor:
 
-    def __init__(self):
-        
-        self.schedule_fetcher = None
-        self.game_data_parser = GameDataParser()
-        # GameDataDisplay 直接使用类名调用静态方法，无需实例化
-        #self.game_data_fetcher = GameDataFetcher() 这个依赖于 gameid
-    
-    def get_game_id(self, gamedate, team_id):
-        schedule_fetcher = NBASchedule(gamedate=gamedate, team_id=team_id)
-        game_info = schedule_fetcher.filter_one_gamecard()
-        return game_info.get("game_id") if game_info else None
-    
     #展示比赛基本信息
-    def process_and_present_game_data(self,gamedate, team_id):
-
-        game_id = self.get_game_id(gamedate, team_id)
-        if game_id:
-            # 在知道 game_id 后，我们现在实例化 GameDataFetcher
+    def process_and_present_game_data(game_date, team_id):
+        
+        #先实例化 NBASchedule 类，筛选获得对应日期的比赛
+        schedule_fetcher = NBASchedule() 
+        team_schedule =  schedule_fetcher.filter_team_schedule(game_date=game_date, team_id=team_id)
+        
+         
+        if not team_schedule.empty:
+            
+            #如果存在比赛的话，找到关键的 game_id
+            game_id = team_schedule["gameId"].iloc[0]
+            
+            # 通过我们 game_id，现在实例化 GameDataFetcher
             game_data_fetcher = GameDataFetcher(game_id)            
             game_data = game_data_fetcher.fetch_boxscore()
-            game_data_parsed = self.game_data_parser.parse_game_info(game_data)
+            
+            #实例化 GameDataparser
+            game_data_parser = GameDataParser()
+            game_data_parsed = game_data_parser.parse_game_info(team_id=team_id,game_info_data=game_data)
+            
+            #实例化 GameDataDisplay
             game_data_display = GameDataDisplay.display_game_info(game_data_parsed)
             print(game_data_display)
             return game_data_display
         else:
-            print("今日无湖人队比赛")
+            print("【今日无比赛】")
 
     
 def main():
     team_id = '1610612747'  # 假设这是一个有效的球队 ID
-    gamedate = "12/21/2023"  # 假设这是需要查询的比赛日期
+    game_date = "12/24/2023"  # 假设这是需要查询的比赛日期
     processor = NBADataProcessor()
     #展示比赛基本信息
-    processor.process_and_present_game_data(gamedate = gamedate,team_id=team_id)
+    processor.process_and_present_game_data(game_date = game_date,team_id=team_id)
     
 if __name__ == "__main__":
     main()
