@@ -4,6 +4,8 @@
 
 # 忽略目录 build/
 .vscode/
+pictures/
+video_gif/
 
 # 忽略特定文件 foo.txt
 nba_schedule.json
