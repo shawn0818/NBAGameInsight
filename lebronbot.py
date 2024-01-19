@@ -5,40 +5,11 @@ import pandas as pd
 import numpy as np
 import os
 import json
-import matplotlib.pyplot as plt
-import matplotlib.colors as colors
-import squarify
-import subprocess
-import time
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import re
-
-
-class NBAConfig:
-    """创建一个类负责解决硬编码的部分，比如路径、文件地址等"""
-    # url集合
-    SCHEDULE_URL = "https://cdn.nba.com/static/json/staticData/scheduleLeagueV2_1.json"
-    liveData_URL = "https://cdn.nba.com/static/json/liveData"
-    VideoData_URL = 'https://stats.nba.com/stats/videoeventsasset'
-    # 文件路径集合
-    TREE_OUT_PATH = "pictures/plt_tree.png"
-    VIDEO_TO_PICTURE_PATH = "video_gif"
-    JSON_FILE_PATH = "nba_schedule.json"
-    HEADERS = {
-        "Accept-Encoding": "gzip, deflate, br",
-        "Accept-Language": "zh-CN,zh;q=0.8",
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-        "DNT": "1",
-        "Origin": "https://www.nba.com",
-        "Pragma": "no-cache",
-        "Referer": "https://www.nba.com/",
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "same-site",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0"
-    }
+from game_data_visualization import GameDataVisualization
+from game_video_download import GameVideoDownload
+from game_config import NBAConfig
 
 
 # 可以创建一个日程表的类，默认参数为日期和球队
@@ -190,9 +161,9 @@ class GameDataParser:
         game_info_df = game_boxscore_df.iloc[:, game_start_position:game_end_position + 1]
         game_info_df.columns = game_info_df.columns.str.split('_').str[-1]
         # 需要添加关于球队的列的信息
-        team_columns_df = game_boxscore_df.loc[:,
-                          ['game_homeTeam_teamId', 'game_homeTeam_teamName', 'game_homeTeam_score',
-                           'game_awayTeam_teamId', 'game_awayTeam_teamName', 'game_awayTeam_score']]
+        team_columns_df = game_boxscore_df.loc[:, ['game_homeTeam_teamId', 'game_homeTeam_teamName',
+                                                   'game_homeTeam_score', 'game_awayTeam_teamId',
+                                                   'game_awayTeam_teamName', 'game_awayTeam_score']]
         # 简化下列名
         team_columns_df.columns = team_columns_df.columns.str.extract(r'game_(.*?)_(.*)').agg('_'.join, axis=1)
         game_meta_df = pd.concat([game_info_df, team_columns_df], axis=1)
@@ -245,120 +216,6 @@ class GameDataParser:
             return actions_df
 
 
-# 将视频下载进行类的封装
-class GameVideoDownload:
-    """获取 playbyplay 回合的视频下载链接"""
-
-    @staticmethod
-    def get_video_url(game_id, action_number):
-        try:
-            url = NBAConfig.VideoData_URL
-            headers = NBAConfig.HEADERS
-            params = {'GameID': str(game_id), 'GameEventID': str(action_number)}
-            # 参数很多，contextMeasure 参数的值 "FGM","REB"， 'PlayerID'等参数
-            # actionType 的值如果是 block 类型会出现返回空值的的现象
-            response = requests.get(url, params=params, headers=headers)
-            response.raise_for_status()  # 抛出异常如果 HTTP 状态码不是 200
-            response_data = response.json()  # Parse response as JSON
-            video_data = response_data["resultSets"]['Meta']['videoUrls']
-            if not video_data:  # 检查列表是否为空
-                # 可以选择记录日志或返回一个默认值
-                print(f"No video available for action number: {action_number}")
-                return None
-            video_url = video_data[0]["lurl"]
-            return video_url
-        except requests.RequestException as e:
-            print(f"Error fetching video for action number {action_number}: {e}")
-            return None
-
-    @staticmethod
-    def from_video_to_gif(video_info_list):
-        output_folder = NBAConfig.VIDEO_TO_PICTURE_PATH
-        for idx, (video_url, name_info) in enumerate(video_info_list, start=1):
-            # 构建文件名
-            safe_name = re.sub(r'\W+', '_', name_info)  # 将非字母数字字符替换为下划线
-            output_path = f"{output_folder}/{idx}_{safe_name}.gif"
-            download_command = (f'ffmpeg -hide_banner -i "{video_url}" -vf "fps=12,'
-                                f'scale=960:-1:flags=lanczos,split['
-                                f's1][s2];[s1]palettegen[p];[s2][p]paletteuse" -c:v gif "{output_path}"')
-            subprocess.run(download_command, shell=True)
-            time.sleep(1)
-
-
-# 将可视化进行类的封装，Visualization 类可以被扩展来包含其他类型的图表，为了使类更通用，保持方法的独立性和重用性，每个方法都应该仅接受必要的数据作为参数，并返回或保存图像。
-class GameDataVisualization:
-
-    @staticmethod
-    def normalize_scores(score_df):
-        """这个函数负责矩形面积的大小"""
-        score_df.loc[:, 'Score_Normalized'] = score_df['statistics_points'] / score_df['statistics_points'].sum()
-        return score_df
-
-    @staticmethod
-    def map_colors(player_id, score_df):
-        """这个函数负责影射矩形的颜色以及颜色设置"""
-        custom_blue = [84 / 255, 44 / 255, 129 / 255]  # 湖人紫色
-        custom_yellow = [250 / 255, 182 / 255, 36 / 255]  # 湖人金色
-        min_percentage = score_df['statistics_fieldGoalsPercentage'].min()
-        max_percentage = score_df['statistics_fieldGoalsPercentage'].max()
-        norm = colors.Normalize(min_percentage, max_percentage)
-
-        color_mapped = []
-        for _, row in score_df.iterrows():
-            if row['personId'] == int(player_id):
-                color_mapped.append(custom_yellow)  # 对于特定 teamId，使用固定的黄色
-            else:
-                # 根据命中率调整蓝色的亮度
-                adjusted_intensity = norm(row['statistics_fieldGoalsPercentage'])
-                min_lightness = 0.6
-                lightness = min_lightness + (1 - min_lightness) * adjusted_intensity
-                adjusted_color = [custom_blue[0] * lightness,
-                                  custom_blue[1] * lightness,
-                                  custom_blue[2] * lightness, 1]
-                color_mapped.append(adjusted_color)
-
-        return color_mapped
-
-    @staticmethod
-    def create_labels(score_df):
-        """负责标签的制定"""
-        return [
-            "{}\nPoints: {}\nShooting %: {:.1f}".format(
-                row['name'], row['statistics_points'], row['statistics_fieldGoalsPercentage'] * 100
-            ) for index, row in score_df.iterrows()
-        ]
-
-    @staticmethod
-    def display_player_scores(team_id, player_id, player_data_parsed, output_path=NBAConfig.TREE_OUT_PATH):
-        # Filter the DataFrame for the specified team and positive points.
-        score_data = player_data_parsed[
-            (player_data_parsed["teamId"] == int(team_id)) &
-            (player_data_parsed["statistics_points"] > 0)
-            ].sort_values(by="statistics_points", ascending=False)
-        # Normalize scores and map colors.
-        score_data = GameDataVisualization.normalize_scores(score_data)
-        colors = GameDataVisualization.map_colors(player_id, score_data)
-        labels = GameDataVisualization.create_labels(score_data)
-        # Plot the treemap.
-        fig, ax = plt.subplots(1, figsize=(12, 6))
-        fig.subplots_adjust(left=0, right=1, top=1, bottom=0)  # 调整边框
-        squarify.plot(
-            sizes=score_data['Score_Normalized'],
-            label=labels,
-            color=colors,
-            alpha=0.8,
-            ax=ax,
-            linewidth=2,
-            edgecolor='white'
-        )
-        # Set the title and remove axes.
-        plt.title('Player Score Distribution Treemap')
-        plt.axis('off')
-        # Save the figure.
-        plt.savefig(output_path)
-        plt.close()
-
-
 class GameDataDisplay:
     # 实例属性来存储比赛的详细信息
     def __init__(self, game_info_parsed):
@@ -392,13 +249,20 @@ class GameDataDisplay:
                 f"比赛双方：{self.home_team_name} vs {self.away_team_name}"
             )
         elif self.game_status == 2:
-            game_info_text = f"比赛已经在北京时间 {self.game_start_time_beijing}开始了，当前比赛已经进行到第{self.game_period}节，双方比分{self.home_team_name}{self.home_team_score}:{self.away_team_name}{self.away_team_score},快打开电视收看吧"
+            game_info_text = (f"比赛已经在北京时间 {self.game_start_time_beijing}开始了，"
+                              f"当前比赛已经进行到第{self.game_period}节，"
+                              f"双方比分{self.home_team_name}{self.home_team_score}:"
+                              f"{self.away_team_name}{self.away_team_score}"
+                              f",快打开电视收看吧")
         else:
-            game_info_text = f"比赛已经在北京时间 {self.game_start_time_beijing}开始了，现在已经结束啦，最终比分是{self.home_team_name}{self.home_team_score}:{self.away_team_name}{self.away_team_score}"
+            game_info_text = (f"比赛已经在北京时间 {self.game_start_time_beijing}开始了，"
+                              f"现在已经结束啦，最终比分是{self.home_team_name}{self.home_team_score}"
+                              f":{self.away_team_name}{self.away_team_score}")
 
         return game_info_text
 
-    def display_player_statistic(self, player_id, player_data_parsed):
+    @staticmethod
+    def display_player_statistic(player_id, player_data_parsed) -> str:
 
         player_filter = (player_data_parsed["personId"] == int(player_id))
         the_player_df = player_data_parsed[player_filter]
@@ -419,7 +283,9 @@ class GameDataDisplay:
 
         if status == "ACTIVE":
             if is_played == "1":
-                player_text = f"本场比赛{player_name}上场时间{on_court_minutes}分钟，正负值{plus_minus_points},拿下{points}分{rebounds}篮板{assists}助攻{blocks}盖帽{steals}抢断"
+                player_text = (f"本场比赛{player_name}上场时间{on_court_minutes}分钟，"
+                               f"正负值{plus_minus_points},"
+                               f"拿下{points}分{rebounds}篮板{assists}助攻{blocks}盖帽{steals}抢断")
             else:
                 player_text = f"本场比赛{player_name}没有上场"
         else:
@@ -448,7 +314,7 @@ class GameDataDisplay:
         player_action_df = actions_data_parsed[actions_data_parsed['personId'] == int(player_id)]
         player_action_df.reset_index(drop=True, inplace=True)
         # 添加组合信息列
-        player_action_df['combined_info'] = player_action_df.apply(self.combine_action_info, axis=1)
+        player_action_df.loc[:, 'combined_info'] = player_action_df.apply(self.combine_action_info, axis=1)
         # 获取需要下载视频的行的 actionNumber
         action_numbers = player_action_df[
             player_action_df['actionType'].isin(['2pt', '3pt']) & (player_action_df['shotResult'] == "Made")][
@@ -466,7 +332,7 @@ class GameDataDisplay:
                 video_urls[action_number] = future.result()
 
         # 将视频链接添加到 DataFrame
-        player_action_df['video_url'] = player_action_df['actionNumber'].apply(lambda x: video_urls.get(x))
+        player_action_df.loc[:, 'video_url'] = player_action_df['actionNumber'].apply(lambda x: video_urls.get(x))
         # 返回处理后的 DataFrame
         return player_action_df
 
