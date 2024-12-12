@@ -6,7 +6,10 @@
 .vscode/
 pictures/
 video_gif/
+data/
+storage/
+__pycache__/
 
 # 忽略特定文件 foo.txt
-nba_schedule.json
+test.py
 
