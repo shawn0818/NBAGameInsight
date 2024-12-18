@@ -1,9 +1,179 @@
-import logging
-from typing import Dict, List, Optional
-from datetime import datetime
-from nba.models.game_event_model import PlayerBasicInfo, PlayerStats
-import pandas as pd
+# nba/models/players.py
 
+import logging
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Any
+from datetime import datetime
+
+@dataclass
+class PlayerStatistics:
+    assists: int = 0
+    blocks: int = 0
+    blocks_received: int = 0
+    field_goals_attempted: int = 0
+    field_goals_made: int = 0
+    field_goals_percentage: float = 0.0
+    fouls_offensive: int = 0
+    fouls_drawn: int = 0
+    fouls_personal: int = 0
+    fouls_technical: int = 0
+    free_throws_attempted: int = 0
+    free_throws_made: int = 0
+    free_throws_percentage: float = 0.0
+    minus: float = 0.0
+    minutes: str = 'PT00M00.00S'
+    minutes_calculated: str = 'PT00M'
+    plus: float = 0.0
+    plus_minus_points: float = 0.0
+    points: int = 0
+    points_fast_break: int = 0
+    points_in_the_paint: int = 0
+    points_second_chance: int = 0
+    rebounds_defensive: int = 0
+    rebounds_offensive: int = 0
+    rebounds_total: int = 0
+    steals: int = 0
+    three_pointers_attempted: int = 0
+    three_pointers_made: int = 0
+    three_pointers_percentage: float = 0.0
+    turnovers: int = 0
+    two_pointers_attempted: int = 0
+    two_pointers_made: int = 0
+    two_pointers_percentage: float = 0.0
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> "PlayerStatistics":
+        return cls(
+            assists=int(data.get('assists', 0)),
+            blocks=int(data.get('blocks', 0)),
+            blocks_received=int(data.get('blocksReceived', 0)),
+            field_goals_attempted=int(data.get('fieldGoalsAttempted', 0)),
+            field_goals_made=int(data.get('fieldGoalsMade', 0)),
+            field_goals_percentage=float(data.get('fieldGoalsPercentage', 0.0)),
+            fouls_offensive=int(data.get('foulsOffensive', 0)),
+            fouls_drawn=int(data.get('foulsDrawn', 0)),
+            fouls_personal=int(data.get('foulsPersonal', 0)),
+            fouls_technical=int(data.get('foulsTechnical', 0)),
+            free_throws_attempted=int(data.get('freeThrowsAttempted', 0)),
+            free_throws_made=int(data.get('freeThrowsMade', 0)),
+            free_throws_percentage=float(data.get('freeThrowsPercentage', 0.0)),
+            minus=float(data.get('minus', 0.0)),
+            minutes=data.get('minutes', 'PT00M00.00S'),
+            minutes_calculated=data.get('minutesCalculated', 'PT00M'),
+            plus=float(data.get('plus', 0.0)),
+            plus_minus_points=float(data.get('plusMinusPoints', 0.0)),
+            points=int(data.get('points', 0)),
+            points_fast_break=int(data.get('pointsFastBreak', 0)),
+            points_in_the_paint=int(data.get('pointsInThePaint', 0)),
+            points_second_chance=int(data.get('pointsSecondChance', 0)),
+            rebounds_defensive=int(data.get('reboundsDefensive', 0)),
+            rebounds_offensive=int(data.get('reboundsOffensive', 0)),
+            rebounds_total=int(data.get('reboundsTotal', 0)),
+            steals=int(data.get('steals', 0)),
+            three_pointers_attempted=int(data.get('threePointersAttempted', 0)),
+            three_pointers_made=int(data.get('threePointersMade', 0)),
+            three_pointers_percentage=float(data.get('threePointersPercentage', 0.0)),
+            turnovers=int(data.get('turnovers', 0)),
+            two_pointers_attempted=int(data.get('twoPointersAttempted', 0)),
+            two_pointers_made=int(data.get('twoPointersMade', 0)),
+            two_pointers_percentage=float(data.get('twoPointersPercentage', 0.0)),
+        )
+
+@dataclass
+class PlayerBasicInfo:
+    """球员基础信息"""
+    person_id: str
+    name: str
+    position: str
+    height: str
+    weight: str
+    jersey: str
+    team_info: Dict[str, str]
+    draft_info: Dict[str, Any]
+    career_info: Dict[str, str]
+    college: str
+    country: str
+
+    @staticmethod
+    def normalize_name(name: str) -> str:
+        """标准化球员姓名格式"""
+        special_prefixes = ['de', 'le', 'la', 'mc', 'van', 'von']
+        words = name.lower().split()
+        normalized = []
+
+        for word in words:
+            for prefix in special_prefixes:
+                if word.startswith(prefix) and len(word) > len(prefix):
+                    word = word[:len(prefix)] + word[len(prefix)].upper() + word[len(prefix)+1:]
+                    break
+
+            if not any(word.startswith(prefix) for prefix in special_prefixes):
+                word = word.capitalize()
+            normalized.append(word)
+
+        return " ".join(normalized)
+
+    @property
+    def headshot_url(self) -> str:
+        """获取球员头像URL"""
+        return f"https://cdn.nba.com/headshots/nba/latest/1040x760/{self.person_id}.png"
+
+    @property
+    def first_name(self) -> str:
+        """获取球员名"""
+        return self.name.split()[0] if self.name else ""
+
+    @property
+    def last_name(self) -> str:
+        """获取球员姓"""
+        return self.name.split()[-1] if self.name else ""
+
+    def __post_init__(self):
+        """初始化后处理"""
+        self.name = self.normalize_name(self.name)
+
+@dataclass
+class Player:
+    """球员信息"""
+    player_status: str
+    player_order: int
+    player_id: str
+    player_jersey_number: str
+    player_position: str
+    player_starter: bool
+    player_oncourt: bool
+    player_played: bool
+    player_statistics: PlayerStatistics
+    player_name: str
+    player_name_i: str
+    player_first_name: str
+    player_family_name: str
+    player_not_playing_reason: Optional[str] = None
+    player_not_playing_description: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> "Player":
+        return cls(
+            player_status=data.get('status', ''),
+            player_order=int(data.get('order', 0)),
+            player_id=str(data.get('personId', '')),
+            player_jersey_number=data.get('jerseyNum', ''),
+            player_position=data.get('position', ''),
+            player_starter=bool(data.get('starter', False)),
+            player_oncourt=bool(data.get('oncourt', False)),
+            player_played=bool(data.get('played', False)),
+            player_statistics=PlayerStatistics.from_dict(data.get('statistics', {})),
+            player_name=data.get('name', ''),
+            player_name_i=data.get('nameI', ''),
+            player_first_name=data.get('firstName', ''),
+            player_family_name=data.get('familyName', ''),
+            player_not_playing_reason=data.get('notPlayingReason'),
+            player_not_playing_description=data.get('notPlayingDescription')
+        )
+
+    @property
+    def full_name(self) -> str:
+        return f"{self.player_first_name} {self.player_family_name}"
 
 class PlayerNameMapping:
     """球员姓名-ID映射管理器"""
@@ -61,7 +231,6 @@ class PlayerNameMapping:
         self._id_to_name.clear()
         self._normalized_name_to_id.clear()
         self.logger.debug("Cleared all player mappings.")
-
 
 class PlayerDataParser:
     """球员数据解析器"""
@@ -252,6 +421,3 @@ class PlayerDataParser:
         except Exception as e:
             self.logger.error(f"Error finding player ID by name '{name}': {e}")
             return None
-
-
-

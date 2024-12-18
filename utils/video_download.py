@@ -59,58 +59,58 @@ class VideoDownloader:
             return False
 
 class VideoConverter:
-    """视频格式转换工具类"""
+    """视频转换器"""
     
-    @staticmethod
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
+    
     def to_gif(
-        video_path: Path,
-        output_path: Path,
-        fps: int = 12,
-        scale: int = 960,
+        self, 
+        video_path: Path, 
+        output_path: Path, 
+        fps: int = 12, 
+        scale: int = 960, 
         remove_source: bool = False
     ) -> bool:
         """
-        将视频转换为GIF
-        
+        将视频转换为GIF格式
+
         Args:
-            video_path: 源视频文件路径
-            output_path: 输出GIF文件路径
-            fps: 输出GIF的帧率
-            scale: 输出GIF的宽度(保持宽高比)
-            remove_source: 转换完成后是否删除源文件
-            
+            video_path (Path): 输入视频路径
+            output_path (Path): 输出GIF路径
+            fps (int): 帧率
+            scale (int): 宽度，保持纵横比
+            remove_source (bool): 是否删除源视频
+
         Returns:
-            bool: 转换是否成功
+            bool: 成功与否
         """
         try:
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            cmd = [
+            # 构建FFmpeg命令
+            command = [
                 'ffmpeg',
                 '-i', str(video_path),
-                '-vf',
-                f'fps={fps},scale={scale}:-1:flags=lanczos,split[s1][s2];[s1]palettegen[p];[s2][p]paletteuse',
-                '-y',
+                '-vf', f'fps={fps},scale={scale}:-1:flags=lanczos',
+                '-gifflags', '+transdiff',
+                '-y',  # 覆盖输出文件
                 str(output_path)
             ]
+            self.logger.info(f"Running FFmpeg command: {' '.join(command)}")
             
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True
-            )
+            # 运行命令
+            subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             
-            if remove_source and video_path.exists():
+            self.logger.info(f"Successfully converted to GIF: {output_path}")
+            
+            if remove_source:
                 video_path.unlink()
-                
-            return True
             
+            return True
         except subprocess.CalledProcessError as e:
-            logger.error(f"FFmpeg conversion failed: {e.stderr}")
+            self.logger.error(f"FFmpeg conversion failed: {e.stderr.decode()}")
             return False
         except Exception as e:
-            logger.error(f"Conversion error: {e}")
+            self.logger.error(f"Unexpected error during GIF conversion: {e}")
             return False
             
     @staticmethod
