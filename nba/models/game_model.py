@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field
 from typing import Optional, Dict, List, Any, Union
 from datetime import datetime
 from enum import Enum
@@ -63,15 +63,6 @@ class Player(BasePydanticModel):
     notPlayingReason: Optional[str] = Field(None)
     notPlayingDescription: Optional[str] = Field(None)
 
-    @validator('personId')
-    def validate_person_id(cls, v):
-        """确保 personId 是整数"""
-        if v is not None and not isinstance(v, int):
-            try:
-                return int(v)
-            except (ValueError, TypeError):
-                raise ValueError('personId must be an integer')
-        return v
 
 class Period(BasePydanticModel):
     """比赛节次信息"""

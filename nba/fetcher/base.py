@@ -1,5 +1,4 @@
-from typing import Dict, Optional, Any
-import logging
+from typing import Dict, Optional
 from config.nba_config import NBAConfig
 from utils.http_handler import HTTPRequestManager
 from pathlib import Path

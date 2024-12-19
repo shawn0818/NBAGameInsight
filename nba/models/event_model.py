@@ -3,7 +3,6 @@ from datetime import datetime
 from enum import Enum
 from pydantic import BaseModel, Field
 
-
 # 1. 定义枚举类
 
 class ShotSubType(str, Enum):
@@ -138,19 +137,11 @@ class Score(BaseModel):
         return self.home - self.away
 
 
-class TeamInfo(BaseModel):
-    """球队信息"""
-    team_id: int = Field(..., description="球队的唯一标识符")
-    team_tricode: str = Field(..., description="球队的三字母缩写（如LAL代表湖人队）")
-    is_home_team: bool = Field(..., description="标识是否为主场作战的球队")
-
-
 class PlayerRef(BaseModel):
     """球员引用信息，用于在事件中识别和引用球员"""
     person_id: int = Field(..., description="球员的唯一标识符")
     full_name: str = Field(..., description="球员的完整姓名")
     name_initial: str = Field(..., description="球员姓名缩写（如L. James）")
-    team_info: TeamInfo = Field(..., description="球员所属球队信息")
     jersey_num: Optional[str] = Field(None, description="球员的球衣号码")
 
 
@@ -177,8 +168,8 @@ class Event(BaseModel):
     side: Optional[str] = Field(None, description="事件发生的场地侧边")
     shotDistance: Optional[float] = Field(None, description="投篮距离")
     possession: Optional[int] = Field(None, description="拥有球权的球队ID")
-    scoreHome: Optional[str] = Field(None, description="主队当前得分")
-    scoreAway: Optional[str] = Field(None, description="客队当前得分")
+    scoreHome: Optional[int] = Field(None, description="主队当前得分")
+    scoreAway: Optional[int] = Field(None, description="客队当前得分")
     edited: Optional[datetime] = Field(None, description="数据编辑时间")
     orderNumber: Optional[int] = Field(None, description="事件顺序编号")
     isTargetScoreLastPeriod: Optional[bool] = Field(None, description="是否是上一节的目标得分")
@@ -194,6 +185,7 @@ class Event(BaseModel):
     playerName: Optional[str] = Field(None, description="球员姓名")
     playerNameI: Optional[str] = Field(None, description="球员姓名缩写")
     personIdsFilter: Optional[List[int]] = Field(None, description="涉及的球员ID列表")
+
 
 class PlayByPlay(BaseModel):
     """比赛回放数据"""

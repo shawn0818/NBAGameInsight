@@ -1,5 +1,5 @@
 from typing import List, Optional
-from nba.models.event_model import PlayByPlay, Event, EventType
+from nba.models.event_model import PlayByPlay, Event
 
 class EventService:
     """比赛事件服务类，用于处理比赛事件流数据的分析。"""
@@ -206,3 +206,4 @@ async def analyze_player_performance():
         e for e in clutch_events
         if e.actionType in ['2pt', '3pt']
     ]
+'''

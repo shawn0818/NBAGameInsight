@@ -5,24 +5,13 @@ from datetime import datetime, timedelta
 
 from nba.services.game_data_service import get_game_data
 from nba.services.game_video_service import VideoService
-from nba.fetcher.team import TeamInfo
+from nba.fetcher.team import TeamProfile
 from nba.parser.schedule_parser import ScheduleParser
 from nba.fetcher.schedule import ScheduleFetcher
 from config.nba_config import NBAConfig
 from utils.time_handler import NBATimeHandler
 
 
-from nba.models.game_event_model import (
-    PlayerBasicInfo,
-    GameEvent,
-    GameEventCollection,
-    Player,
-    Location,
-    Score,
-    Shot,
-    EventType,
-    VideoAsset
-)
 
 class NBAGameAnalyzer:
     """NBA比赛分析器"""
@@ -32,7 +21,7 @@ class NBAGameAnalyzer:
         # 配置日志
         self.logger = logging.getLogger(__name__)
         self.video_service = VideoService()
-        self.team_info = TeamInfo()
+        self.team_info = TeamProfile()
         self.schedule_fetcher = ScheduleFetcher()
         self.schedule_parser = ScheduleParser()
         

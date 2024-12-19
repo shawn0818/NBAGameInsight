@@ -1,8 +1,5 @@
 from typing import Dict, Optional
 import logging
-from pathlib import Path
-import json
-from datetime import datetime
 from .base import BaseNBAFetcher
 from config.nba_config import NBAConfig
 

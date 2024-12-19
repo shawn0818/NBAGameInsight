@@ -1,7 +1,5 @@
 import logging
-import json
 from typing import Optional, Tuple, Dict
-from datetime import datetime
 from functools import lru_cache
 import asyncio
 
@@ -9,7 +7,7 @@ from pydantic import ValidationError
 from nba.fetcher.game import GameFetcher
 from nba.parser.game_parser import GameDataParser
 from nba.parser.schedule_parser import ScheduleParser
-from nba.fetcher.team import TeamInfo
+from nba.fetcher.team import TeamProfile
 from nba.fetcher.schedule import ScheduleFetcher
 from nba.models.game_model import Game
 from nba.models.event_model import PlayByPlay
@@ -26,14 +24,14 @@ class GameDataService:
     
     def __init__(
         self,
-        team_info: Optional[TeamInfo] = None,
+        team_info: Optional[TeamProfile] = None,
         schedule_fetcher: Optional[ScheduleFetcher] = None,
         game_fetcher: Optional[GameFetcher] = None,
         schedule_parser: Optional[ScheduleParser] = None,
         game_parser: Optional[GameDataParser] = None
     ):
         """初始化GameDataService"""
-        self.team_info = team_info or TeamInfo()
+        self.team_info = team_info or TeamProfile()
         self.schedule_fetcher = schedule_fetcher or ScheduleFetcher()
         self.game_fetcher = game_fetcher or GameFetcher()
         self.schedule_parser = schedule_parser or ScheduleParser()

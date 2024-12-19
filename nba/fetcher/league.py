@@ -1,9 +1,7 @@
 from typing import Dict, Optional
 import logging
-from pathlib import Path
 import json
 from datetime import datetime
-import os
 from .base import BaseNBAFetcher
 from config.nba_config import NBAConfig
 from utils.http_handler import HTTPRequestManager

@@ -1,13 +1,12 @@
-# nba/models/videos.py
-
-import logging
-from dataclasses import dataclass, field
-from typing import Optional, Dict, Any
-from datetime import datetime
+from typing import Optional, List, Dict, Any
+from pydantic import BaseModel
 from enum import Enum
-from nba.models.game_events import GameEvent
+from datetime import datetime
+from dataclasses import dataclass
 
-class ContextMeasure(Enum):
+# 1. 定义枚举类
+
+class ContextMeasure(str, Enum):
     """视频查询的上下文度量类型"""
     FG3M = "FG3M"       # 三分命中
     FG3A = "FG3A"       # 三分出手
@@ -21,116 +20,9 @@ class ContextMeasure(Enum):
     BLK = "BLK"         # 盖帽
     TOV = "TOV"         # 失误
 
+# 2. 定义辅助模型
 @dataclass
-class VideoAsset:
-    """视频资源数据模型"""
-    uuid: str
-    duration: int  # 视频时长（秒）
-    urls: Dict[str, str]  # 不同质量的视频URL，如 {'sd': url1, 'hd': url2}
-    thumbnails: Dict[str, str]  # 不同质量的缩略图URL
-    subtitles: Dict[str, str]  # 不同格式的字幕文件URL
-    event_info: Dict[str, Any]  # 事件相关信息
-    game_event: Optional[GameEvent] = None  # 关联的比赛事件
-
-    @property
-    def sd_url(self) -> Optional[str]:
-        """获取标清视频URL"""
-        return self.urls.get('sd')
-
-    @property
-    def hd_url(self) -> Optional[str]:
-        """获取高清视频URL"""
-        return self.urls.get('hd')
-
-    @property
-    def fhd_url(self) -> Optional[str]:
-        """获取全高清视频URL"""
-        return self.urls.get('fhd')
-
-    @property
-    def thumbnail(self) -> Optional[str]:
-        """获取默认缩略图URL（优先返回高清）"""
-        return self.thumbnails.get('hd') or self.thumbnails.get('sd')
-
-    def get_video_url(self, quality: str = 'hd') -> Optional[str]:
-        """
-        获取指定质量的视频URL
-
-        Args:
-            quality (str): 视频质量，支持 'sd'、'hd'、'fhd'
-
-        Returns:
-            Optional[str]: 视频URL，如果指定质量不存在则返回None
-        """
-        return self.urls.get(quality.lower())
-
-    def get_subtitle_url(self, format: str = 'vtt') -> Optional[str]:
-        """
-        获取指定格式的字幕URL
-
-        Args:
-            format (str): 字幕格式，支持 'vtt'、'scc'、'srt'
-
-        Returns:
-            Optional[str]: 字幕URL，如果指定格式不存在则返回None
-        """
-        return self.subtitles.get(format.lower())
-
-    def get_thumbnail_url(self, quality: str = 'hd') -> Optional[str]:
-        """
-        获取指定质量的缩略图URL
-
-        Args:
-            quality (str): 缩略图质量，支持 'sd'、'hd'、'fhd'
-
-        Returns:
-            Optional[str]: 缩略图URL，如果指定质量不存在则返回None
-        """
-        return self.thumbnails.get(quality.lower())
-
-@dataclass
-class VideoCollection:
-    """视频集合"""
-    game_id: str
-    videos: Dict[str, VideoAsset]  # 键为event_id
-    timestamp: datetime = field(default_factory=datetime.now)
-
-    def get_video(self, event_id: str) -> Optional[VideoAsset]:
-        """获取指定事件的视频"""
-        return self.videos.get(event_id)
-
-    def get_videos_by_period(self, period: int) -> Dict[str, VideoAsset]:
-        """获取指定节的所有视频"""
-        return {
-            event_id: video 
-            for event_id, video in self.videos.items() 
-            if video.game_event and video.game_event.period == period
-        }
-
-    def get_videos_by_player(self, player_id: str) -> Dict[str, VideoAsset]:
-        """获取指定球员的所有视频"""
-        return {
-            event_id: video
-            for event_id, video in self.videos.items()
-            if video.game_event and self._player_in_event(video.game_event, player_id)
-        }
-
-    @property 
-    def video_count(self) -> int:
-        """获取视频总数"""
-        return len(self.videos)
-
-    def __len__(self) -> int:
-        """获取视频总数"""
-        return self.video_count
-
-    def _player_in_event(self, event: GameEvent, player_id: str) -> bool:
-        """检查球员是否参与了事件"""
-        players = event.get_player_ids()
-        return player_id in players
-
-@dataclass
-class VideoQueryParams:
+class VideoRequestParams:
     """视频查询参数构建器"""
     game_id: str
     player_id: Optional[str] = None
@@ -138,7 +30,7 @@ class VideoQueryParams:
     context_measure: ContextMeasure = ContextMeasure.FGM
     season: str = "2024-25"
     season_type: str = "Regular Season"
-    
+
     def build(self) -> dict:
         """构建与NBA API完全一致的查询参数"""
         params = {
@@ -177,3 +69,161 @@ class VideoQueryParams:
         
         # 转换None为空字符串，保持与API格式一致
         return {k: ('' if v is None else v) for k, v in params.items()}
+
+class VideoUrl(BaseModel):
+    """视频URL及相关信息"""
+    uuid: str
+    sdur: int                  # 标清视频时长
+    surl: str                  # 标清视频URL
+    sth: str                   # 标清缩略图
+    mdur: int                  # 中等质量视频时长
+    murl: str                  # 中等质量视频URL
+    mth: str                   # 中等质量缩略图
+    ldur: int                  # 高清视频时长
+    lurl: str                  # 高清视频URL
+    lth: str                   # 高清缩略图
+    vtt: str                   # WebVTT字幕
+    scc: str                   # SCC字幕
+    srt: str                   # SRT字幕
+
+    @property
+    def duration(self) -> int:
+        """获取视频时长（使用高清时长）"""
+        return self.ldur
+
+    @property
+    def urls(self) -> Dict[str, str]:
+        """获取不同质量的视频URL"""
+        return {
+            'sd': self.surl,
+            'md': self.murl,
+            'hd': self.lurl
+        }
+
+    @property
+    def thumbnails(self) -> Dict[str, str]:
+        """获取不同质量的缩略图URL"""
+        return {
+            'sd': self.sth,
+            'md': self.mth,
+            'hd': self.lth
+        }
+
+    @property
+    def subtitles(self) -> Dict[str, str]:
+        """获取不同格式的字幕URL"""
+        return {
+            'vtt': self.vtt,
+            'scc': self.scc,
+            'srt': self.srt
+        }
+
+class PlaylistItem(BaseModel):
+    """播放列表项目"""
+    gi: str                    # 比赛ID
+    ei: int                    # 事件ID
+    y: int                     # 年份
+    m: str                     # 月份
+    d: str                     # 日期
+    gc: str                    # 比赛代码
+    p: int                     # 节次
+    dsc: str                   # 描述
+    ha: str                    # 主队缩写
+    hid: int                   # 主队ID
+    va: str                    # 客队缩写
+    vid: int                   # 客队ID
+    hpb: int                   # 主队得分(之前)
+    hpa: int                   # 主队得分(之后)
+    vpb: int                   # 客队得分(之前)
+    vpa: int                   # 客队得分(之后)
+    pta: int = 0               # 得分增量
+    personId: Optional[int] = None          # 涉及的球员ID (新增)
+    event_type: Optional[str] = None        # 事件类型 (使用字符串，避免直接依赖 EventType)
+
+    @property
+    def game_date(self) -> datetime:
+        """获取比赛日期"""
+        return datetime(self.y, int(self.m), int(self.d))
+
+    @property
+    def score_before(self) -> Dict[str, int]:
+        """获取得分变化前的比分"""
+        return {'home': self.hpb, 'away': self.vpb}
+
+    @property
+    def score_after(self) -> Dict[str, int]:
+        """获取得分变化后的比分"""
+        return {'home': self.hpa, 'away': self.vpa}
+
+    @property
+    def score_difference(self) -> int:
+        """计算主客队分差（正数表示主队领先）"""
+        return self.hpa - self.vpa
+
+class VideoMetaData(BaseModel):
+    """视频元数据"""
+    videoUrls: List[VideoUrl]
+
+class VideoResultSets(BaseModel):
+    """视频结果集"""
+    Meta: VideoMetaData
+    playlist: List[PlaylistItem]
+
+class GameEvent(BaseModel):
+    """关联的比赛事件信息"""
+    game_id: str
+    event_id: int
+    event_type: Optional[str] = None  # 使用字符串，避免直接依赖 EventType
+    description: str
+    period: int
+    clock: Optional[str] = None
+    person_id: Optional[int] = None
+   
+
+class VideoAsset(BaseModel):
+    """视频资产信息"""
+    uuid: str
+    duration: int
+    urls: Dict[str, str]
+    thumbnails: Dict[str, str]
+    subtitles: Dict[str, str]
+    event_info: Dict[str, Any]  # 可以根据需求调整为更具体的类型
+    game_event: Optional[GameEvent] = None  # 事件信息为可选
+    
+    @property
+    def get_video_url(self, quality: str) -> Optional[str]:
+        """
+        获取指定质量的视频URL。
+
+        Args:
+            quality (str): 视频质量，支持 'sd'、'md'、'hd'
+
+        Returns:
+            Optional[str]: 对应质量的视频URL，如果不存在则返回 None
+        """
+        return self.urls.get(quality)
+
+class VideoResponse(BaseModel):
+    """视频响应数据"""
+    resource: str
+    parameters: VideoRequestParams
+    resultSets: VideoResultSets
+
+    def get_video_by_event_id(self, event_id: int) -> Optional[VideoAsset]:
+        """根据事件ID获取对应的视频资产信息"""
+        for video_url in self.resultSets.Meta.videoUrls:
+            # 假设视频URL中包含事件ID，可以根据实际情况调整匹配逻辑
+            if f'/{event_id}/' in video_url.lurl:
+                # 假设你有方法通过 uuid 获取 VideoAsset
+                video_asset = fetch_video_asset_by_uuid(video_url.uuid)
+                if video_asset:
+                    return video_asset
+        return None
+
+    def get_playlist_by_period(self, period: int) -> List[PlaylistItem]:
+        """获取指定节次的所有播放项"""
+        return [item for item in self.resultSets.playlist if item.p == period]
+
+    def get_total_videos(self) -> int:
+        """获取视频总数"""
+        return len(self.resultSets.Meta.videoUrls)

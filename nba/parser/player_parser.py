@@ -1,257 +1,192 @@
+from typing import Dict, List, Optional, Any, Union
 import logging
-from typing import Dict, List, Optional
 from datetime import datetime
-from nba.models.game_event_model import PlayerBasicInfo, PlayerStats
-import pandas as pd
+from pydantic import ValidationError
+from nba.models.player_model import PlayerProfile, PlayerDraft, PlayerCareer
 
-
-class PlayerNameMapping:
-    """球员姓名-ID映射管理器"""
-
+class PlayerParser:
+    """NBA球员数据解析器"""
+    
     def __init__(self):
+        """初始化解析器"""
         self.logger = logging.getLogger(self.__class__.__name__)
-        self._name_to_id: Dict[str, str] = {}
-        self._id_to_name: Dict[str, str] = {}
-        self._normalized_name_to_id: Dict[str, str] = {}
 
-    def add_player(self, player: PlayerBasicInfo) -> None:
-        """添加球员映射"""
-        try:
-            # 添加标准格式的完整名字映射
-            normalized_full_name = PlayerBasicInfo.normalize_name(player.name)
-            self._name_to_id[normalized_full_name] = player.person_id
-            self._id_to_name[player.person_id] = normalized_full_name
+    def parse_players(self, raw_data: Dict[str, Any]) -> List[PlayerProfile]:
+        """
+        解析API响应数据为PlayerProfile对象列表
 
-            # 添加小写形式的映射，用于不区分大小写的搜索
-            self._normalized_name_to_id[normalized_full_name.lower()] = player.person_id
+        Args:
+            raw_data: 从API获取的原始JSON数据
 
-            # 添加姓氏映射（如果姓氏唯一）
-            last_name = player.last_name.lower()
-            if last_name not in self._normalized_name_to_id:
-                self._normalized_name_to_id[last_name] = player.person_id
-
-            self.logger.debug(f"Added player mapping: {normalized_full_name} -> {player.person_id}")
-        except Exception as e:
-            self.logger.error(f"Error adding player {player.name}: {e}")
-
-    def get_player_id(self, name: str) -> Optional[str]:
-        """通过球员姓名获取ID"""
-        try:
-            normalized_name = PlayerBasicInfo.normalize_name(name)
-            player_id = self._name_to_id.get(normalized_name)
-            if player_id:
-                return player_id
-
-            return self._normalized_name_to_id.get(normalized_name.lower())
-        except Exception as e:
-            self.logger.error(f"Error getting player ID for name '{name}': {e}")
-            return None
-
-    def get_player_name(self, player_id: str) -> Optional[str]:
-        """通过球员ID获取全名"""
-        try:
-            return self._id_to_name.get(player_id)
-        except Exception as e:
-            self.logger.error(f"Error getting player name for ID '{player_id}': {e}")
-            return None
-
-    def clear(self) -> None:
-        """清空映射数据"""
-        self._name_to_id.clear()
-        self._id_to_name.clear()
-        self._normalized_name_to_id.clear()
-        self.logger.debug("Cleared all player mappings.")
-
-
-class PlayerDataParser:
-    """球员数据解析器"""
-
-    def __init__(self):
-        self.logger = logging.getLogger(self.__class__.__name__)
-        self.name_mapping = PlayerNameMapping()
-
-    def parse_player_list(self, data: Dict) -> List[PlayerBasicInfo]:
-        """解析球员列表数据"""
+        Returns:
+            List[PlayerProfile]: 解析后的球员信息列表
+        """
         players = []
+        
         try:
-            if not data or 'resultSets' not in data:
-                self.logger.warning("No resultSets found in player list data.")
+            # 验证数据结构
+            if not self._validate_raw_data(raw_data):
                 return players
 
-            player_set = data['resultSets'][0]
+            player_set = raw_data['resultSets'][0]
             headers = player_set['headers']
             rows = player_set['rowSet']
 
-            # 清空现有映射
-            self.name_mapping.clear()
-
-            # 使用列表推导和字典解包提高效率
+            # 创建字段映射
+            field_map = {header: idx for idx, header in enumerate(headers)}
+            
+            # 解析每一行数据
             for row in rows:
-                row_data = dict(zip(headers, row))
-                player = PlayerBasicInfo(
-                    person_id=str(row_data['PERSON_ID']),
-                    name=f"{row_data['PLAYER_FIRST_NAME']} {row_data['PLAYER_LAST_NAME']}",
-                    team_info={
-                        'id': str(row_data['TEAM_ID']),
-                        'city': row_data['TEAM_CITY'],
-                        'name': row_data['TEAM_NAME'],
-                        'abbreviation': row_data['TEAM_ABBREVIATION']
-                    },
-                    position=row_data['POSITION'],
-                    height=row_data['HEIGHT'],
-                    weight=row_data['WEIGHT'],
-                    jersey=row_data['JERSEY_NUMBER'],
-                    draft_info={
-                        'year': row_data['DRAFT_YEAR'],
-                        'round': row_data['DRAFT_ROUND'],
-                        'number': row_data['DRAFT_NUMBER']
-                    },
-                    career_info={
-                        'from': row_data['FROM_YEAR'],
-                        'to': row_data['TO_YEAR']
-                    },
-                    college=row_data['COLLEGE'],
-                    country=row_data['COUNTRY']
-                )
-                self.name_mapping.add_player(player)
-                players.append(player)
+                try:
+                    player_data = self._map_row_to_dict(row, field_map)
+                    if player := self._parse_player(player_data):
+                        players.append(player)
+                except Exception as e:
+                    self.logger.error(f"Error parsing player row: {str(e)}")
+                    continue
 
-            self.logger.debug(f"Parsed {len(players)} players from data.")
+            self.logger.info(f"Successfully parsed {len(players)} players")
+            return players
+            
+        except Exception as e:
+            self.logger.error(f"Error parsing player data: {str(e)}")
             return players
 
-        except Exception as e:
-            self.logger.error(f"Error parsing player list: {e}")
-            return players
+    def _validate_raw_data(self, data: Dict[str, Any]) -> bool:
+        """
+        验证原始数据的基本结构
 
-    def parse_career_stats(self, data: Dict) -> Optional[Dict[str, PlayerStats]]:
-        """解析球员生涯数据"""
+        Args:
+            data: 原始JSON数据
+
+        Returns:
+            bool: 数据结构是否有效
+        """
+        if not isinstance(data, dict):
+            self.logger.error("Input data must be a dictionary")
+            return False
+
+        if 'resultSets' not in data or not data['resultSets']:
+            self.logger.error("Missing or empty resultSets")
+            return False
+
+        player_set = data['resultSets'][0]
+        if 'headers' not in player_set or 'rowSet' not in player_set:
+            self.logger.error("Missing headers or rowSet in player data")
+            return False
+
+        required_fields = {
+            'PERSON_ID', 'PLAYER_LAST_NAME', 'PLAYER_FIRST_NAME', 
+            'PLAYER_SLUG', 'TEAM_ID', 'POSITION'
+        }
+        
+        headers = set(player_set['headers'])
+        missing_fields = required_fields - headers
+        if missing_fields:
+            self.logger.error(f"Missing required fields: {missing_fields}")
+            return False
+
+        return True
+
+    def _map_row_to_dict(self, row: List[Any], field_map: Dict[str, int]) -> Dict[str, Any]:
+        """
+        将行数据映射为字典格式
+
+        Args:
+            row: 原始行数据
+            field_map: 字段名到索引的映射
+
+        Returns:
+            Dict[str, Any]: 映射后的数据字典
+        """
+        return {
+            field: row[idx] if idx < len(row) else None
+            for field, idx in field_map.items()
+        }
+
+    def _parse_player(self, player_data: Dict[str, Any]) -> Optional[PlayerProfile]:
+        """
+        解析单个球员数据
+
+        Args:
+            player_data: 球员原始数据字典
+
+        Returns:
+            Optional[PlayerProfile]: 解析后的球员数据模型
+        """
         try:
-            if not data or 'resultSets' not in data:
-                self.logger.warning("No resultSets found in career stats data.")
+            # 解析基本信息
+            parsed_data = {
+                'person_id': self._parse_int(player_data.get('PERSON_ID')),
+                'last_name': self._parse_str(player_data.get('PLAYER_LAST_NAME')),
+                'first_name': self._parse_str(player_data.get('PLAYER_FIRST_NAME')),
+                'player_slug': self._parse_str(player_data.get('PLAYER_SLUG')),
+                'team_id': self._parse_int(player_data.get('TEAM_ID'), 0),
+                'jersey_number': player_data.get('JERSEY_NUMBER'),
+                'position': self._parse_str(player_data.get('POSITION')),
+                'height': self._parse_str(player_data.get('HEIGHT')),
+                'weight': self._parse_str(player_data.get('WEIGHT')),
+                'college': player_data.get('COLLEGE'),
+                'country': player_data.get('COUNTRY'),
+                
+                # 解析选秀信息
+                'draft': {
+                    'year': self._parse_int(player_data.get('DRAFT_YEAR')),
+                    'round': self._parse_int(player_data.get('DRAFT_ROUND')),
+                    'number': self._parse_int(player_data.get('DRAFT_NUMBER'))
+                },
+                
+                # 解析状态
+                'roster_status': self._parse_float(player_data.get('ROSTER_STATUS'), 1.0),
+                
+                # 解析生涯数据
+                'career': {
+                    'from_year': self._parse_str(player_data.get('FROM_YEAR')),
+                    'to_year': self._parse_str(player_data.get('TO_YEAR')),
+                    'points': self._parse_float(player_data.get('PTS')),
+                    'rebounds': self._parse_float(player_data.get('REB')),
+                    'assists': self._parse_float(player_data.get('AST')),
+                    'stats_timeframe': self._parse_str(player_data.get('STATS_TIMEFRAME'), 'Season')
+                }
+            }
+
+            # 验证必需字段
+            if not all([parsed_data['person_id'], parsed_data['last_name'], parsed_data['first_name']]):
+                self.logger.warning(f"Missing required fields for player {parsed_data.get('person_id')}")
                 return None
 
-            stats = {}
-            for result_set in data['resultSets']:
-                if result_set['name'] == 'CareerTotalsRegularSeason':
-                    stats['regular_season'] = self._parse_stats_row(result_set)
-                elif result_set['name'] == 'CareerTotalsPostSeason':
-                    stats['playoffs'] = self._parse_stats_row(result_set)
+            return PlayerProfile(**parsed_data)
 
-            self.logger.debug("Parsed career stats.")
-            return stats if stats else None
-
+        except ValidationError as ve:
+            self.logger.error(f"Validation error parsing player: {str(ve)}")
+            return None
         except Exception as e:
-            self.logger.error(f"Error parsing career stats: {e}")
+            self.logger.error(f"Error parsing player data: {str(e)}")
             return None
 
-    def parse_season_stats(self, data: Dict) -> Optional[PlayerStats]:
-        """解析球员赛季数据"""
+    @staticmethod
+    def _parse_int(value: Any, default: Optional[int] = None) -> Optional[int]:
+        """安全地解析整数值"""
+        if value is None:
+            return default
         try:
-            if not data or 'resultSets' not in data:
-                self.logger.warning("No resultSets found in season stats data.")
-                return None
+            return int(value)
+        except (ValueError, TypeError):
+            return default
 
-            game_logs = data['resultSets'][0]
-            if not game_logs.get('rowSet'):
-                self.logger.warning("No game logs found in season stats data.")
-                return None
-
-            # 使用向量化操作累积赛季数据
-            df = pd.DataFrame(game_logs['rowSet'], columns=game_logs['headers'])
-            season_stats = PlayerStats(
-                points=df['PTS'].astype(float).sum(),
-                rebounds=df['REB'].astype(float).sum(),
-                assists=df['AST'].astype(float).sum(),
-                steals=df['STL'].astype(float).sum(),
-                blocks=df['BLK'].astype(float).sum(),
-                turnovers=df['TOV'].astype(float).sum(),
-                field_goals_made=df['FGM'].astype(int).sum(),
-                field_goals_attempted=df['FGA'].astype(int).sum(),
-                three_points_made=df['FG3M'].astype(int).sum(),
-                three_points_attempted=df['FG3A'].astype(int).sum(),
-                free_throws_made=df['FTM'].astype(int).sum(),
-                free_throws_attempted=df['FTA'].astype(int).sum(),
-                games_played=df['GP'].astype(int).sum(),
-                minutes=df['MIN'].apply(lambda x: self._parse_minutes(x)).sum()
-            )
-
-            self.logger.debug("Parsed season stats.")
-            return season_stats
-
-        except Exception as e:
-            self.logger.error(f"Error parsing season stats: {e}")
-            return None
-
-    def _parse_stats_row(self, result_set: Dict) -> Optional[PlayerStats]:
-        """解析单行统计数据"""
+    @staticmethod
+    def _parse_float(value: Any, default: float = 0.0) -> float:
+        """安全地解析浮点数值"""
+        if value is None:
+            return default
         try:
-            if not result_set.get('rowSet'):
-                self.logger.warning(f"No rowSet found in {result_set.get('name', 'unknown')} stats.")
-                return None
+            return float(value)
+        except (ValueError, TypeError):
+            return default
 
-            row = result_set['rowSet'][0]
-            data = dict(zip(result_set['headers'], row))
-
-            stats = PlayerStats(
-                points=float(data.get('PTS', 0)),
-                rebounds=float(data.get('REB', 0)),
-                assists=float(data.get('AST', 0)),
-                steals=float(data.get('STL', 0)),
-                blocks=float(data.get('BLK', 0)),
-                turnovers=float(data.get('TOV', 0)),
-                field_goals_made=int(data.get('FGM', 0)),
-                field_goals_attempted=int(data.get('FGA', 0)),
-                three_points_made=int(data.get('FG3M', 0)),
-                three_points_attempted=int(data.get('FG3A', 0)),
-                free_throws_made=int(data.get('FTM', 0)),
-                free_throws_attempted=int(data.get('FTA', 0)),
-                games_played=int(data.get('GP', 0)),
-                minutes=self._parse_minutes(data.get('MIN', '0:00'))
-            )
-
-            self.logger.debug("Parsed stats row.")
-            return stats
-
-        except Exception as e:
-            self.logger.error(f"Error parsing stats row: {e}")
-            return None
-
-    def _parse_minutes(self, minutes_str: str) -> float:
-        """解析分钟数字符串为浮点数"""
-        try:
-            if ':' in minutes_str:
-                minutes, seconds = map(int, minutes_str.split(':'))
-                return minutes + seconds / 60
-            return float(minutes_str)
-        except Exception as e:
-            self.logger.error(f"Error parsing minutes string '{minutes_str}': {e}")
-            return 0.0
-
-    def find_player_by_id(self, players: List[PlayerBasicInfo], player_id: str) -> Optional[PlayerBasicInfo]:
-        """通过ID查找特定球员"""
-        try:
-            player = next((p for p in players if p.person_id == player_id), None)
-            if player:
-                self.logger.debug(f"Found player by ID {player_id}: {player.name}")
-            else:
-                self.logger.warning(f"No player found with ID {player_id}.")
-            return player
-        except Exception as e:
-            self.logger.error(f"Error finding player {player_id}: {e}")
-            return None
-
-    def find_player_by_name(self, name: str) -> Optional[str]:
-        """通过姓名查找球员ID"""
-        try:
-            player_id = self.name_mapping.get_player_id(name)
-            if player_id:
-                self.logger.debug(f"Found player ID for name '{name}': {player_id}")
-            else:
-                self.logger.warning(f"No player ID found for name '{name}'.")
-            return player_id
-        except Exception as e:
-            self.logger.error(f"Error finding player ID by name '{name}': {e}")
-            return None
-
-
-
+    @staticmethod
+    def _parse_str(value: Any, default: str = "") -> str:
+        """安全地解析字符串值"""
+        if value is None:
+            return default
+        return str(value)

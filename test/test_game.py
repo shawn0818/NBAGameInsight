@@ -1,3 +1,11 @@
+import unittest
+import sys
+from pathlib import Path
+
+# 将项目根目录添加到Python路径
+project_root = str(Path(__file__).parent.parent)
+sys.path.append(project_root)
+
 import asyncio
 from nba.services.game_data_service import GameDataService
 

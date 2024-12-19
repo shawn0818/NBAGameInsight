@@ -1,5 +1,5 @@
 import requests
-from typing import Optional, Dict, Any, Callable, List
+from typing import Optional, Dict, Any, List
 import logging
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
