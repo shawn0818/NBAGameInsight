@@ -1,221 +1,298 @@
-import logging
+import asyncio
 from pathlib import Path
-from typing import Optional, Dict, Union
-from datetime import datetime, timedelta
+import argparse
+import logging
+from typing import Optional, Dict, Any
+from datetime import datetime
+import sys
 
-from nba.services.game_data_service import get_game_data
-from nba.services.game_video_service import VideoService
-from nba.fetcher.team import TeamProfile
-from nba.parser.schedule_parser import ScheduleParser
-from nba.fetcher.schedule import ScheduleFetcher
-from config.nba_config import NBAConfig
-from utils.time_handler import NBATimeHandler
+from nba.services.game_data_service import NBAGameDataProvider
+
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# ANSI颜色代码
+COLORS = {
+    'green': '\033[92m',
+    'red': '\033[91m',
+    'blue': '\033[94m',
+    'yellow': '\033[93m',
+    'reset': '\033[0m'
+}
 
 
+def parse_args() -> argparse.Namespace:
+    """解析命令行参数"""
+    parser = argparse.ArgumentParser(description='NBA数据查询工具')
 
-class NBAGameAnalyzer:
-    """NBA比赛分析器"""
-    
-    def __init__(self):
-        """初始化分析器"""
-        # 配置日志
-        self.logger = logging.getLogger(__name__)
-        self.video_service = VideoService()
-        self.team_info = TeamProfile()
-        self.schedule_fetcher = ScheduleFetcher()
-        self.schedule_parser = ScheduleParser()
-        
-    def find_game(self, team_name: str, date_str: str = "today") -> Optional[str]:
-        """
-        查找比赛ID
+    # 基本配置
+    parser.add_argument('--team', type=str, help='球队名称')
+    parser.add_argument('--player', type=str, help='球员名称')
+    parser.add_argument('--date', type=str, default='today',
+                        help='比赛日期 (YYYY-MM-DD/today/yesterday/last/next)')
 
-        Args:
-            team_name: 球队名称
-            date_str: 日期字符串（支持 'today', 'yesterday', 'YYYY-MM-DD' 等）
+    # 缓存配置
+    parser.add_argument('--cache-dir', type=str, default='./cache',
+                        help='缓存目录路径')
+    parser.add_argument('--no-cache', action='store_true',
+                        help='禁用缓存')
+    parser.add_argument('--debug', action='store_true',
+                        help='启用调试模式')
 
-        Returns:
-            Optional[str]: 比赛ID
-        """
-        try:
-            # 获取球队ID
-            team_id = self.team_info.get_team_id(team_name)
-            if not team_id:
-                raise ValueError(f"未找到球队: {team_name}")
+    # 数据查询选项
+    parser.add_argument('--all', action='store_true',
+                        help='显示所有可用数据')
+    parser.add_argument('--game', action='store_true',
+                        help='显示比赛数据')
+    parser.add_argument('--player-stats', action='store_true',
+                        help='显示球员统计')
+    parser.add_argument('--team-stats', action='store_true',
+                        help='显示球队统计')
+    parser.add_argument('--scoring', action='store_true',
+                        help='显示得分事件')
 
-            # 获取赛程数据
-            schedule_data = self.schedule_fetcher.get_schedule()
-            if not schedule_data:
-                raise ValueError("无法获取赛程数据")
+    return parser.parse_args()
 
-            # 解析赛程数据
-            schedule_df = self.schedule_parser.parse_raw_schedule(schedule_data)
-            if schedule_df.empty:
-                raise ValueError("赛程数据为空")
 
-            # 处理特殊日期
-            game_date = None
-            if date_str.lower() == "today":
-                game_date = datetime.now(NBATimeHandler.BEIJING_TZ).date()
-            elif date_str.lower() == "yesterday":
-                game_date = (datetime.now(NBATimeHandler.BEIJING_TZ) - timedelta(days=1)).date()
-            else:
-                # 尝试解析具体日期
-                try:
-                    game_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-                except ValueError:
-                    self.logger.warning(f"无法解析日期: {date_str}，将查找最近的比赛")
+def format_time(time_str: str) -> str:
+    """格式化时间字符串"""
+    time_str = time_str.replace('PT', '').replace('M', ':').replace('S', '')
+    return time_str[:-3] if time_str.endswith('.00') else time_str
 
-            # 如果指定了日期，先尝试获取该日期的比赛
-            if game_date:
-                game_id = self.schedule_parser.get_game_id(schedule_df, team_id, game_date)
-                if game_id:
-                    self.logger.info(f"找到 {team_name} 在 {game_date} 的比赛: {game_id}")
-                    return game_id
-                self.logger.info(f"{team_name} 在 {game_date} 没有比赛，搜索最近的比赛...")
 
-            # 如果没找到，获取最近的已结束比赛
-            game_id = self.schedule_parser.get_last_game_id(schedule_df, team_id)
-            if game_id:
-                self.logger.info(f"找到 {team_name} 最近的已结束比赛: {game_id}")
-                return game_id
+def format_percentage(value: float) -> str:
+    """格式化百分比"""
+    return f"{value:.1%}" if value is not None else "0.0%"
 
-            self.logger.warning(f"未找到 {team_name} 的任何比赛")
-            return None
 
-        except Exception as e:
-            self.logger.error(f"查找比赛时出错: {e}")
-            return None
-        
-    def analyze_game(
-        self,
-        team_name: str,
-        player_name: Optional[str] = None,
-        action_type: Optional[str] = None,
-        game_date: str = "today",
-        game_id: Optional[str] = None,
-        download_video: bool = False,
-        video_format: str = 'mp4'
-    ) -> Dict:
-        """分析比赛数据并获取视频片段"""
-        try:
-            # 如果没有提供game_id，查找比赛
-            if not game_id:
-                game_id = self.find_game(team_name, game_date)
-                if not game_id:
-                    return {"error": f"未找到 {team_name} 的比赛"}
+async def display_game_info(provider: NBAGameDataProvider) -> None:
+    """显示比赛信息"""
+    try:
+        game = await provider.get_game()
+        if not game:
+            logger.error("未找到比赛数据")
+            return
 
-            # 获取比赛数据
-            events, stats = get_game_data(team_name, game_id=game_id)
-            if not events or not stats:
-                return {"error": f"无法获取比赛数据: {game_id}"}
+        status_map = {
+            True: f"{COLORS['green']}进行中{COLORS['reset']}",
+            False: "已结束"
+        }
 
-            result = {
-                "game_id": events.game_id,
-                "events_count": len(events.events),
-                "game_stats": stats,
-                "videos": None
-            }
+        print(f"\n{COLORS['yellow']}=== 比赛信息 ==={COLORS['reset']}")
+        print(f"状态: {status_map.get(game.is_in_progress, '未知')}")
+        print(f"主队: {game.game.homeTeam.teamCity} {game.game.homeTeam.teamName} ({game.game.homeTeam.teamTricode})")
+        print(f"客队: {game.game.awayTeam.teamCity} {game.game.awayTeam.teamName} ({game.game.awayTeam.teamTricode})")
 
-            # 如果指定了球员，获取视频数据
-            if player_name and action_type:
-                event_collection, error = self.video_service.get_player_videos(
-                    player_name=player_name,
-                    action_type=action_type,
-                    game_id=game_id
-                )
-                
-                if error:
-                    result["video_error"] = error
-                elif event_collection and len(event_collection.events) > 0:
-                    result["videos"] = {
-                        "count": len(event_collection.events),
-                        "event_ids": [e.event_id for e in event_collection.events],
-                        "events": event_collection.events  # 直接使用 GameEvent 对象
-                    }
-                    
-                    # 如果需要下载视频
-                    if download_video:
-                        # 创建视频资源字典
-                        video_assets = {}
-                        for event in event_collection.events:
-                            if event.video_url:  # 确保有视频URL
-                                video_assets[event.event_id] = VideoAsset(
-                                    uuid=event.event_id,  # 使用event_id作为uuid
-                                    duration=0,  # 这个信息可能需要从其他地方获取
-                                    urls={'hd': event.video_url},  # 假设video_url是HD质量
-                                    thumbnails={},  # 如果有缩略图URL可以添加
-                                    subtitles={},
-                                    event_info={'event_id': event.event_id},
-                                    game_event=event
-                                )
-                                
-                        if video_assets:
-                            download_results = self.video_service.batch_download_videos(
-                                videos=video_assets,
-                                player_name=player_name,
-                                game_id=game_id,
-                                output_format=video_format
-                            )
-                            result["downloads"] = download_results
+        # 使用颜色区分比分
+        home_color = COLORS['green'] if game.game.homeTeam.score > game.game.awayTeam.score else COLORS['red']
+        away_color = COLORS['green'] if game.game.awayTeam.score > game.game.homeTeam.score else COLORS['red']
+        print(f"比分: {home_color}{game.game.homeTeam.score}{COLORS['reset']} - "
+              f"{away_color}{game.game.awayTeam.score}{COLORS['reset']}")
 
-            return result
+        # 显示每节比分
+        periods = game.get_period_scores(True)
+        away_periods = game.get_period_scores(False)
+        print("\n每节比分:")
+        print("      " + " ".join(f"第{i + 1}节" for i in range(len(periods))))
+        print(f"主队: {' '.join(str(score).rjust(3) for score in periods)}")
+        print(f"客队: {' '.join(str(score).rjust(3) for score in away_periods)}")
 
-        except Exception as e:
-            error_msg = f"分析比赛数据时出错: {e}"
-            self.logger.error(error_msg)
-            return {"error": error_msg}
-            
+    except Exception as e:
+        logger.error(f"显示比赛信息时出错: {e}")
 
-def main():
+
+async def display_player_stats(provider: NBAGameDataProvider) -> None:
+    """显示球员统计"""
+    try:
+        stats = await provider.get_player_stats()
+        if not stats:
+            logger.error(f"未找到球员 {provider.default_player} 的统计数据")
+            return
+
+        print(f"\n{COLORS['yellow']}=== {provider.default_player} 的统计数据 ==={COLORS['reset']}")
+
+        # 基础数据
+        minutes = getattr(stats, 'minutes', '0')
+        minutes = minutes.replace('PT', '').replace('M', '') if 'PT' in minutes else minutes
+
+        basic_stats = {
+            '上场时间': f"{minutes}分钟",
+            '得分': getattr(stats, 'points', 0),
+            '篮板': getattr(stats, 'rebounds', 0),
+            '助攻': getattr(stats, 'assists', 0),
+            '抢断': getattr(stats, 'steals', 0),
+            '盖帽': getattr(stats, 'blocks', 0),
+        }
+
+        # 显示基础数据
+        max_key_length = max(len(key) for key in basic_stats.keys())
+        for key, value in basic_stats.items():
+            print(f"{key.rjust(max_key_length)}: {value}")
+
+        # 投篮数据
+        print(f"\n{COLORS['blue']}投篮数据:{COLORS['reset']}")
+        shooting_stats = {
+            '投篮': (
+                getattr(stats, 'fieldGoalsMade', 0),
+                getattr(stats, 'fieldGoalsAttempted', 0),
+                getattr(stats, 'fieldGoalsPercentage', 0.0)
+            ),
+            '三分': (
+                getattr(stats, 'threePointersMade', 0),
+                getattr(stats, 'threePointersAttempted', 0),
+                getattr(stats, 'threePointersPercentage', 0.0)
+            ),
+            '罚球': (
+                getattr(stats, 'freeThrowsMade', 0),
+                getattr(stats, 'freeThrowsAttempted', 0),
+                getattr(stats, 'freeThrowsPercentage', 0.0)
+            )
+        }
+
+        for key, (made, attempted, percentage) in shooting_stats.items():
+            print(f"{key}: {made}/{attempted} ({format_percentage(percentage)})")
+
+    except Exception as e:
+        logger.error(f"显示球员统计时出错: {str(e)}")
+        if logger.level == logging.DEBUG:
+            logger.debug("错误详情:", exc_info=True)
+
+
+async def display_team_stats(provider: NBAGameDataProvider) -> None:
+    """显示球队统计"""
+    try:
+        game = await provider.get_game()
+        if not game:
+            logger.error(f"未找到球队 {provider.default_team} 的比赛数据")
+            return
+
+        team_name = provider.default_team
+        team_id = provider._get_team_id(team_name)
+        if not team_id:
+            logger.error(f"未找到球队 {team_name}")
+            return
+
+        # 判断球队是主场还是客场
+        is_home = game.game.homeTeam.teamId == team_id
+        team = game.game.homeTeam if is_home else game.game.awayTeam
+        team_stats = game.get_team_stats(is_home)
+
+        if not team_stats:
+            logger.error(f"未找到球队统计数据")
+            return
+
+        print(f"\n{COLORS['yellow']}=== {team.teamCity} {team.teamName} 球队统计 ==={COLORS['reset']}")
+        print(f"得分: {team.score}")
+
+        # 显示每节得分
+        periods = game.get_period_scores(is_home)
+        print(f"每节得分: {periods}")
+
+        # 显示详细统计
+        print(f"\n{COLORS['blue']}详细统计:{COLORS['reset']}")
+        stats_to_display = {
+            '助攻': getattr(team_stats, 'assists', 0),
+            '篮板': getattr(team_stats, 'reboundsTotal', 0),
+            '抢断': getattr(team_stats, 'steals', 0),
+            '盖帽': getattr(team_stats, 'blocks', 0),
+            '失误': getattr(team_stats, 'turnovers', 0),
+            '投篮': f"{getattr(team_stats, 'fieldGoalsMade', 0)}/{getattr(team_stats, 'fieldGoalsAttempted', 0)}",
+            '三分': f"{getattr(team_stats, 'threePointersMade', 0)}/{getattr(team_stats, 'threePointersAttempted', 0)}",
+            '罚球': f"{getattr(team_stats, 'freeThrowsMade', 0)}/{getattr(team_stats, 'freeThrowsAttempted', 0)}",
+        }
+
+        max_key_length = max(len(key) for key in stats_to_display.keys())
+        for key, value in stats_to_display.items():
+            print(f"{key.rjust(max_key_length)}: {value}")
+
+    except Exception as e:
+        logger.error(f"显示球队统计时出错: {e}")
+        if logger.level == logging.DEBUG:
+            logger.debug("错误详情:", exc_info=True)
+
+
+async def display_scoring_plays(provider: NBAGameDataProvider) -> None:
+    """显示得分事件"""
+    try:
+        plays = await provider.get_scoring_plays()
+        if not plays:
+            logger.error("未找到得分事件")
+            return
+
+        print(f"\n{COLORS['yellow']}=== 得分事件 ==={COLORS['reset']}")
+        current_period = None
+
+        for play in sorted(plays, key=lambda x: (x['period'], x['time'])):
+            if 'MISS' in play['description']:
+                continue
+
+            if current_period != play['period']:
+                current_period = play['period']
+                print(f"\n{COLORS['blue']}第 {current_period} 节:{COLORS['reset']}")
+
+            time_str = format_time(play['time'])
+            team_color = COLORS['green'] if play['team'] == 'LAL' else COLORS['blue']
+
+            print(f"{time_str:<7} - {team_color}{play['team']:<3}{COLORS['reset']} - "
+                  f"{play['player']:<20} {play['description']}")
+
+    except Exception as e:
+        logger.error(f"显示得分事件时出错: {e}")
+
+
+async def main():
     """主函数"""
-    # 配置日志
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
+    try:
+        args = parse_args()
 
-    # 初始化分析器
-    analyzer = NBAGameAnalyzer()
+        # 设置日志级别
+        if args.debug:
+            logger.setLevel(logging.DEBUG)
 
-    # 分析勇士队的比赛，并获取库里的三分球视频
-    result = analyzer.analyze_game(
-        team_name="lakers",
-        player_name="anthony davis",
-        action_type="FGM",
-        game_date="today",
-        download_video=True,
-        video_format='gif'
-    )
+        # 设置缓存
+        cache_dir = None if args.no_cache else Path(args.cache_dir)
+        if cache_dir:
+            cache_dir.mkdir(parents=True, exist_ok=True)
 
-    # 处理结果
-    if "error" in result:
-        print(f"错误: {result['error']}")
-        return
+        # 初始化服务
+        provider = NBAGameDataProvider(
+            default_team=args.team or "Lakers",
+            default_player=args.player or "LeBron James",
+            date_str=args.date,
+            cache_dir=cache_dir
+        )
 
-    # 打印比赛信息
-    print(f"比赛ID: {result['game_id']}")
-    print(f"事件总数: {result['events_count']}")
+        # 确定要显示的数据
+        show_all = args.all or not any([args.game, args.player_stats,
+                                        args.team_stats, args.scoring])
 
-    # 打印比分
-    stats = result['game_stats']
-    print(f"比分: {stats.home_team.score} - {stats.away_team.score}")
+        # 创建任务列表
+        tasks = []
+        if show_all or args.game:
+            tasks.append(display_game_info(provider))
+        if show_all or args.player_stats:
+            tasks.append(display_player_stats(provider))
+        if show_all or args.team_stats:
+            tasks.append(display_team_stats(provider))
+        if show_all or args.scoring:
+            tasks.append(display_scoring_plays(provider))
 
-    # 打印视频信息
-    if result.get("videos"):
-        print(f"找到视频片段: {result['videos']['count']} 个")
-        
-        # 如果下载了视频，打印下载结果
-        if "downloads" in result:
-            success_count = sum(1 for v in result["downloads"].values() if isinstance(v, Path))
-            print(f"成功下载: {success_count} 个视频")
-            
-            # 打印下载失败的信息
-            failures = {k: v for k, v in result["downloads"].items() if isinstance(v, str)}
-            if failures:
-                print("\n下载失败:")
-                for event_id, error in failures.items():
-                    print(f"  事件 {event_id}: {error}")
+        # 并发执行任务
+        await asyncio.gather(*tasks)
+
+    except KeyboardInterrupt:
+        print(f"\n{COLORS['yellow']}程序被用户中断{COLORS['reset']}")
+        sys.exit(0)
+    except Exception as e:
+        logger.error(f"程序执行出错: {e}")
+        if logger.level == logging.DEBUG:
+            logger.debug("错误详情:", exc_info=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

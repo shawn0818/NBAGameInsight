@@ -7,11 +7,11 @@ project_root = str(Path(__file__).parent.parent)
 sys.path.append(project_root)
 
 import asyncio
-from nba.services.game_data_service import GameDataService
+from nba.services.game_data_service import NBAGameDataProvider
 
-async def analyze_team_performance(service: GameDataService, team_name: str, game_date: str):
-    playbyplay, game = await service.get_game_data(team_name, game_date)
-    
+async def analyze_team_performance(service: NBAGameDataProvider, team_name: str, game_date: str):
+    game_id, playbyplay, game = await service.get_game_info(team_name, game_date)
+
     if playbyplay is None or game is None:
         print("未能获取比赛数据。")
         return
@@ -100,7 +100,7 @@ async def analyze_team_performance(service: GameDataService, team_name: str, gam
         print(f"{label:<15}{home_value:<10}{away_value}")
 
 if __name__ == "__main__":
-    service = GameDataService()
+    service = NBAGameDataProvider()
     team = "Lakers"
     date = "2024-12-09"
     asyncio.run(analyze_team_performance(service, team, date))

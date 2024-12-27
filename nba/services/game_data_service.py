@@ -1,256 +1,353 @@
-import logging
-from typing import Optional, Tuple, Dict
-from functools import lru_cache
-import asyncio
+"""
+NBA 比赛数据提供服务。
+封装了获取 NBA 比赛数据的所有必要功能。
+(同步版本，去除 async/await)
+"""
 
-from pydantic import ValidationError
+import logging
+from typing import Optional, Tuple, Dict, Any, List
+from functools import lru_cache
+from pathlib import Path
+
 from nba.fetcher.game import GameFetcher
 from nba.parser.game_parser import GameDataParser
 from nba.parser.schedule_parser import ScheduleParser
 from nba.fetcher.team import TeamProfile
+from nba.fetcher.player import PlayerFetcher
+from nba.parser.player_parser import PlayerParser
 from nba.fetcher.schedule import ScheduleFetcher
-from nba.models.game_model import Game
-from nba.models.event_model import PlayByPlay
+from nba.models.game_model import Game, PlayerStatistics
+from nba.models.event_model import PlayByPlay, EventType
+from nba.models.player_model import PlayerProfile
+
 
 # 配置日志
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s'
+    format='%(asctime)s [%(levelname)s] %(name)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-class GameDataService:
-    """比赛数据服务类，用于获取和解析NBA比赛数据。"""
-    
+
+class NBAGameDataProvider:
+    """
+    NBA 比赛数据提供服务 (同步版本)
+
+    - 查找指定球队和日期的比赛
+    - 获取比赛的详细数据和回放数据
+    - 获取球员和球队的统计数据
+    - 不再使用 async/await，所有方法改为同步
+    """
+
     def __init__(
         self,
-        team_info: Optional[TeamProfile] = None,
-        schedule_fetcher: Optional[ScheduleFetcher] = None,
-        game_fetcher: Optional[GameFetcher] = None,
-        schedule_parser: Optional[ScheduleParser] = None,
-        game_parser: Optional[GameDataParser] = None
+        default_team: Optional[str] = None,
+        default_player: Optional[str] = None,
+        date_str: str = "today",
+        cache_size: int = 128,
+        cache_dir: Optional[Path] = None
     ):
-        """初始化GameDataService"""
-        self.team_info = team_info or TeamProfile()
-        self.schedule_fetcher = schedule_fetcher or ScheduleFetcher()
-        self.game_fetcher = game_fetcher or GameFetcher()
-        self.schedule_parser = schedule_parser or ScheduleParser()
-        self.game_parser = game_parser or GameDataParser()
+        """
+        初始化数据提供服务
 
-    @lru_cache(maxsize=128)
-    def get_cached_game_id(self, team_id: int, game_date: str) -> Optional[str]:
-        """缓存获取比赛ID的结果"""
+        Args:
+            default_team: 默认的球队名称
+            default_player: 默认的球员名称
+            date_str: 日期字符串，如 "today", "yesterday", "last", "next", 或 "YYYY-MM-DD"
+            cache_size: 缓存大小
+            cache_dir: 缓存目录路径，默认为 None 则不使用缓存
+        """
+        self.logger = logger.getChild(self.__class__.__name__)
+        self.default_team = default_team
+        self.default_player = default_player
+        self.default_date = date_str
+        self._cache_size = cache_size
+
+        # 初始化服务组件
+        self.team_info = TeamProfile()
+        self.schedule_fetcher = ScheduleFetcher()
+        self.game_fetcher = GameFetcher()
+        self.schedule_parser = ScheduleParser()
+        self.game_parser = GameDataParser()
+
+        # 初始化球员数据组件
+        self.player_fetcher = PlayerFetcher()
+        self.player_parser = PlayerParser(cache_dir=cache_dir)
+        self._initialize_player_data()
+
+    def _initialize_player_data(self) -> None:
+        """初始化球员数据，包括获取和解析球员信息"""
         try:
-            schedule_data = self.schedule_fetcher.get_schedule()
-            schedule_df = self.schedule_parser.parse_raw_schedule(schedule_data)
-            game_id = self.schedule_parser.get_game_id(schedule_df, team_id, game_date)
-            logger.info(f"获取到的比赛ID: {game_id}")
-            return game_id
+            raw_data = self.player_fetcher.get_player_profile()
+            if not raw_data:
+                self.logger.error("无法获取球员数据")
+                return
+
+            parsed_players = self.player_parser.parse_players(raw_data)
+            if not parsed_players:
+                self.logger.error("解析球员数据失败")
+                return
+
+            self.logger.info(f"成功初始化 {len(parsed_players)} 名球员的数据")
+
         except Exception as e:
-            logger.error(f"获取比赛ID时出错: {e}")
+            self.logger.error(f"初始化球员数据时出错: {e}")
+
+    def _get_team_id(self, team_name: str) -> Optional[int]:
+        """获取球队ID"""
+        return self.team_info.get_team_id(team_name)
+
+    def _get_player_id(self, player_name: str) -> Optional[int]:
+        """获取球员ID"""
+        try:
+            return PlayerProfile.find_by_name(player_name)
+        except Exception as e:
+            self.logger.error(f"获取球员ID时出错: {e}")
             return None
 
-    async def fetch_game_data(self, game_id: str) -> Tuple[Optional[PlayByPlay], Optional[Game]]:
-        """异步获取比赛数据"""
+    @lru_cache(maxsize=128)
+    def _find_game_id(self, team_name: str, date_str: str) -> Optional[str]:
+        """
+        查找指定球队在特定日期的比赛ID (同步)
+        """
         try:
-            logger.info(f"开始异步获取比赛数据，比赛ID: {game_id}")
-            
-            # 异步获取数据
-            loop = asyncio.get_event_loop()
-            pbp_data_future = loop.run_in_executor(None, self.game_fetcher.get_playbyplay, game_id)
-            boxscore_data_future = loop.run_in_executor(None, self.game_fetcher.get_boxscore, game_id)
+            team_id = self._get_team_id(team_name)
+            if not team_id:
+                self.logger.warning(f"未找到球队: {team_name}")
+                return None
 
-            pbp_data, boxscore_data = await asyncio.gather(pbp_data_future, boxscore_data_future)
+            schedule_data = self.schedule_fetcher.get_schedule()
+            if not schedule_data:
+                self.logger.error("无法获取赛程数据")
+                return None
 
-            if not pbp_data or not boxscore_data:
-                logger.error("无法获取完整的比赛数据")
-                return None, None
+            schedule_df = self.schedule_parser.parse_raw_schedule(schedule_data)
+            game_id = self.schedule_parser.get_game_id(schedule_df, team_id, date_str)
 
-            try:
-                # 打印数据结构以便调试
-                logger.debug(f"Boxscore data keys: {list(boxscore_data.keys())}")
-                logger.debug(f"Game data keys: {list(boxscore_data.get('game', {}).keys())}")
+            if game_id:
+                self.logger.info(f"找到 {team_name} 的比赛: {game_id}")
+            else:
+                self.logger.warning(f"未找到 {team_name} 的比赛")
 
-                # 尝试解析数据
-                playbyplay = PlayByPlay.parse_obj(pbp_data)
-                game = Game.parse_obj(boxscore_data)
-
-                # 验证关键数据
-                if game.game:
-                    logger.info(f"成功解析比赛数据，比赛ID: {game_id}")
-                    logger.debug(f"主队得分: {game.game.homeTeam.score if game.game.homeTeam else 'N/A'}")
-                    logger.debug(f"客队得分: {game.game.awayTeam.score if game.game.awayTeam else 'N/A'}")
-                else:
-                    logger.warning("解析的比赛数据不完整")
-
-                return playbyplay, game
-
-            except ValidationError as ve:
-                logger.error(f"数据验证错误: {ve}")
-                # 打印详细的验证错误信息
-                for error in ve.errors():
-                    logger.error(f"验证错误: {error}")
-                return None, None
+            return game_id
 
         except Exception as e:
-            logger.error(f"获取或解析比赛数据时出错: {e}", exc_info=True)
-            return None, None
+            self.logger.error(f"查找比赛时出错: {e}")
+            return None
 
-    async def get_game_data(
-        self, 
-        team_name: str, 
-        game_date: Optional[str] = "today", 
-        game_id: Optional[str] = None
-    ) -> Tuple[Optional[PlayByPlay], Optional[Game]]:
-        """获取完整的比赛数据"""
+    def _fetch_game_data_sync(self, game_id: str) -> Tuple[Optional[PlayByPlay], Optional[Game]]:
+        """
+        同步获取比赛的详细数据和回放数据
+        """
+        self.logger.info(f"开始获取比赛数据，比赛ID: {game_id}")
         try:
-            # 获取 game_id
-            if not game_id:
-                logger.info(f"获取球队ID: {team_name}")
-                team_id = self.team_info.get_team_id(team_name)
-                if not team_id:
-                    raise ValueError(f"未找到球队: {team_name}")
+            # 同步调用，不再使用 asyncio.to_thread 或 asyncio.gather
+            pbp_data = self.game_fetcher.get_playbyplay(game_id)
+            boxscore_data = self.game_fetcher.get_boxscore(game_id)
 
-                logger.info("获取并解析赛程数据...")
-                game_id = self.get_cached_game_id(team_id, game_date)
-                if not game_id:
-                    raise ValueError(f"未找到 {team_name} 在 {game_date} 的比赛ID。")
+            if not pbp_data or not boxscore_data:
+                self.logger.error("无法获取完整的比赛数据")
+                return None, None
 
-            # 获取比赛数据
-            playbyplay, game = await self.fetch_game_data(game_id)
-            
-            # 验证数据完整性
-            if game and not game.get_team_stats(True):
-                logger.warning("比赛数据中缺少主队统计数据")
-            if game and not game.get_team_stats(False):
-                logger.warning("比赛数据中缺少客队统计数据")
-
+            playbyplay = PlayByPlay.model_validate(pbp_data)
+            game = Game.model_validate(boxscore_data)
             return playbyplay, game
 
         except Exception as e:
-            logger.error(f"获取或解析 {team_name} 在 {game_date} 的比赛数据时出错: {e}")
+            self.logger.error(f"获取或解析比赛数据时出错: {e}")
             return None, None
 
-    def get_team_statistics(self, game: Game, is_home: bool = True) -> Dict:
-        """获取球队统计数据的辅助方法"""
+    def _get_default_or_provided_team(self, team_name: Optional[str]) -> str:
+        """
+        获取默认或提供的球队名称 (同步)
+        """
+        team = team_name or self.default_team
+        if not team:
+            raise ValueError("必须提供球队名称或设置默认球队")
+        return team
+
+    def get_game(
+        self,
+        team_name: Optional[str] = None,
+        date_str: Optional[str] = None
+    ) -> Optional[Game]:
+        """
+        获取比赛数据 (同步)
+
+        Args:
+            team_name: 球队名称，如果未提供则使用默认球队
+            date_str: 日期字符串，如果未提供则使用默认日期
+
+        Returns:
+            Optional[Game]: 比赛数据对象
+        """
         try:
-            team_stats = game.get_team_stats(is_home)
-            if not team_stats:
-                return {}
-            
-            return {
-                "score": team_stats.score,
-                "team_name": team_stats.teamName,
-                "timeouts_remaining": team_stats.timeoutsRemaining,
-                "period_scores": game.get_period_scores(is_home),
-                "statistics": team_stats.statistics or {}
-            }
+            team = self._get_default_or_provided_team(team_name)
+            date = date_str or self.default_date
+
+            game_id = self._find_game_id(team, date)
+            if not game_id:
+                return None
+
+            _, game = self._fetch_game_data_sync(game_id)
+            return game
+
         except Exception as e:
-            logger.error(f"获取球队统计数据时出错: {e}")
-            return {}
+            self.logger.error(f"获取比赛数据时出错: {e}")
+            return None
 
+    def get_playbyplay(
+        self,
+        team_name: Optional[str] = None,
+        date_str: Optional[str] = None
+    ) -> Optional[PlayByPlay]:
+        """
+        获取比赛回放数据 (同步)
+        """
+        try:
+            team = self._get_default_or_provided_team(team_name)
+            date = date_str or self.default_date
 
-"""比赛数据服务类，用于获取和解析NBA比赛数据。
-    
-    使用示例:
-    ```python
-    import asyncio
-    from nba.services.game_data_service import GameDataService
-    
-    async def get_player_performance(player_name: str, team_name: str, game_date: str):
-        # 初始化服务
-        service = GameDataService()
-        
-        # 获取比赛数据
-        playbyplay, game = await service.get_game_data(team_name, game_date)
-        if not game:
-            print("未能获取比赛数据")
-            return
-            
-        # 获取主队数据
-        home_team = game.game.homeTeam
-        away_team = game.game.awayTeam
-        
-        # 在主队中查找球员
-        for player in home_team.players:
-            if player.name == player_name:
-                stats = player.statistics
-                print(f"\n{player.name} 的数据:")
-                print(f"得分: {stats.points}")
-                print(f"篮板: {stats.reboundsTotal}")
-                print(f"助攻: {stats.assists}")
-                print(f"投篮: {stats.fieldGoalsMade}/{stats.fieldGoalsAttempted}")
-                print(f"三分: {stats.threePointersMade}/{stats.threePointersAttempted}")
-                return
-                
-        # 在客队中查找球员
-        for player in away_team.players:
-            if player.name == player_name:
-                stats = player.statistics
-                print(f"\n{player.name} 的数据:")
-                print(f"得分: {stats.points}")
-                print(f"篮板: {stats.reboundsTotal}")
-                print(f"助攻: {stats.assists}")
-                print(f"投篮: {stats.fieldGoalsMade}/{stats.fieldGoalsAttempted}")
-                print(f"三分: {stats.threePointersMade}/{stats.threePointersAttempted}")
-                return
-    
-    async def get_team_stats(team_name: str, game_date: str):
-        # 初始化服务
-        service = GameDataService()
-        
-        # 获取比赛数据
-        playbyplay, game = await service.get_game_data(team_name, game_date)
-        if not game:
-            print("未能获取比赛数据")
-            return
-            
-        # 判断目标球队是主队还是客队
-        home_team = game.game.homeTeam
-        away_team = game.game.awayTeam
-        is_home = home_team.teamName == team_name
-        
-        team = home_team if is_home else away_team
-        opponent = away_team if is_home else home_team
-        
-        # 打印比赛基本信息
-        print(f"比赛：{team.teamName} vs {opponent.teamName}")
-        print(f"比分：{team.score} - {opponent.score}")
-        
-        # 打印球队统计数据
-        stats = team.statistics
-        print(f"\n球队数据:")
-        print(f"投篮：{stats.get('fieldGoalsMade', 0)}/{stats.get('fieldGoalsAttempted', 0)}")
-        print(f"三分：{stats.get('threePointersMade', 0)}/{stats.get('threePointersAttempted', 0)}")
-        print(f"罚球：{stats.get('freeThrowsMade', 0)}/{stats.get('freeThrowsAttempted', 0)}")
-        print(f"助攻：{stats.get('assists', 0)}")
-        print(f"篮板：{stats.get('reboundsTotal', 0)}")
-        print(f"抢断：{stats.get('steals', 0)}")
-        print(f"盖帽：{stats.get('blocks', 0)}")
-        print(f"失误：{stats.get('turnovers', 0)}")
+            game_id = self._find_game_id(team, date)
+            if not game_id:
+                return None
 
-    # 使用示例
-    if __name__ == "__main__":
-        # 查看球员数据
-        asyncio.run(get_player_performance("LeBron James", "Lakers", "2024-12-09"))
-        
-        # 查看球队数据
-        asyncio.run(get_team_stats("Lakers", "2024-12-09"))
-    ```
-    
-    这个服务类提供了以下主要功能：
-    1. 获取比赛ID（get_cached_game_id）
-    2. 获取比赛数据（get_game_data）
-    3. 异步获取比赛统计和回放数据（fetch_game_data）
-    
-    主要属性：
-    - team_info: 球队信息服务
-    - schedule_fetcher: 赛程获取服务
-    - game_fetcher: 比赛数据获取服务
-    - schedule_parser: 赛程解析服务
-    - game_parser: 比赛数据解析服务
-    
-    数据模型：
-    - Game: 完整的比赛数据模型
-    - PlayByPlay: 比赛回放数据模型
-    """
+            playbyplay, _ = self._fetch_game_data_sync(game_id)
+            return playbyplay
+
+        except Exception as e:
+            self.logger.error(f"获取回放数据时出错: {e}")
+            return None
+
+    def get_player_id(
+        self,
+        player_name: Optional[str] = None,
+        team_name: Optional[str] = None,
+        date_str: Optional[str] = None
+    ) -> Optional[int]:
+        """
+        获取球员ID (同步)
+
+        Args:
+            player_name: 球员名称，如果未提供则使用默认球员
+            team_name: 球队名称，如果未提供则使用默认球队
+            date_str: 日期字符串，如果未提供则使用默认日期
+
+        Returns:
+            Optional[int]: 球员ID
+        """
+        try:
+            player = player_name or self.default_player
+            if not player:
+                raise ValueError("必须提供球员名称或设置默认球员")
+
+            player_id = self._get_player_id(player)
+            if not player_id:
+                self.logger.warning(f"未找到球员: {player}")
+                return None
+
+            return player_id
+
+        except Exception as e:
+            self.logger.error(f"获取球员ID时出错: {e}")
+            return None
+
+    def get_player_stats(
+        self,
+        player_name: Optional[str] = None,
+        team_name: Optional[str] = None,
+        date_str: Optional[str] = None
+    ) -> Optional[PlayerStatistics]:
+        """
+        获取球员统计数据 (同步)
+        """
+        try:
+            player = player_name or self.default_player
+            if not player:
+                raise ValueError("必须提供球员名称或设置默认球员")
+
+            player_id = self._get_player_id(player)
+            if not player_id:
+                self.logger.warning(f"未找到球员: {player}")
+                return None
+
+            game = self.get_game(team_name, date_str)
+            if not game:
+                return None
+
+            # 在 boxscore 中查找该球员的统计
+            stats = game.get_player_stats(player_id, is_home=True) or game.get_player_stats(player_id, is_home=False)
+            if not stats:
+                self.logger.warning(f"未找到球员 {player} 的比赛数据")
+                return None
+
+            return stats
+
+        except Exception as e:
+            self.logger.error(f"获取球员统计时出错: {e}")
+            return None
+
+    def get_scoring_plays(
+        self,
+        team_name: Optional[str] = None,
+        player_name: Optional[str] = None,
+        date_str: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        获取得分事件 (同步)
+
+        Args:
+            team_name: 球队名称，如果未提供则使用默认球队
+            player_name: 球员名称（可选），如果提供则只返回该球员的得分事件
+            date_str: 日期字符串，如果未提供则使用默认日期
+
+        Returns:
+            List[Dict[str, Any]]: 得分事件列表
+        """
+        try:
+            team = self._get_default_or_provided_team(team_name)
+            date = date_str or self.default_date
+
+            game_id = self._find_game_id(team, date)
+            if not game_id:
+                return []
+
+            playbyplay, _ = self._fetch_game_data_sync(game_id)
+            if not playbyplay or not playbyplay.actions:
+                return []
+
+            # 如果指定了球员名字，则获取对应 ID
+            if player_name:
+                player_id = self._get_player_id(player_name)
+                if not player_id:
+                    self.logger.warning(f"未找到球员: {player_name}")
+                    return []
+            else:
+                player_id = None
+
+            scoring_plays = []
+            for action in playbyplay.actions:
+                if (
+                    action.actionType
+                    and EventType.is_scoring_event(EventType(action.actionType))
+                    and (not player_id or action.personId == player_id)
+                ):
+                    scoring_plays.append({
+                        'time': action.clock,
+                        'period': action.period,
+                        'player': action.playerName,
+                        'team': action.teamTricode,
+                        'points': (
+                            action.scoreHome - action.scoreAway
+                            if (action.scoreHome is not None and action.scoreAway is not None)
+                            else None
+                        ),
+                        'description': action.description
+                    })
+
+            self.logger.info(f"找到 {len(scoring_plays)} 条得分事件")
+            return scoring_plays
+
+        except Exception as e:
+            self.logger.error(f"获取得分事件时出错: {e}")
+            return []

@@ -1,38 +1,41 @@
 import logging
 from typing import Optional, Dict, Any
+import re
 from config.nba_config import NBAConfig
-from nba.fetcher.base import BaseNBAFetcher
-from nba.parser.game_parser import GameDataParser
-from datetime import datetime
-from utils.http_handler import HTTPRequestManager, HTTPConfig  # 替换为实际的模块名
-from nba.models.video_model import VideoAsset, VideoResponse, PlaylistItem,  VideoRequestParams
+from utils.http_handler import HTTPRequestManager, HTTPConfig
+from nba.models.video_model import (
+    VideoAsset,
+    VideoRequestParams,
+    VideoQuality,
+)
 
-class NBAVideoProcessor(BaseNBAFetcher):
+
+class NBAVideoProcessor:
     """NBA视频资源处理器"""
-    
+
     def __init__(self):
         """初始化视频处理器"""
-        super().__init__()
-        self.video_assets: Dict[str, VideoAsset] = {}
         self.logger = logging.getLogger(self.__class__.__name__)
+        self.video_assets: Dict[str, VideoAsset] = {}
 
     def get_videos_by_query(self, query: VideoRequestParams) -> Dict[str, VideoAsset]:
-        """根据查询参数获取视频"""
+        """
+        获取视频查询结果
+
+        - query: 包含 game_id, player_id, team_id, context_measure 等参数
+        - return: 以 event_id 作为 key, VideoAsset 作为 value 的字典
+        """
         try:
+            self.logger.info(f"Fetching videos for game {query.game_id}")
+
             # 构建API参数
             params = query.build()
-            
-            # 记录请求信息
-            self.logger.info(f"Fetching videos for game {query.game_id}")
-            
+
             # 使用 HTTPRequestManager 发送请求
             with HTTPRequestManager(
                 headers=HTTPConfig.HEADERS,
                 max_retries=HTTPConfig.MAX_RETRIES,
-                timeout=HTTPConfig.TIMEOUT,
-                backoff_factor=HTTPConfig.BACKOFF_FACTOR,
-                retry_status_codes=HTTPConfig.RETRY_STATUS_CODES,
-                fallback_urls=NBAConfig.API.FALLBACK_URLS  # 确保在 NBAConfig.API 中定义了 FALLBACK_URLS
+                timeout=HTTPConfig.TIMEOUT
             ) as http_manager:
                 response_data = http_manager.make_request(
                     url=NBAConfig.URLS.VIDEO_DATA,
@@ -41,101 +44,105 @@ class NBAVideoProcessor(BaseNBAFetcher):
                 )
 
                 if response_data:
-                    return self.process_video_response(query.game_id, response_data)
+                    video_assets = self.process_video_response(response_data)
+                    self.logger.info(f"Successfully processed {len(video_assets)} videos")
+                    return video_assets
+
+            self.logger.warning("No response data received from API")
             return {}
-            
+
         except Exception as e:
-            self.logger.error(f"Failed to get videos by query: {e}")
+            self.logger.error(f"Failed to get videos by query: {e}", exc_info=True)
             return {}
-    
-    def process_video_response(self, game_id: str, response_data: Dict) -> Dict[str, VideoAsset]:
+
+    def process_video_response(self, response_data: Dict[str, Any]) -> Dict[str, VideoAsset]:
         """
-        处理视频响应数据
+        处理视频响应数据 - 只关注视频资源
 
-        Args:
-            game_id: 比赛ID
-            response_data: API响应数据
-
-        Returns:
-            Dict[str, VideoAsset]: 事件ID到视频资产的映射
+        - response_data: 来自 NBA API 的完整 JSON 响应
+        - return: dict[event_id, VideoAsset]
         """
         try:
-            # 验证数据结构
-            if not self._validate_response_data(response_data):
+            if not isinstance(response_data, dict):
                 return {}
 
-            # 获取视频数据和播放列表
-            video_urls = response_data.get('resultSets', {}).get('Meta', {}).get('videoUrls', [])
-            playlist = response_data.get('resultSets', {}).get('playlist', [])
-            
-            self.logger.debug(f"Found {len(video_urls)} videos and {len(playlist)} playlist items")
-            
-            # 创建事件ID到播放列表项的映射
-            playlist_map = {
-                str(item.get('ei')): item 
-                for item in playlist
-            }
+            # 解析出所有 videoUrls
+            video_urls = response_data \
+                .get('resultSets', {}) \
+                .get('Meta', {}) \
+                .get('videoUrls', [])
 
-            # 处理每个视频资产
-            event_video_map = {}
+            video_assets = {}
+
             for video_data in video_urls:
                 try:
-                    # 提取事件ID
+                    # 根据 lurl 等字段解析出 event_id
                     event_id = self._extract_event_id(video_data.get('lurl', ''))
                     if not event_id:
-                        continue
-                        
-                    # 获取关联的播放列表项
-                    play_item = playlist_map.get(event_id)
-                    if not play_item:
+                        # 如果取不到 event_id，就跳过
                         continue
 
-                    # 创建视频资产
-                    video_asset = self._create_video_asset(game_id, video_data, play_item)
-                    if not video_asset:
-                        continue
-
-                    # 更新缓存和映射
-                    key = f"{game_id}_{event_id}"
-                    self.video_assets[key] = video_asset
-                    event_video_map[event_id] = video_asset
+                    video_asset = self._create_video_asset(event_id, video_data)
+                    if video_asset:
+                        # 以 event_id 作为 key，存储到字典中
+                        video_assets[event_id] = video_asset
+                        self.logger.debug(f"Processed video for event {event_id}")
 
                 except Exception as e:
                     self.logger.error(f"Error processing video {video_data.get('uuid')}: {e}")
                     continue
-                    
-            self.logger.info(f"Successfully processed {len(event_video_map)} videos")
-            return event_video_map
-            
+
+            return video_assets
+
         except Exception as e:
-            self.logger.error(f"Error processing video response: {e}")
+            self.logger.error(f"Error processing video response: {e}", exc_info=True)
             return {}
 
-    def _validate_response_data(self, data: Dict[str, Any]) -> bool:
-        """验证响应数据结构"""
-        if not isinstance(data, dict):
-            self.logger.error("Invalid response data type")
-            return False
-            
-        if 'resultSets' not in data:
-            self.logger.error("Missing resultSets in response")
-            return False
-            
-        result_sets = data['resultSets']
-        if not isinstance(result_sets, dict):
-            self.logger.error("Invalid resultSets type")
-            return False
-            
-        if 'Meta' not in result_sets or 'playlist' not in result_sets:
-            self.logger.error("Missing Meta or playlist in resultSets")
-            return False
-            
-        return True
+    def _extract_event_id(self, video_url: str) -> Optional[str]:
+        """从视频URL中提取事件ID (如 /2024/12/25/0022400408/14/xxx ) 中的'14'"""
+        if not video_url:
+            return None
 
-    def get_video_by_game_event(self, game_id: str, event_id: str) -> Optional[VideoAsset]:
-        """根据比赛ID和事件ID获取视频资产"""
-        key = f"{game_id}_{event_id}"
-        return self.video_assets.get(key)
+        # 这里的正则需要根据实际url格式进行调整
+        match = re.search(r'/\d{4}/\d{2}/\d{2}/\d+/(\d+)/', video_url)
+        if match:
+            return match.group(1)
+        return None
+
+    def _create_video_asset(self, event_id: str, video_data: Dict[str, Any]) -> Optional[VideoAsset]:
+        """
+        创建简化的视频资产, 去除字幕逻辑, 仅保留清晰度信息
+        """
+        try:
+            qualities = {
+                'sd': VideoQuality(
+                    duration=video_data['sdur'],
+                    url=video_data['surl'],
+                    thumbnail=video_data['sth']
+                ),
+                'hd': VideoQuality(
+                    duration=video_data['ldur'],
+                    url=video_data['lurl'],
+                    thumbnail=video_data['lth']
+                )
+            }
+
+            return VideoAsset(
+                event_id=event_id,
+                uuid=video_data['uuid'],
+                qualities=qualities
+            )
+
+        except KeyError as e:
+            self.logger.error(f"Missing key in video_data: {e}, video_data={video_data}")
+            return None
+        except Exception as e:
+            self.logger.error(f"Failed to create video asset: {str(e)}", exc_info=True)
+            return None
+
+    def get_video_by_event_id(self, event_id: str) -> Optional[VideoAsset]:
+        """通过 event_id 获取已缓存的视频资产（如果之前存到 self.video_assets 里）"""
+        return self.video_assets.get(event_id)
 
     def clear_cache(self) -> None:
         """清除视频资产缓存"""

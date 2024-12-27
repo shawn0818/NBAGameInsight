@@ -3,24 +3,26 @@ from typing import Optional, Dict, Any, List
 import logging
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from config.nba_config import NBAConfig
 
 
 class HTTPConfig:
     """通用 HTTP 请求配置"""
     HEADERS: Dict[str, str] = {
-        "Accept": "application/json, text/plain, */*",
+        "Accept": "*/*",
         "Accept-Encoding": "gzip, deflate, br",
         "Accept-Language": "en-US,en;q=0.9",
-        "Cache-Control": "no-cache",
         "Connection": "keep-alive",
-        "DNT": "1",
-        "Pragma": "no-cache",
+        "Host": "stats.nba.com",
+        "Origin": "https://www.nba.com",
+        "Referer": "https://www.nba.com/",
+        "sec-ch-ua": "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\"",
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": "\"Windows\"",
         "Sec-Fetch-Dest": "empty",
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Site": "same-site",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) "
-                      "Chrome/131.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     
     TIMEOUT: int = 30

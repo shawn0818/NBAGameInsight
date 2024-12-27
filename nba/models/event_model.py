@@ -197,4 +197,4 @@ class PlayByPlay(BaseModel):
         """获取事件列表"""
         if 'actions' not in self.game:
             return []
-        return [Event.parse_obj(action) for action in self.game['actions']]
+        return [Event.model_validate(action) for action in self.game['actions']]

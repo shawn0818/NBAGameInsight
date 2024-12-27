@@ -7,13 +7,13 @@ from config.nba_config import NBAConfig
 
 class TeamProfile(BaseModel):
     """球队基本信息模型"""
-    team_id: int
-    abbreviation: str
-    nickname: str
-    city: str
-    arena: str
+    team_id: Optional[int] = None
+    abbreviation: Optional[str] = None
+    nickname: Optional[str] = None
+    city:  Optional[str] = None
+    arena: Optional[str] = None
     arena_capacity: Optional[int] = None
-    year_founded: int
+    year_founded: Optional[int] = None
     owner: Optional[str] = None
     general_manager: Optional[str] = None
     head_coach: Optional[str] = None

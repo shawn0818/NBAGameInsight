@@ -12,7 +12,7 @@ project_root = str(Path(__file__).parent.parent)
 sys.path.append(project_root)
 
 from nba.parser.video_query_parser import NBAVideoProcessor
-from nba.services.game_video_service import PlayerVideoService
+from nba.services.game_video_service import GameVideoService
 from nba.models.video_model import ContextMeasure
 from config.nba_config import NBAConfig
 from nba.models.video_model import VideoRequestParams

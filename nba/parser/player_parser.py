@@ -1,28 +1,46 @@
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, List, Optional, Any
 import logging
-from datetime import datetime
+from pathlib import Path
+import json
+from datetime import datetime, timedelta
 from pydantic import ValidationError
-from nba.models.player_model import PlayerProfile, PlayerDraft, PlayerCareer
+from nba.models.player_model import PlayerProfile
+
 
 class PlayerParser:
     """NBA球员数据解析器"""
-    
-    def __init__(self):
-        """初始化解析器"""
-        self.logger = logging.getLogger(self.__class__.__name__)
 
-    def parse_players(self, raw_data: Dict[str, Any]) -> List[PlayerProfile]:
+    def __init__(self, cache_dir: Optional[Path] = None):
+        """
+        初始化解析器
+
+        Args:
+            cache_dir: 缓存目录路径，默认为None不使用缓存
+        """
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.cache_dir = cache_dir
+        if cache_dir:
+            self.cache_file = cache_dir / 'players.json'
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def parse_players(self, raw_data: Dict[str, Any], use_cache: bool = True) -> List[PlayerProfile]:
         """
         解析API响应数据为PlayerProfile对象列表
 
         Args:
             raw_data: 从API获取的原始JSON数据
+            use_cache: 是否使用缓存，默认为True
 
         Returns:
             List[PlayerProfile]: 解析后的球员信息列表
         """
+        # 如果启用缓存且缓存存在，尝试从缓存加载
+        if use_cache and self.cache_dir and self._is_cache_valid():
+            cached_data = self._load_from_cache()
+            if cached_data:
+                return cached_data
+
         players = []
-        
         try:
             # 验证数据结构
             if not self._validate_raw_data(raw_data):
@@ -34,7 +52,7 @@ class PlayerParser:
 
             # 创建字段映射
             field_map = {header: idx for idx, header in enumerate(headers)}
-            
+
             # 解析每一行数据
             for row in rows:
                 try:
@@ -45,23 +63,19 @@ class PlayerParser:
                     self.logger.error(f"Error parsing player row: {str(e)}")
                     continue
 
+            # 如果启用缓存，保存解析结果
+            if use_cache and self.cache_dir:
+                self._save_to_cache(players)
+
             self.logger.info(f"Successfully parsed {len(players)} players")
             return players
-            
+
         except Exception as e:
             self.logger.error(f"Error parsing player data: {str(e)}")
             return players
 
     def _validate_raw_data(self, data: Dict[str, Any]) -> bool:
-        """
-        验证原始数据的基本结构
-
-        Args:
-            data: 原始JSON数据
-
-        Returns:
-            bool: 数据结构是否有效
-        """
+        """验证原始数据的基本结构"""
         if not isinstance(data, dict):
             self.logger.error("Input data must be a dictionary")
             return False
@@ -76,10 +90,10 @@ class PlayerParser:
             return False
 
         required_fields = {
-            'PERSON_ID', 'PLAYER_LAST_NAME', 'PLAYER_FIRST_NAME', 
-            'PLAYER_SLUG', 'TEAM_ID', 'POSITION'
+            'PERSON_ID', 'PLAYER_LAST_NAME', 'PLAYER_FIRST_NAME',
+            'PLAYER_SLUG', 'TEAM_ID'
         }
-        
+
         headers = set(player_set['headers'])
         missing_fields = required_fields - headers
         if missing_fields:
@@ -89,65 +103,32 @@ class PlayerParser:
         return True
 
     def _map_row_to_dict(self, row: List[Any], field_map: Dict[str, int]) -> Dict[str, Any]:
-        """
-        将行数据映射为字典格式
-
-        Args:
-            row: 原始行数据
-            field_map: 字段名到索引的映射
-
-        Returns:
-            Dict[str, Any]: 映射后的数据字典
-        """
+        """将行数据映射为字典格式"""
         return {
             field: row[idx] if idx < len(row) else None
             for field, idx in field_map.items()
         }
 
     def _parse_player(self, player_data: Dict[str, Any]) -> Optional[PlayerProfile]:
-        """
-        解析单个球员数据
-
-        Args:
-            player_data: 球员原始数据字典
-
-        Returns:
-            Optional[PlayerProfile]: 解析后的球员数据模型
-        """
+        """解析单个球员数据"""
         try:
-            # 解析基本信息
             parsed_data = {
                 'person_id': self._parse_int(player_data.get('PERSON_ID')),
-                'last_name': self._parse_str(player_data.get('PLAYER_LAST_NAME')),
-                'first_name': self._parse_str(player_data.get('PLAYER_FIRST_NAME')),
-                'player_slug': self._parse_str(player_data.get('PLAYER_SLUG')),
-                'team_id': self._parse_int(player_data.get('TEAM_ID'), 0),
+                'last_name': player_data.get('PLAYER_LAST_NAME'),
+                'first_name': player_data.get('PLAYER_FIRST_NAME'),
+                'player_slug': player_data.get('PLAYER_SLUG'),
+                'team_id': self._parse_int(player_data.get('TEAM_ID')),
+                'team_slug': player_data.get('TEAM_SLUG'),
+                'team_city': player_data.get('TEAM_CITY'),
+                'team_name': player_data.get('TEAM_NAME'),
+                'team_abbreviation': player_data.get('TEAM_ABBREVIATION'),
                 'jersey_number': player_data.get('JERSEY_NUMBER'),
-                'position': self._parse_str(player_data.get('POSITION')),
-                'height': self._parse_str(player_data.get('HEIGHT')),
-                'weight': self._parse_str(player_data.get('WEIGHT')),
+                'position': player_data.get('POSITION'),
+                'height': player_data.get('HEIGHT'),
+                'weight': player_data.get('WEIGHT'),
                 'college': player_data.get('COLLEGE'),
                 'country': player_data.get('COUNTRY'),
-                
-                # 解析选秀信息
-                'draft': {
-                    'year': self._parse_int(player_data.get('DRAFT_YEAR')),
-                    'round': self._parse_int(player_data.get('DRAFT_ROUND')),
-                    'number': self._parse_int(player_data.get('DRAFT_NUMBER'))
-                },
-                
-                # 解析状态
-                'roster_status': self._parse_float(player_data.get('ROSTER_STATUS'), 1.0),
-                
-                # 解析生涯数据
-                'career': {
-                    'from_year': self._parse_str(player_data.get('FROM_YEAR')),
-                    'to_year': self._parse_str(player_data.get('TO_YEAR')),
-                    'points': self._parse_float(player_data.get('PTS')),
-                    'rebounds': self._parse_float(player_data.get('REB')),
-                    'assists': self._parse_float(player_data.get('AST')),
-                    'stats_timeframe': self._parse_str(player_data.get('STATS_TIMEFRAME'), 'Season')
-                }
+                'roster_status': self._parse_float(player_data.get('ROSTER_STATUS'), 1.0)
             }
 
             # 验证必需字段
@@ -155,7 +136,7 @@ class PlayerParser:
                 self.logger.warning(f"Missing required fields for player {parsed_data.get('person_id')}")
                 return None
 
-            return PlayerProfile(**parsed_data)
+            return PlayerProfile.model_validate(parsed_data)
 
         except ValidationError as ve:
             self.logger.error(f"Validation error parsing player: {str(ve)}")
@@ -163,6 +144,35 @@ class PlayerParser:
         except Exception as e:
             self.logger.error(f"Error parsing player data: {str(e)}")
             return None
+
+    def _is_cache_valid(self) -> bool:
+        """检查缓存是否有效（默认24小时内有效）"""
+        if not self.cache_file.exists():
+            return False
+
+        cache_time = datetime.fromtimestamp(self.cache_file.stat().st_mtime)
+        return datetime.now() - cache_time < timedelta(hours=24)
+
+    def _load_from_cache(self) -> Optional[List[PlayerProfile]]:
+        """从缓存加载数据"""
+        try:
+            if not self.cache_file.exists():
+                return None
+
+            with open(self.cache_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return [PlayerProfile.model_validate(p) for p in data]
+        except Exception as e:
+            self.logger.error(f"Error loading from cache: {str(e)}")
+            return None
+
+    def _save_to_cache(self, players: List[PlayerProfile]) -> None:
+        """保存数据到缓存"""
+        try:
+            with open(self.cache_file, 'w', encoding='utf-8') as f:
+                json.dump([p.model_dump() for p in players], f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self.logger.error(f"Error saving to cache: {str(e)}")
 
     @staticmethod
     def _parse_int(value: Any, default: Optional[int] = None) -> Optional[int]:
@@ -183,10 +193,3 @@ class PlayerParser:
             return float(value)
         except (ValueError, TypeError):
             return default
-
-    @staticmethod
-    def _parse_str(value: Any, default: str = "") -> str:
-        """安全地解析字符串值"""
-        if value is None:
-            return default
-        return str(value)

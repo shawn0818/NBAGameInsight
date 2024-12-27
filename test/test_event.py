@@ -1,6 +1,6 @@
 import asyncio
 from typing import Tuple, Dict, List
-from nba.services.game_data_service import GameDataService
+from nba.services.game_data_service import NBAGameDataProvider
 from nba.services.event_service import EventService
 from nba.models.event_model import Event, EventType
 
@@ -10,6 +10,7 @@ def analyze_shooting_details(events: List[Event]) -> Dict:
 
     Args:
         events: 事件列表
+
 
     Returns:
         Dict: 包含投篮统计的字典
@@ -139,10 +140,10 @@ async def analyze_game_highlights(team_name: str, date: str = "today") -> None:
         date: 比赛日期，默认为今天
     """
     # 初始化服务
-    game_service = GameDataService()
+    game_service = NBAGameDataProvider()
     
     # 获取比赛数据
-    playbyplay, game = await game_service.get_game_data(team_name, date)
+    game_id, playbyplay, game = await game_service.get_game_info(team_name, date)
     if not playbyplay or not game:
         print("未能获取比赛数据")
         return
