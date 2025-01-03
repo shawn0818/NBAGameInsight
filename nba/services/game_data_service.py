@@ -5,9 +5,10 @@ NBA 比赛数据提供服务。
 """
 
 import logging
-from typing import Optional, Tuple, Dict, Any, List
+from typing import Optional, Tuple, Dict, Any, List, Union
 from functools import lru_cache
 from pathlib import Path
+from datetime import timedelta
 
 from nba.fetcher.game import GameFetcher
 from nba.parser.game_parser import GameDataParser
@@ -16,8 +17,7 @@ from nba.fetcher.team import TeamProfile
 from nba.fetcher.player import PlayerFetcher
 from nba.parser.player_parser import PlayerParser
 from nba.fetcher.schedule import ScheduleFetcher
-from nba.models.game_model import Game, PlayerStatistics
-from nba.models.event_model import PlayByPlay, EventType
+from nba.models.game_model import Game, PlayerStatistics,PlayByPlay
 from nba.models.player_model import PlayerProfile
 
 
@@ -27,6 +27,11 @@ logging.basicConfig(
     format='%(asctime)s [%(levelname)s] %(name)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+class NBAGameDataError(Exception):
+    """自定义错误类"""
+    pass
 
 
 class NBAGameDataProvider:
@@ -166,6 +171,7 @@ class NBAGameDataProvider:
             raise ValueError("必须提供球队名称或设置默认球队")
         return team
 
+    @lru_cache(maxsize=128)
     def get_game(
         self,
         team_name: Optional[str] = None,
@@ -293,17 +299,7 @@ class NBAGameDataProvider:
         player_name: Optional[str] = None,
         date_str: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """
-        获取得分事件 (同步)
-
-        Args:
-            team_name: 球队名称，如果未提供则使用默认球队
-            player_name: 球员名称（可选），如果提供则只返回该球员的得分事件
-            date_str: 日期字符串，如果未提供则使用默认日期
-
-        Returns:
-            List[Dict[str, Any]]: 得分事件列表
-        """
+        """获取得分事件"""
         try:
             team = self._get_default_or_provided_team(team_name)
             date = date_str or self.default_date
@@ -313,7 +309,7 @@ class NBAGameDataProvider:
                 return []
 
             playbyplay, _ = self._fetch_game_data_sync(game_id)
-            if not playbyplay or not playbyplay.actions:
+            if not playbyplay:
                 return []
 
             # 如果指定了球员名字，则获取对应 ID
@@ -325,29 +321,46 @@ class NBAGameDataProvider:
             else:
                 player_id = None
 
-            scoring_plays = []
-            for action in playbyplay.actions:
-                if (
-                    action.actionType
-                    and EventType.is_scoring_event(EventType(action.actionType))
-                    and (not player_id or action.personId == player_id)
-                ):
-                    scoring_plays.append({
-                        'time': action.clock,
-                        'period': action.period,
-                        'player': action.playerName,
-                        'team': action.teamTricode,
-                        'points': (
-                            action.scoreHome - action.scoreAway
-                            if (action.scoreHome is not None and action.scoreAway is not None)
-                            else None
-                        ),
-                        'description': action.description
-                    })
-
-            self.logger.info(f"找到 {len(scoring_plays)} 条得分事件")
-            return scoring_plays
+            # 直接使用 playbyplay 的 actions
+            return self.game_parser.parse_playbyplay(playbyplay)
 
         except Exception as e:
             self.logger.error(f"获取得分事件时出错: {e}")
             return []
+
+    def _create_cache_key(self, *args, **kwargs) -> str:
+        """创建缓存键"""
+        return f"{'-'.join(map(str, args))}-{'-'.join(f'{k}={v}' for k, v in sorted(kwargs.items()))}"
+
+    def get_player_performance_summary(
+        self,
+        player_name: str,
+        start_date: str,
+        end_date: str
+    ) -> Dict[str, Any]:
+        """获取球员在一段时间内的表现汇总"""
+        # ... 实现球员数据汇总逻辑
+        pass
+
+    def get_team_performance_summary(
+        self,
+        team_name: str,
+        last_n_games: int = 10
+    ) -> Dict[str, Any]:
+        """获取球队最近N场比赛的表现汇总"""
+        # ... 实现球队数据汇总逻辑
+        pass
+
+    def get_game_safe(
+        self,
+        team_name: Optional[str] = None,
+        date_str: Optional[str] = None
+    ) -> Tuple[Optional[Game], Optional[str]]:
+        """安全的获取比赛数据方法"""
+        try:
+            game = self.get_game(team_name, date_str)
+            return game, None
+        except Exception as e:
+            error_msg = f"获取比赛数据失败: {str(e)}"
+            self.logger.error(error_msg)
+            return None, error_msg

@@ -4,10 +4,12 @@ from matplotlib.patches import Circle, Rectangle, Arc
 from matplotlib.offsetbox import OffsetImage
 import squarify
 import logging
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 import numpy as np
 from pathlib import Path
 import pandas as pd
+import seaborn as sns
+import networkx as nx
 
 class NBAVisualizer:
     """NBA数据可视化基类"""
@@ -20,12 +22,18 @@ class NBAVisualizer:
             "LAL": {  # 湖人队
                 "primary": [84/255, 44/255, 129/255],  # 紫色
                 "secondary": [250/255, 182/255, 36/255]  # 金色
-            }
+            },
+            "BOS": {  # 凯尔特人
+                "primary": [0/255, 122/255, 51/255],  # 绿色
+                "secondary": [139/255, 111/255, 78/255]  # 金色
+            },
+            # ... 可以添加更多球队的颜色
         }
         
     def setup_style(self):
         """设置matplotlib的基础样式"""
         plt.style.use('fivethirtyeight')
+        plt.rcParams['font.family'] = ['Microsoft YaHei', 'SimHei', 'sans-serif']
         
     @staticmethod
     def save_figure(fig, output_path: str, dpi: int = 300):
@@ -38,105 +46,405 @@ class NBAVisualizer:
         except Exception as e:
             logging.error(f"Error saving figure: {e}")
 
-    def plot_assist_network(self, df: pd.DataFrame, title: str = "Assist Network", output_path: str = None) -> plt.Figure:
-        """
-        绘制助攻网络图。
 
-        Args:
-            df: 包含助攻数据的DataFrame, 至少需要包括'personId'（助攻者）和'assistPersonId'（被助攻者）列。
-            title: 图表标题。
-            output_path: 图表保存路径。
-
-        Returns:
-            plt.Figure: 绘制好的助攻网络图。
-        """
-        # 创建一个有向图
-        G = nx.DiGraph()
-
-        # 添加边（助攻关系）
-        for _, row in df.iterrows():
-            if row['assistPersonId'] is not None and not pd.isna(row['assistPersonId']):
-                # 添加节点（如果它们不存在）
-                if not G.has_node(row['personId']):
-                    G.add_node(row['personId'])
-                if not G.has_node(row['assistPersonId']):
-                    G.add_node(row['assistPersonId'])
-                # 添加边
-                G.add_edge(row['assistPersonId'], row['personId'])
-
-        # 绘制网络图
-        fig, ax = plt.subplots(figsize=(12, 12))
-        pos = nx.spring_layout(G)  # 使用spring_layout布局
-        nx.draw(G, pos, with_labels=True, node_color='skyblue', node_size=1500, edge_color='gray', linewidths=1, font_size=15, font_weight='bold', arrowsize=20, alpha=0.7, ax=ax)
-
+class GameFlowVisualizer(NBAVisualizer):
+    """比赛流程可视化类"""
+    
+    def plot_score_flow(self, 
+                       plays: List[Dict[str, Any]], 
+                       home_team: str,
+                       away_team: str,
+                       title: Optional[str] = None,
+                       output_path: Optional[str] = None) -> plt.Figure:
+        """绘制比分流程图"""
+        fig, ax = plt.subplots(figsize=(15, 8))
+        
+        # 准备数据
+        times = []
+        score_diffs = []
+        current_diff = 0
+        
+        for play in sorted(plays, key=lambda x: (x['period'], x['time'])):
+            if 'MISS' in play['description']:
+                continue
+                
+            # 计算得分
+            points = 3 if '3PT' in play['description'] else (1 if 'Free Throw' in play['description'] else 2)
+            if play['team'] == home_team:
+                current_diff += points
+            else:
+                current_diff -= points
+                
+            # 添加数据点
+            period = play['period']
+            time = self._convert_time_to_minutes(play['time'], period)
+            times.append(time)
+            score_diffs.append(current_diff)
+            
+        # 绘制曲线
+        ax.plot(times, score_diffs, linewidth=2)
+        ax.fill_between(times, score_diffs, 0, alpha=0.1)
+        
+        # 添加零线和四节分隔线
+        ax.axhline(y=0, color='black', linestyle='-', alpha=0.2)
+        for i in range(1, 4):
+            ax.axvline(x=i * 12, color='gray', linestyle='--', alpha=0.2)
+            
+        # 设置标签
+        ax.set_xlabel('比赛时间（分钟）')
+        ax.set_ylabel('分差（主队领先）')
         if title:
             ax.set_title(title)
-
+            
         # 保存图形
         if output_path:
             self.save_figure(fig, output_path)
-
+            
         return fig
+
+    def _convert_time_to_minutes(self, time_str: str, period: int) -> float:
+        """将比赛时间转换为总分钟数"""
+        minutes, seconds = map(float, time_str.replace('PT', '').replace('M', '').replace('S', '').split(':'))
+        return (period - 1) * 12 + (12 - minutes - seconds / 60)
+
+
+class PlayerPerformanceVisualizer(NBAVisualizer):
+    """球员表现可视化类"""
+    
+    def plot_shot_distribution(self,
+                             shot_data: pd.DataFrame,
+                             player_name: str,
+                             title: Optional[str] = None,
+                             output_path: Optional[str] = None) -> plt.Figure:
+        """绘制投篮分布图"""
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 8))
+        
+        # 1. 投篮位置分布饼图
+        shot_zones = shot_data['zone'].value_counts()
+        ax1.pie(shot_zones, labels=shot_zones.index, autopct='%1.1f%%')
+        ax1.set_title('投篮位置分布')
+        
+        # 2. 命中率条形图
+        zone_percentages = shot_data.groupby('zone')['made'].mean()
+        zone_percentages.plot(kind='bar', ax=ax2)
+        ax2.set_title('各区域命中率')
+        ax2.set_ylabel('命中率')
+        
+        if title:
+            fig.suptitle(title)
+            
+        if output_path:
+            self.save_figure(fig, output_path)
+            
+        return fig
+
+    def plot_performance_timeline(self,
+                                plays: List[Dict[str, Any]],
+                                player_name: str,
+                                title: Optional[str] = None,
+                                output_path: Optional[str] = None) -> plt.Figure:
+        """绘制球员表现时间线"""
+        fig, ax = plt.subplots(figsize=(15, 8))
+        
+        # 准备数据
+        events = []
+        times = []
+        colors = []
+        
+        for play in plays:
+            if player_name in play['description']:
+                time = self._convert_time_to_minutes(play['time'], play['period'])
+                times.append(time)
+                events.append(play['description'])
+                
+                # 根据事件类型设置颜色
+                if 'MISS' in play['description']:
+                    colors.append('red')
+                elif any(x in play['description'] for x in ['3PT', '2PT', 'Free Throw']):
+                    colors.append('green')
+                else:
+                    colors.append('blue')
+                    
+        # 绘制时间线
+        ax.scatter(times, [0] * len(times), c=colors, s=100)
+        
+        # 添加事件标签
+        for i, (time, event) in enumerate(zip(times, events)):
+            ax.annotate(event, (time, 0), xytext=(0, 10 if i % 2 == 0 else -10),
+                       textcoords='offset points', ha='center', rotation=45)
+            
+        # 设置图表样式
+        ax.set_yticks([])
+        ax.set_xlabel('比赛时间（分钟）')
+        if title:
+            ax.set_title(title)
+            
+        if output_path:
+            self.save_figure(fig, output_path)
+            
+        return fig
+
+
+class TeamPerformanceVisualizer(NBAVisualizer):
+    """球队表现可视化类"""
+    
+    def plot_team_comparison(self,
+                           home_stats: Dict[str, Any],
+                           away_stats: Dict[str, Any],
+                           home_team: str,
+                           away_team: str,
+                           title: Optional[str] = None,
+                           output_path: Optional[str] = None) -> plt.Figure:
+        """绘制球队数据对比图"""
+        fig, ax = plt.subplots(figsize=(12, 8))
+        
+        # 准备数据
+        metrics = [
+            'fieldGoalsPercentage', 'threePointersPercentage',
+            'freeThrowsPercentage', 'reboundsTotal',
+            'assists', 'steals', 'blocks', 'turnovers'
+        ]
+        
+        x = np.arange(len(metrics))
+        width = 0.35
+        
+        # 绘制条形图
+        home_data = [home_stats.get(m, 0) for m in metrics]
+        away_data = [away_stats.get(m, 0) for m in metrics]
+        
+        ax.bar(x - width/2, home_data, width, label=home_team)
+        ax.bar(x + width/2, away_data, width, label=away_team)
+        
+        # 设置图表样式
+        ax.set_xticks(x)
+        ax.set_xticklabels(metrics, rotation=45)
+        ax.legend()
+        
+        if title:
+            ax.set_title(title)
+            
+        if output_path:
+            self.save_figure(fig, output_path)
+            
+        return fig
+
+    def plot_scoring_runs(self,
+                         plays: List[Dict[str, Any]],
+                         title: Optional[str] = None,
+                         output_path: Optional[str] = None) -> plt.Figure:
+        """绘制得分高潮图"""
+        fig, ax = plt.subplots(figsize=(15, 8))
+        
+        # 实现得分高潮的可视化
+        # ...（具体实现）
+        
+        return fig
+
+
+class InteractionVisualizer(NBAVisualizer):
+    """球员互动可视化类"""
+    
+    def plot_assist_network(self,
+                          plays: List[Dict[str, Any]],
+                          team_name: str,
+                          title: Optional[str] = None,
+                          output_path: Optional[str] = None) -> plt.Figure:
+        """绘制助攻网络图"""
+        # 创建有向图
+        G = nx.DiGraph()
+        
+        # 统计助攻数据
+        assist_counts = {}
+        for play in plays:
+            if ('assist' in play and play['team'] == team_name and 
+                'MISS' not in play['description']):
+                assister = play['assist']['playerName']
+                scorer = play['playerName']
+                key = (assister, scorer)
+                assist_counts[key] = assist_counts.get(key, 0) + 1
+                
+        # 添加边和节点
+        for (assister, scorer), weight in assist_counts.items():
+            G.add_edge(assister, scorer, weight=weight)
+            
+        # 创建图形
+        fig, ax = plt.subplots(figsize=(12, 12))
+        
+        # 设置布局
+        pos = nx.spring_layout(G)
+        
+        # 绘制网络
+        nx.draw_networkx_nodes(G, pos, node_color='lightblue', 
+                             node_size=1000, alpha=0.7)
+        nx.draw_networkx_edges(G, pos, edge_color='gray',
+                             width=[G[u][v]['weight'] for u, v in G.edges()],
+                             alpha=0.5)
+        nx.draw_networkx_labels(G, pos)
+        
+        if title:
+            ax.set_title(title)
+            
+        if output_path:
+            self.save_figure(fig, output_path)
+            
+        return fig
+
+
+class LineupAnalysisVisualizer(NBAVisualizer):
+    """阵容分析可视化类"""
+    
+    def plot_lineup_performance(self,
+                              lineup_data: pd.DataFrame,
+                              title: Optional[str] = None,
+                              output_path: Optional[str] = None) -> plt.Figure:
+        """绘制阵容表现分析图"""
+        fig, ax = plt.subplots(figsize=(12, 8))
+        
+        # 实现阵容分析的可视化
+        # ...（具体实现）
+        
+        return fig
+
 
 class ShotChartVisualizer(NBAVisualizer):
     """投篮图可视化类"""
     
     def __init__(self, theme: str = "default"):
         super().__init__(theme)
+        # NBA标准球场尺寸（单位：英尺）
+        self.court_dimensions = {
+            "court_length": 94,      # 球场长度
+            "court_width": 50,       # 球场宽度
+            "three_point_radius": 23.75,  # 三分线弧度半径(2013-14赛季后)
+            "three_point_side_radius": 22,  # 三分线底角半径
+            "three_point_side_y": 14,  # 三分线直线部分的纵向距离
+            "paint_width": 16,       # 油漆区宽度
+            "paint_height": 19,      # 油漆区高度
+            "free_throw_line_distance": 15,  # 罚球线距离
+            "restricted_area_radius": 4,  # 禁区半径
+            "hoop_diameter": 1.5,    # 篮筐直径
+            "backboard_width": 6,    # 篮板宽度
+            "backboard_to_baseline": 4  # 篮板到底线距离
+        }
+        
+        # 坐标系转换因子（将英尺转换为图表坐标）
+        self.scale = 10
+        
         self.court_colors = {
             "background": "#FDF5E6",
             "paint": "#fab624",
-            "lines": "black"
+            "lines": "black",
+            "made": "#00ff00",      # 命中-绿色
+            "missed": "#ff0000",    # 未命中-红色
+            "threept": "#0000ff",   # 三分线-蓝色
+            "restricted": "#ff69b4"  # 限制区-粉色
         }
         
+        # 添加水印和标签的样式
+        self.watermark_style = {
+            "fontsize": 10,
+            "color": "#666666",
+            "alpha": 0.5
+        }
+        
+        # 添加球员信息样式
+        self.player_info_style = {
+            "fontsize": 16,
+            "fontweight": "bold",
+            "color": "#333333"
+        }
+
     def draw_court(self, ax: plt.Axes, color: str = 'black', lw: int = 2) -> plt.Axes:
-        """绘制球场"""
+        """绘制标准NBA球场"""
+        # 转换尺寸到图表坐标
+        d = self.court_dimensions
+        s = self.scale
+        
         # 篮筐
-        hoop = Circle((0, 0), radius=7.5, linewidth=lw, color=color, fill=False)
+        hoop = Circle((0, 0), radius=d['hoop_diameter']/2 * s, 
+                     linewidth=lw, color=color, fill=False)
         
         # 篮板
-        backboard = Rectangle((-30, -7.5), 60, -1, linewidth=lw, color=color)
+        backboard = Rectangle(
+            (-d['backboard_width']/2 * s, -d['backboard_to_baseline'] * s),
+            d['backboard_width'] * s,
+            lw/self.scale,
+            linewidth=lw,
+            color=color
+        )
         
         # 油漆区
-        outer_box = Rectangle((-80, -47.5), 160, 190, linewidth=lw, 
-                            color=color, fill=False, zorder=0)
-        inner_box = Rectangle((-60, -47.5), 120, 190, linewidth=lw,
-                            color=color, fill=False, zorder=0)
+        paint = Rectangle(
+            (-d['paint_width']/2 * s, 0),
+            d['paint_width'] * s,
+            d['paint_height'] * s,
+            linewidth=lw,
+            color=color,
+            fill=False,
+            zorder=0
+        )
         
-        # 罚球线和罚球圈
-        top_free_throw = Arc((0, 142.5), 120, 120, theta1=0, theta2=180,
-                            linewidth=lw, color=color, fill=False)
-        bottom_free_throw = Arc((0, 142.5), 120, 120, theta1=180, theta2=0,
-                              linewidth=lw, color=color, linestyle='dashed')
+        # 罚球圈
+        free_throw_circle = Arc(
+            (0, d['free_throw_line_distance'] * s),
+            d['paint_width'] * s,
+            d['paint_width'] * s,
+            theta1=0,
+            theta2=180,
+            linewidth=lw,
+            color=color,
+            fill=False
+        )
         
         # 限制区
-        restricted = Arc((0, 0), 80, 80, theta1=0, theta2=180, linewidth=lw,
-                        color=color)
+        restricted = Arc(
+            (0, 0),
+            d['restricted_area_radius'] * 2 * s,
+            d['restricted_area_radius'] * 2 * s,
+            theta1=0,
+            theta2=180,
+            linewidth=lw,
+            color=self.court_colors["restricted"]
+        )
         
         # 三分线
-        corner_three_a = Rectangle((-220, -47.5), 0, 138, linewidth=lw,
-                                 color=color)
-        corner_three_b = Rectangle((220, -47.5), 0, 138, linewidth=lw,
-                                 color=color)
-        three_arc = Arc((0, 0), 475, 475, theta1=22, theta2=158, linewidth=lw,
-                       color=color)
-        
-        # 中场
-        center_outer_arc = Arc((0, 422.5), 120, 120, theta1=180, theta2=0,
-                             linewidth=lw, color=color)
+        three_point_side_length = d['three_point_side_y'] * s
+        three_point_side_left = Rectangle(
+            (-d['court_width']/2 * s, 0),
+            0,
+            three_point_side_length,
+            linewidth=lw,
+            color=self.court_colors["threept"]
+        )
+        three_point_side_right = Rectangle(
+            (d['court_width']/2 * s, 0),
+            0,
+            three_point_side_length,
+            linewidth=lw,
+            color=self.court_colors["threept"]
+        )
+        three_point_arc = Arc(
+            (0, 0),
+            d['three_point_radius'] * 2 * s,
+            d['three_point_radius'] * 2 * s,
+            theta1=22,
+            theta2=158,
+            linewidth=lw,
+            color=self.court_colors["threept"]
+        )
         
         court_elements = [
-            hoop, backboard, outer_box, inner_box, top_free_throw,
-            bottom_free_throw, restricted, corner_three_a, corner_three_b,
-            three_arc, center_outer_arc
+            hoop, backboard, paint, free_throw_circle, restricted,
+            three_point_side_left, three_point_side_right, three_point_arc
         ]
         
         # 绘制油漆区背景
         paint_background = Rectangle(
-            (-80, -47.5), 160, 190,
-            linewidth=lw,
-            color=self.court_colors["paint"],
-            fill=True,
+            (-d['paint_width']/2 * s, 0),
+            d['paint_width'] * s,
+            d['paint_height'] * s,
+            facecolor=self.court_colors["paint"],
+            alpha=0.3,
             zorder=-1
         )
         court_elements.append(paint_background)
@@ -145,281 +453,240 @@ class ShotChartVisualizer(NBAVisualizer):
         for element in court_elements:
             ax.add_patch(element)
             
+        # 设置坐标轴范围
+        ax.set_xlim(
+            -d['court_width']/2 * s - 5,
+            d['court_width']/2 * s + 5
+        )
+        ax.set_ylim(
+            -5,
+            d['three_point_radius'] * s + 5
+        )
+            
         return ax
 
-    def plot_shot_chart(self, df: pd.DataFrame, title: str = "Shot Chart", output_path: str = None):
+    def add_player_headshot(self, 
+                           ax: plt.Axes,
+                           player_id: int,
+                           position: Tuple[float, float] = (0.02, 0.85),
+                           zoom: float = 0.15) -> None:
+        """
+        添加球员头像
+
+        Args:
+            ax: matplotlib轴对象
+            player_id: NBA官方球员ID
+            position: 头像在图中的位置(左下角坐标，范围0-1)
+            zoom: 头像缩放比例
+        """
+        try:
+            # 构建NBA官方头像URL
+            headshot_url = f"https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/260x190/{player_id}.png"
+            
+            # 下载并读取图片
+            import requests
+            from PIL import Image
+            from io import BytesIO
+            
+            response = requests.get(headshot_url)
+            img = Image.open(BytesIO(response.content))
+            
+            # 创建OffsetImage对象
+            imagebox = OffsetImage(img, zoom=zoom)
+            imagebox.image.axes = ax
+            
+            # 创建AnnotationBbox对象
+            ab = AnnotationBbox(imagebox, 
+                              xy=ax.transAxes.transform(position),
+                              xycoords='data',
+                              frameon=False,
+                              box_alignment=(0, 0))
+            
+            # 添加到图表
+            ax.add_artist(ab)
+            
+        except Exception as e:
+            logging.warning(f"Failed to add player headshot: {e}")
+
+    def add_watermark(self, 
+                     ax: plt.Axes,
+                     text: str,
+                     position: Tuple[float, float] = (0.98, 0.02)) -> None:
+        """
+        添加水印信息
+
+        Args:
+            ax: matplotlib轴对象
+            text: 水印文本
+            position: 水印位置(右下角坐标，范围0-1)
+        """
+        ax.text(position[0], position[1],
+                text,
+                transform=ax.transAxes,
+                ha='right',
+                va='bottom',
+                **self.watermark_style)
+
+    def plot_shot_chart(self, 
+                       shot_data: pd.DataFrame,
+                       player_id: Optional[int] = None,
+                       player_name: Optional[str] = None,
+                       team_name: Optional[str] = None,
+                       title: str = "Shot Chart",
+                       output_path: Optional[str] = None,
+                       show_misses: bool = True,
+                       show_makes: bool = True,
+                       annotate: bool = False,
+                       add_player_photo: bool = True,
+                       creator_info: Optional[str] = None) -> plt.Figure:
         """
         绘制投篮热图。
 
         Args:
-            df: 包含投篮数据的DataFrame。
-            title: 图表标题。
-            output_path: 图表保存路径。
+            shot_data: 包含投篮数据的DataFrame
+            player_id: NBA官方球员ID
+            player_name: 球员名称
+            team_name: 球队名称
+            title: 图表标题
+            output_path: 图表保存路径
+            show_misses: 是否显示未命中的投篮
+            show_makes: 是否显示命中的投篮
+            annotate: 是否添加投篮注释
+            add_player_photo: 是否添加球员照片
+            creator_info: 制作者信息
         """
-        # 创建一个新的图形和坐标轴
-        fig, ax = plt.subplots(figsize=(12, 11))
+        # 创建图形
+        fig = plt.figure(figsize=(12, 11))
+        ax = fig.add_subplot(1, 1, 1)
 
         # 绘制球场
-        self.draw_court(ax, color="black")
-
-        # 筛选出投篮数据
-        shots = df[df['actionType'].isin(['2pt', '3pt'])]
-
-        # 根据投篮结果分配颜色
-        colors = ['red' if result == 'Missed' else 'green' for result in shots['shotResult']]
-
-        # 绘制投篮点
-        ax.scatter(shots['xLegacy'], shots['yLegacy'], c=colors, alpha=0.7, edgecolors='k')
-
-        # 设置图形标题和坐标轴范围
-        ax.set_title(title)
-        ax.set_xlim(-250, 250)
-        ax.set_ylim(-50, 422.5)  # 调整y轴范围以适应整个半场
-
-        # 隐藏坐标轴刻度
-        ax.set_xticks([])
-        ax.set_yticks([])
-
-        # 保存图形
-        if output_path:
-            self.save_figure(fig, output_path)
-
-        return fig
-
-class TreeMapVisualizer(NBAVisualizer):
-    """树图可视化类"""
-
-    def __init__(self, theme: str = "default"):
-        super().__init__(theme)
-
-    def normalize_scores(self, data: pd.DataFrame) -> pd.DataFrame:
-        """标准化得分数据"""
-        df = data.copy()
-        df['Score_Normalized'] = df['statistics_points'] / df['statistics_points'].sum()
-        return df
-
-    def map_colors(self, data: pd.DataFrame, player_id: str, team_id: str = "LAL", color_by: str = "Score_Normalized") -> List:
-        """
-        映射颜色方案
-
-        Args:
-            data: 数据DataFrame
-            player_id: 要突出显示的球员ID
-            team_id: 球队ID
-            color_by: 用于映射颜色的列名，默认为 "Score_Normalized"
-        """
-        team_colors = self.team_colors.get(team_id, {"primary": [0.2, 0.2, 0.2], "secondary": [0.8, 0.8, 0.8]})
+        self.draw_court(ax)
         
-        # 根据指定的列 (默认为标准化得分) 生成颜色映射
-        min_val = data[color_by].min()
-        max_val = data[color_by].max()
-        norm = colors.Normalize(min_val, max_val)
-
-        color_mapped = []
-        for _, row in data.iterrows():
-            if row['personId'] == int(player_id):
-                color_mapped.append(team_colors["secondary"])
+        # 处理投篮数据
+        makes = misses = 0
+        for _, shot in shot_data.iterrows():
+            x, y = shot['xLegacy'], shot['yLegacy']
+            made = shot['shotResult'] != "Missed"
+            
+            if made:
+                makes += 1
             else:
-                intensity = norm(row[color_by])
-                min_lightness = 0.6
-                lightness = min_lightness + (1 - min_lightness) * intensity
-                adjusted_color = [
-                    team_colors["primary"][0] * lightness,
-                    team_colors["primary"][1] * lightness,
-                    team_colors["primary"][2] * lightness,
-                    1
-                ]
-                color_mapped.append(adjusted_color)
+                misses += 1
+            
+            # 根据命中情况选择标记样式
+            if made and show_makes:
+                marker = 'o'
+                color = self.court_colors["made"]
+                alpha = 0.8
+            elif not made and show_misses:
+                marker = 'x'
+                color = self.court_colors["missed"]
+                alpha = 0.6
+            else:
+                continue
+                
+            # 绘制投篮点
+            ax.scatter(x, y, c=color, marker=marker, s=100, alpha=alpha)
+            
+            # 添加注释
+            if annotate:
+                ax.annotate(shot['description'],
+                          (x, y),
+                          xytext=(5, 5),
+                          textcoords='offset points',
+                          fontsize=8,
+                          alpha=0.7)
 
-        return color_mapped
+        # 添加球员头像
+        if add_player_photo and player_id:
+            self.add_player_headshot(ax, player_id)
 
-    def create_labels(self, data: pd.DataFrame, label_fields: List[str] = None) -> List[str]:
-        """
-        创建标签
+        # 添加球员信息
+        if player_name:
+            total_shots = makes + misses
+            fg_pct = makes / total_shots if total_shots > 0 else 0
+            player_info = (f"{player_name}\n"
+                         f"FG: {makes}/{total_shots} ({fg_pct:.1%})")
+            ax.text(0.02, 0.98, player_info,
+                   transform=ax.transAxes,
+                   va='top',
+                   **self.player_info_style)
 
-        Args:
-            data: 数据DataFrame
-            label_fields: 要包含在标签中的字段列表，默认为 None
-        """
-        if label_fields is None:
-            label_fields = ['name', 'statistics_points', 'statistics_fieldGoalsPercentage']
+        # 添加制作者信息水印
+        if creator_info:
+            self.add_watermark(ax, creator_info)
 
-        labels = []
-        for _, row in data.iterrows():
-            label_parts = []
-            for field in label_fields:
-                if field == 'statistics_fieldGoalsPercentage':
-                    label_parts.append(f"FG%: {row[field]*100:.1f}")
-                elif 'statistics' in field:
-                    label_parts.append(f"{field.split('_')[1]}: {row[field]}")
-                else:
-                    label_parts.append(f"{field}: {row[field]}")
-            labels.append("\n".join(label_parts))
-        return labels
-
-    def plot(self,
-             data: pd.DataFrame,
-             player_id: str,
-             team_id: str = "LAL",
-             title: Optional[str] = None,
-             output_path: Optional[str] = None,
-             color_by: str = "Score_Normalized",
-             label_fields: Optional[List[str]] = None) -> plt.Figure:
-        """
-        绘制树图
-
-        Args:
-            data: 球员数据DataFrame
-            player_id: 高亮显示的球员ID
-            team_id: 球队ID
-            title: 图表标题
-            output_path: 输出路径
-            color_by: 用于映射颜色的列名，默认为 "Score_Normalized"
-            label_fields: 标签中要显示的字段列表
-        """
-        try:
-            # 数据预处理
-            filtered_data = data[data['statistics_points'] > 0].copy()
-            filtered_data = self.normalize_scores(filtered_data)
-
-            # 创建图形
-            fig, ax = plt.subplots(1, figsize=(12, 6))
-            fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
-
-            # 准备绘图数据
-            colors = self.map_colors(filtered_data, player_id, team_id, color_by)
-            labels = self.create_labels(filtered_data, label_fields)
-
-            # 绘制树图
-            squarify.plot(
-                sizes=filtered_data['Score_Normalized'],
-                label=labels,
-                color=colors,
-                alpha=0.8,
-                ax=ax,
-                linewidth=2,
-                edgecolor='white'
-            )
-
-            if title:
-                plt.title(title)
-
-            plt.axis('off')
-
-            if output_path:
-                self.save_figure(fig, output_path)
-
-            return fig
-
-        except Exception as e:
-            logging.error(f"Error plotting treemap: {e}")
-            raise
-
-class RadarChartVisualizer(NBAVisualizer):
-    """雷达图可视化类，用于展示球员各项数据"""
-
-    def __init__(self, theme: str = "default"):
-        super().__init__(theme)
-
-    def plot(self,
-             stats: Dict[str, float],
-             max_values: Dict[str, float],
-             title: Optional[str] = None,
-             output_path: Optional[str] = None,
-             labels: Optional[List[str]] = None) -> plt.Figure:
-        """
-        绘制雷达图
-
-        Args:
-            stats: 球员数据字典，如 {'points': 25, 'rebounds': 10, ...}
-            max_values: 各项数据的最大值参考
-            title: 图表标题
-            output_path: 输出路径
-            labels: 自定义标签
-        """
-        # 数据归一化
-        values = np.array([stats[cat] / max_values[cat] for cat in stats.keys()])
-
-        # 设置雷达图的角度
-        categories = list(stats.keys())
-        num_vars = len(categories)
-        angles = np.linspace(0, 2 * np.pi, num_vars, endpoint=False).tolist()
-        
-        # 闭合多边形
-        values = np.concatenate((values, [values[0]]))
-        angles += angles[:1]
-
-        # 创建图形
-        fig, ax = plt.subplots(figsize=(10, 10), subplot_kw=dict(polar=True))
-
-        # 绘制雷达图
-        ax.plot(angles, values, linewidth=2, linestyle='solid')
-        ax.fill(angles, values, alpha=0.25)
-
-        # 设置刻度和标签
-        ax.set_xticks(angles[:-1])
-        ax.set_xticklabels(labels if labels else categories)
-
-        # 设置y轴范围
-        ax.set_ylim(0, 1)
-
-        if title:
-            plt.title(title, size=20, y=1.1)
-
-        if output_path:
-            self.save_figure(fig, output_path)
-
-        return fig
-
-class HeatMapVisualizer(NBAVisualizer):
-    """热图可视化类，用于展示投篮热点图"""
-
-    def __init__(self, theme: str = "default"):
-        super().__init__(theme)
-        self.shot_chart_viz = ShotChartVisualizer(theme)
-
-    def plot(self,
-             shot_data: pd.DataFrame,
-             title: Optional[str] = None,
-             output_path: Optional[str] = None) -> plt.Figure:
-        """
-        绘制投篮热图
-
-        Args:
-            shot_data: 包含投篮位置数据的DataFrame，应包含'xLegacy'和'yLegacy'列。
-            title: 图表标题
-            output_path: 输出路径
-        """
-        fig, ax = plt.subplots(figsize=(12, 11))
-
-        # 绘制球场背景
-        self.shot_chart_viz.draw_court(ax, color="black")
-
-        # 创建热图
-        heatmap, xedges, yedges = np.histogram2d(shot_data['xLegacy'], shot_data['yLegacy'], bins=50, range=[[-250, 250], [-50, 420]])
-        extent = [xedges[0], xedges[-1], yedges[0], yedges[-1]]
-
-        # 使用imshow绘制热图
-        img = ax.imshow(heatmap.T, extent=extent, origin='lower', cmap='hot', alpha=0.8)
-
-        # 设置标题
-        if title:
-            ax.set_title(title)
-
-        # 移除坐标轴标签和刻度
+        # 设置图表样式
+        ax.set_xlim(-250, 250)
+        ax.set_ylim(-47.5, 422.5)
         ax.set_xticks([])
         ax.set_yticks([])
+        ax.set_facecolor(self.court_colors["background"])
+        
+        # 添加图例
+        legend_elements = []
+        if show_makes:
+            legend_elements.append(plt.Line2D([0], [0], marker='o', color='w',
+                                            markerfacecolor=self.court_colors["made"],
+                                            label=f'命中 ({makes})', markersize=10))
+        if show_misses:
+            legend_elements.append(plt.Line2D([0], [0], marker='x', color='w',
+                                            markerfacecolor=self.court_colors["missed"],
+                                            label=f'未命中 ({misses})', markersize=10))
+        ax.legend(handles=legend_elements, loc='upper right')
 
-        # 设置坐标轴范围
-        ax.set_xlim([-250, 250])
-        ax.set_ylim([-50, 422.5])
-
-        # 添加颜色条
-        cbar = fig.colorbar(img, ax=ax)
-        cbar.set_label('Density')
+        if title:
+            ax.set_title(title, pad=20, fontsize=16, fontweight='bold')
 
         # 保存图形
         if output_path:
             self.save_figure(fig, output_path)
 
+        return fig
+
+    def plot_shot_zones(self, 
+                       shot_data: pd.DataFrame,
+                       title: Optional[str] = None,
+                       output_path: Optional[str] = None) -> plt.Figure:
+        """
+        绘制投篮区域分布图
+
+        Args:
+            shot_data: 包含投篮数据的DataFrame
+            title: 图表标题
+            output_path: 输出路径
+        """
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 10))
+        
+        # 1. 左图：球场投篮热图
+        self.draw_court(ax1)
+        
+        # 创建热图数据
+        x = shot_data['xLegacy'].values
+        y = shot_data['yLegacy'].values
+        heatmap, xedges, yedges = np.histogram2d(x, y, bins=50)
+        
+        # 使用插值来平滑热图
+        extent = [xedges[0], xedges[-1], yedges[0], yedges[-1]]
+        ax1.imshow(heatmap.T, extent=extent, origin='lower', 
+                  cmap='hot', alpha=0.6)
+        
+        # 2. 右图：各区域命中率
+        zones = shot_data.groupby('zone').agg({
+            'shotResult': ['count', lambda x: (x != 'Missed').sum()]
+        })
+        zones.columns = ['总数', '命中数']
+        zones['命中率'] = zones['命中数'] / zones['总数']
+        
+        zones['命中率'].plot(kind='bar', ax=ax2)
+        ax2.set_title('各区域命中率')
+        ax2.set_ylabel('命中率')
+        ax2.set_xlabel('投篮区域')
+        
+        if title:
+            fig.suptitle(title)
+            
+        if output_path:
+            self.save_figure(fig, output_path)
+            
         return fig

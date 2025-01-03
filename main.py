@@ -1,4 +1,3 @@
-import asyncio
 from pathlib import Path
 import argparse
 import logging
@@ -6,7 +5,7 @@ from typing import Optional, Dict, Any
 from datetime import datetime
 import sys
 
-from nba.services.game_data_service import NBAGameDataProvider
+from nba.services.game_data_service import NBAGameDataProvider, NBAGameDataError
 
 # 配置日志
 logging.basicConfig(
@@ -69,46 +68,119 @@ def format_percentage(value: float) -> str:
     return f"{value:.1%}" if value is not None else "0.0%"
 
 
-async def display_game_info(provider: NBAGameDataProvider) -> None:
+def display_game_info(provider: NBAGameDataProvider) -> None:
     """显示比赛信息"""
     try:
-        game = await provider.get_game()
+        game, error = provider.get_game_safe()
+        if error:
+            logger.error(f"获取比赛数据失败: {error}")
+            return
         if not game:
             logger.error("未找到比赛数据")
             return
 
+        # 1. 基本信息
+        print(f"\n{COLORS['yellow']}=== 比赛基本信息 ==={COLORS['reset']}")
         status_map = {
-            True: f"{COLORS['green']}进行中{COLORS['reset']}",
-            False: "已结束"
+            1: "未开始",
+            2: f"{COLORS['green']}进行中{COLORS['reset']}",
+            3: "已结束"
         }
+        print(f"状态: {status_map.get(game.game.gameStatus, '未知')}")
+        
+        # 2. 场馆信息
+        arena = game.game.arena
+        print(f"\n{COLORS['blue']}场馆信息:{COLORS['reset']}")
+        print(f"场馆: {arena.arenaName}")
+        print(f"地点: {arena.arenaCity}, {arena.arenaState}, {arena.arenaCountry}")
+        print(f"时区: {arena.arenaTimezone}")
 
-        print(f"\n{COLORS['yellow']}=== 比赛信息 ==={COLORS['reset']}")
-        print(f"状态: {status_map.get(game.is_in_progress, '未知')}")
-        print(f"主队: {game.game.homeTeam.teamCity} {game.game.homeTeam.teamName} ({game.game.homeTeam.teamTricode})")
-        print(f"客队: {game.game.awayTeam.teamCity} {game.game.awayTeam.teamName} ({game.game.awayTeam.teamTricode})")
+        # 3. 球队信息
+        print(f"\n{COLORS['blue']}球队信息:{COLORS['reset']}")
+        home_team = game.game.homeTeam
+        away_team = game.game.awayTeam
+        
+        print("主队:")
+        print(f"  {home_team.teamCity} {home_team.teamName} ({home_team.teamTricode})")
+        print(f"  暂停剩余: {home_team.timeoutsRemaining}")
+        print(f"  罚球次数: {'在罚球线内' if home_team.inBonus == '1' else '未在罚球线内'}")
+        
+        print("客队:")
+        print(f"  {away_team.teamCity} {away_team.teamName} ({away_team.teamTricode})")
+        print(f"  暂停剩余: {away_team.timeoutsRemaining}")
+        print(f"  罚球次数: {'在罚球线内' if away_team.inBonus == '1' else '未在罚球线内'}")
 
-        # 使用颜色区分比分
-        home_color = COLORS['green'] if game.game.homeTeam.score > game.game.awayTeam.score else COLORS['red']
-        away_color = COLORS['green'] if game.game.awayTeam.score > game.game.homeTeam.score else COLORS['red']
-        print(f"比分: {home_color}{game.game.homeTeam.score}{COLORS['reset']} - "
-              f"{away_color}{game.game.awayTeam.score}{COLORS['reset']}")
+        # 4. 比分信息
+        print(f"\n{COLORS['blue']}比分信息:{COLORS['reset']}")
+        home_color = COLORS['green'] if home_team.score > away_team.score else COLORS['red']
+        away_color = COLORS['green'] if away_team.score > home_team.score else COLORS['red']
+        print(f"当前比分: {home_color}{home_team.score}{COLORS['reset']} - "
+              f"{away_color}{away_team.score}{COLORS['reset']}")
 
-        # 显示每节比分
-        periods = game.get_period_scores(True)
-        away_periods = game.get_period_scores(False)
-        print("\n每节比分:")
-        print("      " + " ".join(f"第{i + 1}节" for i in range(len(periods))))
-        print(f"主队: {' '.join(str(score).rjust(3) for score in periods)}")
-        print(f"客队: {' '.join(str(score).rjust(3) for score in away_periods)}")
+        # 5. 每节比分
+        print("\n每节比分详情:")
+        headers = []
+        home_scores = []
+        away_scores = []
+        
+        for p in home_team.periods:
+            period_type = "加时" if p.period > 4 else f"第{p.period}节"
+            headers.append(period_type.rjust(6))
+            home_scores.append(str(p.score).rjust(6))
+            away_scores.append(str(next(ap.score for ap in away_team.periods if ap.period == p.period)).rjust(6))
+
+        print("      " + " ".join(headers))
+        print(f"主队: {' '.join(home_scores)}")
+        print(f"客队: {' '.join(away_scores)}")
+
+        # 6. 裁判信息
+        print(f"\n{COLORS['blue']}裁判信息:{COLORS['reset']}")
+        for official in game.game.officials:
+            print(f"{official.assignment}: {official.name} (#{official.jerseyNum})")
+
+        # 7. 首发阵容
+        print(f"\n{COLORS['blue']}首发阵容:{COLORS['reset']}")
+        print("主队首发:")
+        for player in home_team.players:
+            if player.starter == "1":
+                print(f"  #{player.jerseyNum} {player.name} ({player.position})")
+        
+        print("\n客队首发:")
+        for player in away_team.players:
+            if player.starter == "1":
+                print(f"  #{player.jerseyNum} {player.name} ({player.position})")
+
+        # 8. 当前在场球员
+        if game.game.gameStatus == 2:  # 比赛进行中
+            print(f"\n{COLORS['blue']}当前在场球员:{COLORS['reset']}")
+            print("主队场上球员:")
+            for player in home_team.players:
+                if player.oncourt == "1":
+                    print(f"  #{player.jerseyNum} {player.name}")
+            
+            print("\n客队场上球员:")
+            for player in away_team.players:
+                if player.oncourt == "1":
+                    print(f"  #{player.jerseyNum} {player.name}")
 
     except Exception as e:
         logger.error(f"显示比赛信息时出错: {e}")
+        if logger.level == logging.DEBUG:
+            logger.debug("错误详情:", exc_info=True)
 
 
-async def display_player_stats(provider: NBAGameDataProvider) -> None:
+def display_player_stats(provider: NBAGameDataProvider) -> None:
     """显示球员统计"""
     try:
-        stats = await provider.get_player_stats()
+        player_id = provider.get_player_id()
+        if not player_id:
+            return
+
+        game = provider.get_game()
+        if not game:
+            return
+
+        stats = game.get_player_stats(player_id)
         if not stats:
             logger.error(f"未找到球员 {provider.default_player} 的统计数据")
             return
@@ -133,28 +205,61 @@ async def display_player_stats(provider: NBAGameDataProvider) -> None:
         for key, value in basic_stats.items():
             print(f"{key.rjust(max_key_length)}: {value}")
 
-        # 投篮数据
-        print(f"\n{COLORS['blue']}投篮数据:{COLORS['reset']}")
-        shooting_stats = {
-            '投篮': (
-                getattr(stats, 'fieldGoalsMade', 0),
-                getattr(stats, 'fieldGoalsAttempted', 0),
-                getattr(stats, 'fieldGoalsPercentage', 0.0)
-            ),
-            '三分': (
-                getattr(stats, 'threePointersMade', 0),
-                getattr(stats, 'threePointersAttempted', 0),
-                getattr(stats, 'threePointersPercentage', 0.0)
-            ),
-            '罚球': (
-                getattr(stats, 'freeThrowsMade', 0),
-                getattr(stats, 'freeThrowsAttempted', 0),
-                getattr(stats, 'freeThrowsPercentage', 0.0)
-            )
+        # 1. 得分细节
+        print(f"\n{COLORS['blue']}得分细节:{COLORS['reset']}")
+        points_detail = {
+            '总得分': stats.points,
+            '油漆区得分': stats.pointsInThePaint,
+            '二次进攻得分': stats.pointsSecondChance,
+            '快攻得分': stats.pointsFastBreak,
         }
+        for key, value in points_detail.items():
+            print(f"{key}: {value}")
 
-        for key, (made, attempted, percentage) in shooting_stats.items():
-            print(f"{key}: {made}/{attempted} ({format_percentage(percentage)})")
+        # 2. 投篮位置分布
+        print(f"\n{COLORS['blue']}投篮位置分布:{COLORS['reset']}")
+        shot_stats = [
+            ('总投篮', stats.fieldGoalsMade, stats.fieldGoalsAttempted, stats.fieldGoalsPercentage),
+            ('三分球', stats.threePointersMade, stats.threePointersAttempted, stats.threePointersPercentage),
+            ('罚球', stats.freeThrowsMade, stats.freeThrowsAttempted, stats.freeThrowsPercentage)
+        ]
+        for name, made, attempted, percentage in shot_stats:
+            if attempted > 0:
+                print(f"{name}: {made}/{attempted} ({format_percentage(percentage)})")
+
+        # 3. 进阶数据
+        print(f"\n{COLORS['blue']}进阶数据:{COLORS['reset']}")
+        advanced_stats = {
+            '真实命中率': getattr(stats, 'trueShootingPercentage', 0.0),
+            '有效命中率': getattr(stats, 'effectiveFieldGoalPercentage', 0.0),
+            '使用率': getattr(stats, 'usagePercentage', 0.0),
+            '助攻率': getattr(stats, 'assistPercentage', 0.0),
+            '篮板率': getattr(stats, 'reboundPercentage', 0.0),
+        }
+        for key, value in advanced_stats.items():
+            print(f"{key}: {format_percentage(value)}")
+
+        # 4. 防守数据
+        print(f"\n{COLORS['blue']}防守数据:{COLORS['reset']}")
+        defense_stats = {
+            '防守篮板': getattr(stats, 'reboundsDefensive', 0),
+            '抢断': getattr(stats, 'steals', 0),
+            '盖帽': getattr(stats, 'blocks', 0),
+            '防守犯规': getattr(stats, 'foulsDrawn', 0),
+        }
+        for key, value in defense_stats.items():
+            print(f"{key}: {value}")
+
+        # 5. 其他数据
+        print(f"\n{COLORS['blue']}其他数据:{COLORS['reset']}")
+        other_stats = {
+            '失误': getattr(stats, 'turnovers', 0),
+            '犯规': getattr(stats, 'foulsPersonal', 0),
+            '技术犯规': getattr(stats, 'foulsTechnical', 0),
+            '+/-': getattr(stats, 'plusMinusPoints', 0),
+        }
+        for key, value in other_stats.items():
+            print(f"{key}: {value}")
 
     except Exception as e:
         logger.error(f"显示球员统计时出错: {str(e)}")
@@ -162,12 +267,11 @@ async def display_player_stats(provider: NBAGameDataProvider) -> None:
             logger.debug("错误详情:", exc_info=True)
 
 
-async def display_team_stats(provider: NBAGameDataProvider) -> None:
+def display_team_stats(provider: NBAGameDataProvider) -> None:
     """显示球队统计"""
     try:
-        game = await provider.get_game()
+        game = provider.get_game()
         if not game:
-            logger.error(f"未找到球队 {provider.default_team} 的比赛数据")
             return
 
         team_name = provider.default_team
@@ -176,7 +280,6 @@ async def display_team_stats(provider: NBAGameDataProvider) -> None:
             logger.error(f"未找到球队 {team_name}")
             return
 
-        # 判断球队是主场还是客场
         is_home = game.game.homeTeam.teamId == team_id
         team = game.game.homeTeam if is_home else game.game.awayTeam
         team_stats = game.get_team_stats(is_home)
@@ -186,28 +289,50 @@ async def display_team_stats(provider: NBAGameDataProvider) -> None:
             return
 
         print(f"\n{COLORS['yellow']}=== {team.teamCity} {team.teamName} 球队统计 ==={COLORS['reset']}")
-        print(f"得分: {team.score}")
+        
+        # 1. 得分分布
+        print(f"\n{COLORS['blue']}得分分布:{COLORS['reset']}")
+        print(f"总得分: {team.score}")
+        print(f"油漆区得分: {team.get_stat('pointsInThePaint', 0)}")
+        print(f"快攻得分: {team.get_stat('pointsFastBreak', 0)}")
+        print(f"二次进攻得分: {team.get_stat('pointsSecondChance', 0)}")
+        print(f"最大领先: {team.get_stat('leadLargest', 0)}")
 
-        # 显示每节得分
-        periods = game.get_period_scores(is_home)
-        print(f"每节得分: {periods}")
+        # 2. 投篮数据
+        print(f"\n{COLORS['blue']}投篮数据:{COLORS['reset']}")
+        made, attempted, percentage = team.field_goals
+        print(f"总投篮: {made}/{attempted} ({format_percentage(percentage)})")
+        
+        made, attempted, percentage = team.three_pointers
+        print(f"三分球: {made}/{attempted} ({format_percentage(percentage)})")
+        
+        made, attempted, percentage = team.free_throws
+        print(f"罚球: {made}/{attempted} ({format_percentage(percentage)})")
 
-        # 显示详细统计
-        print(f"\n{COLORS['blue']}详细统计:{COLORS['reset']}")
-        stats_to_display = {
-            '助攻': getattr(team_stats, 'assists', 0),
-            '篮板': getattr(team_stats, 'reboundsTotal', 0),
-            '抢断': getattr(team_stats, 'steals', 0),
-            '盖帽': getattr(team_stats, 'blocks', 0),
-            '失误': getattr(team_stats, 'turnovers', 0),
-            '投篮': f"{getattr(team_stats, 'fieldGoalsMade', 0)}/{getattr(team_stats, 'fieldGoalsAttempted', 0)}",
-            '三分': f"{getattr(team_stats, 'threePointersMade', 0)}/{getattr(team_stats, 'threePointersAttempted', 0)}",
-            '罚球': f"{getattr(team_stats, 'freeThrowsMade', 0)}/{getattr(team_stats, 'freeThrowsAttempted', 0)}",
+        # 3. 篮板数据
+        print(f"\n{COLORS['blue']}篮板数据:{COLORS['reset']}")
+        print(f"总篮板: {team.get_stat('reboundsTotal')}")
+        print(f"前场篮板: {team.get_stat('reboundsOffensive')}")
+        print(f"后场篮板: {team.get_stat('reboundsDefensive')}")
+
+        # 4. 其他数据
+        print(f"\n{COLORS['blue']}其他数据:{COLORS['reset']}")
+        other_stats = {
+            '助攻': team.get_stat('assists'),
+            '抢断': team.get_stat('steals'),
+            '盖帽': team.get_stat('blocks'),
+            '失误': team.get_stat('turnovers'),
+            '犯规': team.get_stat('foulsPersonal'),
+            '技术犯规': team.get_stat('foulsTechnical')
         }
-
-        max_key_length = max(len(key) for key in stats_to_display.keys())
-        for key, value in stats_to_display.items():
+        max_key_length = max(len(key) for key in other_stats.keys())
+        for key, value in other_stats.items():
             print(f"{key.rjust(max_key_length)}: {value}")
+
+        # 5. 替补席数据
+        print(f"\n{COLORS['blue']}替补席得分:{COLORS['reset']}")
+        bench_points = sum(p.statistics.points for p in team.players if p.starter != "1")
+        print(f"替补得分: {bench_points}")
 
     except Exception as e:
         logger.error(f"显示球队统计时出错: {e}")
@@ -215,36 +340,90 @@ async def display_team_stats(provider: NBAGameDataProvider) -> None:
             logger.debug("错误详情:", exc_info=True)
 
 
-async def display_scoring_plays(provider: NBAGameDataProvider) -> None:
+def display_scoring_plays(provider: NBAGameDataProvider) -> None:
     """显示得分事件"""
     try:
-        plays = await provider.get_scoring_plays()
+        # 获取比赛数据以确定主队三字母代码
+        game = provider.get_game()
+        if not game:
+            return
+        home_team_code = game.game.homeTeam.teamTricode
+
+        plays = provider.get_scoring_plays()
         if not plays:
             logger.error("未找到得分事件")
             return
 
-        print(f"\n{COLORS['yellow']}=== 得分事件 ==={COLORS['reset']}")
-        current_period = None
+        print(f"\n{COLORS['yellow']}=== 得分事件分析 ==={COLORS['reset']}")
+        
+        # 1. 得分事件统计
+        print(f"\n{COLORS['blue']}得分类型统计:{COLORS['reset']}")
+        scoring_types = {
+            '两分球': 0,
+            '三分球': 0,
+            '罚球': 0,
+            '快攻': 0,
+            '二次进攻': 0,
+        }
+        
+        # 2. 得分时间分布
+        period_scores = {}
+        clutch_plays = []  # 关键时刻得分
+        
+        for play in plays:
+            # 统计得分类型
+            if '3PT' in play['description']:
+                scoring_types['三分球'] += 1
+            elif 'Free Throw' in play['description']:
+                scoring_types['罚球'] += 1
+            else:
+                scoring_types['两分球'] += 1
+                
+            if 'fastbreak' in play.get('qualifiers', []):
+                scoring_types['快攻'] += 1
+            if '2ndchance' in play.get('qualifiers', []):
+                scoring_types['二次进攻'] += 1
+                
+            # 记录每节得分
+            period = play['period']
+            if period not in period_scores:
+                period_scores[period] = {'home': 0, 'away': 0}
+            
+            points = 3 if '3PT' in play['description'] else (1 if 'Free Throw' in play['description'] else 2)
+            is_home = play['team'] == home_team_code
+            period_scores[period]['home' if is_home else 'away'] += points
+            
+            # 检查关键时刻得分
+            if (period >= 4 and 
+                play['time'] <= "5:00" and 
+                abs(play.get('score_diff', 0)) <= 5):
+                clutch_plays.append(play)
 
-        for play in sorted(plays, key=lambda x: (x['period'], x['time'])):
-            if 'MISS' in play['description']:
-                continue
+        # 显示统计结果
+        for score_type, count in scoring_types.items():
+            if count > 0:
+                print(f"{score_type}: {count}")
 
-            if current_period != play['period']:
-                current_period = play['period']
-                print(f"\n{COLORS['blue']}第 {current_period} 节:{COLORS['reset']}")
-
-            time_str = format_time(play['time'])
-            team_color = COLORS['green'] if play['team'] == 'LAL' else COLORS['blue']
-
-            print(f"{time_str:<7} - {team_color}{play['team']:<3}{COLORS['reset']} - "
-                  f"{play['player']:<20} {play['description']}")
+        # 显示每节得分分布
+        if period_scores:
+            print(f"\n{COLORS['blue']}每节得分分布:{COLORS['reset']}")
+            for period, scores in sorted(period_scores.items()):
+                period_name = f"第{period}节" if period <= 4 else f"加时{period-4}"
+                print(f"{period_name}: 主队 {scores['home']} - {scores['away']} 客队")
+            
+        # 显示关键时刻表现
+        if clutch_plays:
+            print(f"\n{COLORS['blue']}关键时刻表现:{COLORS['reset']}")
+            for play in clutch_plays:
+                print(f"第{play['period']}节 {play['time']} - {play['description']}")
 
     except Exception as e:
         logger.error(f"显示得分事件时出错: {e}")
+        if logger.level == logging.DEBUG:
+            logger.debug("错误详情:", exc_info=True)
 
 
-async def main():
+def main():
     """主函数"""
     try:
         args = parse_args()
@@ -268,21 +447,17 @@ async def main():
 
         # 确定要显示的数据
         show_all = args.all or not any([args.game, args.player_stats,
-                                        args.team_stats, args.scoring])
+                                      args.team_stats, args.scoring])
 
-        # 创建任务列表
-        tasks = []
+        # 顺序执行显示函数
         if show_all or args.game:
-            tasks.append(display_game_info(provider))
+            display_game_info(provider)
         if show_all or args.player_stats:
-            tasks.append(display_player_stats(provider))
+            display_player_stats(provider)
         if show_all or args.team_stats:
-            tasks.append(display_team_stats(provider))
+            display_team_stats(provider)
         if show_all or args.scoring:
-            tasks.append(display_scoring_plays(provider))
-
-        # 并发执行任务
-        await asyncio.gather(*tasks)
+            display_scoring_plays(provider)
 
     except KeyboardInterrupt:
         print(f"\n{COLORS['yellow']}程序被用户中断{COLORS['reset']}")
@@ -295,4 +470,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
