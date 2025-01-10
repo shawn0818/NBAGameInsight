@@ -1,33 +1,144 @@
-import os
-from dotenv import load_dotenv
+# weibo_config.py
 
-# 加载环境变量
-load_dotenv()
+from pathlib import Path
+import logging
+import requests
+from typing import List
+
+
+def get_project_root() -> Path:
+    """获取项目根目录"""
+    return Path(__file__).parent.parent
+
 
 class WeiboConfig:
     """微博配置类"""
-    
+
     class PATHS:
         """文件路径配置"""
-        BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-        COOKIES_FILE = os.getenv('WEIBO_COOKIES_PATH', os.path.join(BASE_DIR, "weibo_cookies.json"))
-    
-    class PUBLISH:
-        """发布相关配置"""
-        POST_INTERVAL = int(os.getenv('WEIBO_POST_INTERVAL', '60'))  # 发布间隔（秒）
-        MAX_RETRIES = 3  # 发布失败最大重试次数
-        RETRY_DELAY = 5  # 重试间隔（秒）
-        
-    class BROWSER:
-        """浏览器相关配置"""
-        HEADLESS = False  # 是否隐藏浏览器界面
-        VIEWPORT = {
-            'width': 1280,
-            'height': 800
+        _ROOT = get_project_root()
+        DATA_DIR = _ROOT / "data"
+        LOGS_DIR = DATA_DIR / "logs"
+        STORAGE_DIR = _ROOT / "storage"
+        IMAGES_DIR = STORAGE_DIR / "images"
+
+        @classmethod
+        def ensure_directories(cls) -> None:
+            """确保所有必要的目录存在"""
+            for directory in [cls.LOGS_DIR, cls.IMAGES_DIR]:
+                directory.mkdir(parents=True, exist_ok=True)
+
+    class MOBILE_API:
+        """移动端 API 配置"""
+        # API 端点
+        ENDPOINTS = {
+            'CONFIG': 'https://m.weibo.cn/api/config',
+            'UPLOAD': 'https://m.weibo.cn/api/statuses/uploadPic',
+            'UPDATE': 'https://m.weibo.cn/api/statuses/update'
         }
-        
+
+        # 基本请求头
+        BASE_HEADERS = {
+            'authority': 'm.weibo.cn',
+            'accept': 'application/json, text/plain, */*',
+            'accept-language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+            'dnt': '1',
+            'origin': 'https://m.weibo.cn',
+            'referer': 'https://m.weibo.cn/compose/',
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                        'AppleWebKit/537.36 (KHTML, like Gecko) '
+                        'Chrome/131.0.0.0 Safari/537.36'
+        }
+
+        # 发布请求头
+        UPDATE_HEADERS = {
+            **BASE_HEADERS,
+            'method': 'POST',
+            'path': '/api/statuses/update',
+            'scheme': 'https',
+            'content-type': 'application/x-www-form-urlencoded',
+            'mweibo-pwa': '1',
+            'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Windows"',
+            'sec-fetch-dest': 'empty',
+            'sec-fetch-mode': 'cors',
+            'sec-fetch-site': 'same-origin',
+            'x-requested-with': 'XMLHttpRequest'
+        }
+
+        # 上传图片请求头模板
+        UPLOAD_HEADERS_TEMPLATE = {
+            **BASE_HEADERS,
+            'mweibo-pwa': '1',
+            'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Windows"',
+            'sec-fetch-dest': 'empty',
+            'sec-fetch-mode': 'cors',
+            'sec-fetch-site': 'same-origin',
+            'x-requested-with': 'XMLHttpRequest',
+            'content-type': 'multipart/form-data; boundary={boundary}'
+        }
+
+        # Cookies 配置
+        COOKIES = {
+            'WEIBOCN_FROM': '1110006030',
+            'SCF': 'ArmloP7TlRpMxBXauEw2X3bIcmDjftAmeOtJALxgDrTlF92osTkoMhY5-1_FbdyZZq6vaopxajRSEAH14Ux6W8E.',
+            'SUB': '_2A25KeyZyDeRhGeBO61QQ9ynEzjqIHXVp-Se6rDV6PUJbktANLVjikW1NSl6v_DqDUsxpJW1sFXj3DXvS-sJDIwwo',
+            'SUBP': '0033WrSXqPxfM725Ws9jqgMF55529P9D9WF3rnY5-0hhUnTHYZWyvRiZ5JpX5KMhUgL.Foq7ehqpS0MRSKq2dJLoIpRLxK-L12zL1KzLxK-LBonL1heLxKqL1-eL1KUbdNBt',
+            'SSOLoginState': '1736398370',
+            'ALF': '1738990370',
+            '*T*WM': '65519253721',
+            'MLOGIN': '1',
+            'M_WEIBOCN_PARAMS': 'uicode%3D20000174'
+        }
+        # 图片上传参数
+        UPLOAD_PARAMS = {
+            'type': 'json',
+            '_spr': 'screen:1920x1080'
+        }
+
+        # 超时和重试
+        TIMEOUT = 30
+        MAX_RETRIES = 3
+        RETRY_DELAY = 5
+
+    class PUBLISH:
+        """发布流程配置"""
+        # 发布限制
+        MAX_TEXT_LENGTH = 140
+        MAX_IMAGES = 9
+        ALLOWED_IMAGE_TYPES = ['.jpg', '.jpeg', '.png', '.gif']
+
+        # 重试和间隔策略
+        MAX_RETRIES = 3
+        RETRY_DELAY = 5  # 发布失败后的重试间隔（秒）
+        MIN_PUBLISH_INTERVAL = 10  # 两次成功发布之间的最小间隔（秒）
+
+    class LOGGING:
+        """日志配置"""
+        LEVEL = logging.INFO
+        FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        ENCODING = 'utf-8'
+
+        @classmethod
+        def setup(cls) -> None:
+            """配置日志"""
+            logging.basicConfig(
+                level=cls.LEVEL,
+                format=cls.FORMAT,
+                handlers=[
+                    logging.StreamHandler(),
+                    logging.FileHandler(
+                        WeiboConfig.PATHS.LOGS_DIR / 'weibo.log',
+                        encoding=cls.ENCODING
+                    )
+                ]
+            )
+
     @classmethod
-    def initialize(cls):
+    def initialize(cls) -> None:
         """初始化配置"""
-        # 如果将来需要初始化操作，可以在这里添加
-        pass
+        cls.PATHS.ensure_directories()
+        cls.LOGGING.setup()
