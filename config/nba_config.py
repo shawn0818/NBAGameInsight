@@ -53,7 +53,14 @@ class NBAConfig:
     class PATHS:
         """文件路径配置。"""
         _ROOT = get_project_root()
+
+        # 静态资源目录（存放不会变动的文件）
+        STATIC_DIR = _ROOT / "static"
+        IMAGES_DIR = STATIC_DIR / "images"  # 静态图片，如logo等
+
+        # 动态数据目录（存放运行时生成的数据）
         DATA_DIR = _ROOT / "data"
+        TEST_DIR = _ROOT / "test"
         LOGS_DIR = DATA_DIR / "logs"
         STORAGE_DIR = _ROOT / "storage"
         CACHE_DIR = DATA_DIR / "cache"
@@ -63,7 +70,7 @@ class NBAConfig:
         GIF_DIR = STORAGE_DIR / "gifs"
         
         LEAGUE_CACHE = CACHE_DIR / "league"  # 联盟数据缓存目录
-        SCHEDULE_CACHE = CACHE_DIR / "schedule.json"
+        SCHEDULE_CACHE = CACHE_DIR / "schedule"
         GAME_CACHE = CACHE_DIR / "games"
         PLAYER_CACHE = CACHE_DIR / "players"
         TEAM_CACHE = CACHE_DIR / "teams"
@@ -75,20 +82,33 @@ class NBAConfig:
         @classmethod
         def ensure_directories(cls):
             """确保所有必要的目录存在。"""
-            directories = [
-                cls.CACHE_DIR,
-                cls.LOGS_DIR,
-                cls.PICTURES_DIR,
-                cls.VIDEO_DIR,
-                cls.GIF_DIR,
-                cls.GAME_CACHE,
-                cls.PLAYER_CACHE,
-                cls.TEAM_CACHE,
-                cls.LEAGUE_CACHE  # 新增
-            ]
-            for directory in directories:
-                directory.mkdir(parents=True, exist_ok=True)
-    
+            # 静态资源目录
+            cls.STATIC_DIR.mkdir(parents=True, exist_ok=True)
+            cls.IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+
+            
+            # 动态数据目录
+            cls.DATA_DIR.mkdir(parents=True, exist_ok=True)
+            cls.LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            cls.STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+            cls.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+            # 缓存目录
+            cls.LEAGUE_CACHE.mkdir(parents=True, exist_ok=True)
+            cls.SCHEDULE_CACHE.mkdir(parents=True, exist_ok=True)
+            cls.GAME_CACHE.mkdir(parents=True, exist_ok=True)
+            cls.PLAYER_CACHE.mkdir(parents=True, exist_ok=True)
+            cls.TEAM_CACHE.mkdir(parents=True, exist_ok=True)
+
+            
+            # 存储目录
+            cls.PICTURES_DIR.mkdir(parents=True, exist_ok=True)
+            cls.VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+            cls.GIF_DIR.mkdir(parents=True, exist_ok=True)
+            
+
+
+
     class API:
         """API相关配置。"""
         UPDATE_INTERVAL = 7 * 24 * 60 * 60  # 缓存更新间隔（7天）

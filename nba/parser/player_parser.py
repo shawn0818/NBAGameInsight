@@ -4,6 +4,8 @@ from pathlib import Path
 import json
 from datetime import datetime, timedelta
 from pydantic import ValidationError
+
+from config.nba_config import NBAConfig
 from nba.models.player_model import PlayerProfile
 
 
@@ -18,7 +20,7 @@ class PlayerParser:
             cache_dir: 缓存目录路径，默认为None不使用缓存
         """
         self.logger = logging.getLogger(self.__class__.__name__)
-        self.cache_dir = cache_dir
+        self.cache_dir = NBAConfig.PATHS.PLAYER_CACHE
         if cache_dir:
             self.cache_file = cache_dir / 'players.json'
             self.cache_dir.mkdir(parents=True, exist_ok=True)

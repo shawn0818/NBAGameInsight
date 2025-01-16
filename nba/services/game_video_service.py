@@ -9,11 +9,27 @@ from config.nba_config import NBAConfig
 
 
 class GameVideoService:
-    """NBA比赛视频服务"""
+    """NBA比赛视频服务
+    
+    提供比赛视频相关的功能，包括：
+    1. 视频资源获取
+    2. 视频下载和处理
+    3. 格式转换（MP4到GIF）
+    4. 视频压缩
+    
+    支持批量处理和自定义输出格式。
+    """
 
     def __init__(self, video_processor: Optional[NBAVideoProcessor] = None,
                  downloader: Optional[VideoDownloader] = None,
                  converter: Optional[VideoConverter] = None):
+        """初始化视频服务
+        
+        Args:
+            video_processor: 视频处理器实例
+            downloader: 视频下载器实例
+            converter: 视频转换器实例
+        """
         self.logger = logging.getLogger("nba.services.game_video_service")
         self.video_processor = video_processor or NBAVideoProcessor()
         self.downloader = downloader or VideoDownloader()

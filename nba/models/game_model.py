@@ -1,15 +1,28 @@
-import logging
-from pydantic import BaseModel, Field, validator, model_validator, ValidationError
-from typing import Optional, List, Any, Dict, Literal
 from datetime import datetime
 from enum import IntEnum, Enum
-from nba.models.player_model import PlayerProfile, PlayerRegistry
+from typing import Optional, List, Dict, Any, Union, Literal
+from pydantic import BaseModel, Field, model_validator, ValidationError, conint, confloat, ConfigDict
+from nba.models.player_model import PlayerProfile
 from nba.models.team_model import TeamProfile
 
-
+# ===========================
 # 1. 基础枚举类
+# ===========================
+
+class GameStatusEnum(IntEnum):
+    """比赛状态"""
+    NOT_STARTED = 1
+    IN_PROGRESS = 2
+    FINISHED = 3
+
+class ShotResult(str, Enum):
+    """投篮结果"""
+    MADE = "Made"
+    MISSED = "Missed"
+
 class EventCategory(str, Enum):
-    PERIOD_START = "period"
+    """比赛事件类型"""
+    PERIOD_START = "period-start"
     JUMPBALL = "jumpball"
     TWO_POINT = "2pt"
     THREE_POINT = "3pt"
@@ -23,96 +36,50 @@ class EventCategory(str, Enum):
     SUBSTITUTION = "substitution"
     FOUL = "foul"
     VIOLATION = "violation"
-
-
-class TwoPointSubType(str, Enum):
-    """2分球类型"""
-    JUMP_SHOT = "Jump Shot"
-    LAYUP = "Layup"
-    HOOK = "Hook"
-    DUNK = "Dunk"
-    FLOATING = "Floating"          # 漂移投篮
-    FINGER_ROLL = "Finger Roll"    # 上篮
-    PUTBACK = "Putback"           # 补篮
-    REVERSE = "Reverse"           # 反手上篮
-
-
-class ThreePointSubType(str, Enum):
-    JUMP_SHOT = "Jump Shot"
-
-
-class ReboundSubType(str, Enum):
-    OFFENSIVE = "offensive"
-    DEFENSIVE = "defensive"
-
-
-class TurnoverSubType(str, Enum):
-    LOST_BALL = "lost ball"
-    BAD_PASS = "bad pass"
-    OFFENSIVE_FOUL = "offensive foul"
-    OUT_OF_BOUNDS = "out-of-bounds"
-    SHOT_CLOCK = "shot clock"
-
-
-class FoulSubType(str, Enum):
-    OFFENSIVE = "offensive"
-    PERSONAL = "personal"
-    SHOOTING = "shooting"
-    LOOSE_BALL = "loose ball"
-
+    GAME = "game"
 
 class ShotQualifier(str, Enum):
     """投篮限定词"""
-    # 位置相关
-    POINTS_IN_PAINT = "pointsinthepaint"  # 在油漆区内得分
-    ABOVE_THE_BREAK_3 = "abovethebreak3"  # 底角三分
-    CORNER_3 = "corner3"                  # 底角三分
-    
-    # 进攻方式
-    SECOND_CHANCE = "2ndchance"           # 二次进攻机会
-    FAST_BREAK = "fastbreak"              # 快攻
-    FROM_TURNOVER = "fromturnover"        # 来自对方失误
-    
-    # 投篮动作
-    DRIVING = "driving"                   # 突破
-    FADEAWAY = "fadeaway"                 # 后仰跳投
-    HOOK = "hook"                         # 勾手
-    PULLUP = "pullup"                     # 急停跳投
-    STEPBACK = "stepback"                 # 后撤步
-    TURNAROUND = "turnaround"             # 转身跳投
-    ALLEY_OOP = "alleyoop"               # 空接
-    TIP = "tip"                          # 补篮
-    CUTTING = "cutting"                   # 切入
-    
-    # 防守情况
-    DEFENDED = "defended"                 # 有防守
-    UNDEFENDED = "undefended"             # 无防守
-    CONTESTED = "contested"               # 受干扰
-    UNCONTESTED = "uncontested"           # 未受干扰
-    
-    # 其他
-    AND_ONE = "andone"                    # 打成2+1
-    BLOCKED = "blocked"                   # 被盖帽
+    POINTS_IN_PAINT = "pointsinthepaint"
+    ABOVE_THE_BREAK_3 = "abovethebreak3"
+    CORNER_3 = "corner3"
+    SECOND_CHANCE = "2ndchance"
+    FAST_BREAK = "fastbreak"
+    FROM_TURNOVER = "fromturnover"
+    DRIVING = "driving"
+    FADEAWAY = "fadeaway"
+    HOOK = "hook"
+    PULLUP = "pullup"
+    STEPBACK = "stepback"
+    TURNAROUND = "turnaround"
+    ALLEY_OOP = "alleyoop"
+    TIP = "tip"
+    CUTTING = "cutting"
+    DEFENDED = "defended"
+    UNDEFENDED = "undefended"
+    CONTESTED = "contested"
+    UNCONTESTED = "uncontested"
+    AND_ONE = "andone"
+    BLOCKED = "blocked"
 
-
-class GameStatusEnum(IntEnum):
-    NOT_STARTED = 1
-    IN_PROGRESS = 2
-    FINISHED = 3
-
-
+# ===========================
 # 2. 基础数据模型
-class Arena(BaseModel):
-    arenaId: int = Field(..., description="场馆ID")
-    arenaName: str = Field(..., description="场馆名称")
-    arenaCity: str = Field(..., description="场馆城市")
-    arenaState: str = Field(..., description="场馆州")
-    arenaCountry: str = Field(..., description="场馆国家")
-    arenaTimezone: str = Field(..., description="场馆时区")
+# ===========================
 
+class Arena(BaseModel):
+    """场馆信息"""
+    arenaId: conint(ge=0) = Field(default=0, description="场馆ID")
+    arenaName: str = Field(default="Unknown Arena", description="场馆名称")
+    arenaCity: str = Field(default="Unknown City", description="场馆城市")
+    arenaState: str = Field(default="Unknown State", description="场馆州")
+    arenaCountry: str = Field(default="Unknown Country", description="场馆国家")
+    arenaTimezone: str = Field(default="America/Los_Angeles", description="场馆时区")
+
+    model_config = ConfigDict(from_attributes=True)
 
 class Official(BaseModel):
-    personId: int = Field(..., description="裁判ID")
+    """裁判信息"""
+    personId: conint(ge=0) = Field(..., description="裁判ID")
     name: str = Field(..., description="裁判姓名")
     nameI: str = Field(..., description="裁判姓名缩写")
     firstName: str = Field(..., description="裁判名")
@@ -120,410 +87,407 @@ class Official(BaseModel):
     jerseyNum: str = Field(..., description="裁判号码")
     assignment: str = Field(..., description="裁判职位")
 
+    model_config = ConfigDict(from_attributes=True)
 
-class PeriodScore(BaseModel):
-    period: int = Field(..., description="节次")
-    periodType: str = Field(..., description="节次类型")
-    score: int = Field(..., description="得分")
+class CourtPosition(BaseModel):
+    """场上位置模型"""
+    x: Optional[float] = Field(None, description="X坐标 (0-100)")
+    y: Optional[float] = Field(None, description="Y坐标 (0-100)")
+    area: Optional[str] = Field(None, description="场区")
+    areaDetail: Optional[str] = Field(None, description="详细区域")
+    side: Optional[str] = Field(None, description="场地侧边")
+    xLegacy: Optional[int] = Field(None, description="旧版X坐标")
+    yLegacy: Optional[int] = Field(None, description="旧版Y坐标")
 
+    model_config = ConfigDict(from_attributes=True)
+
+# ===========================
+# 3. 统计数据模型
+# ===========================
 
 class PlayerStatistics(BaseModel):
-    assists: int = Field(0)
-    blocks: int = Field(0)
-    blocksReceived: int = Field(0)
-    fieldGoalsAttempted: int = Field(0)
-    fieldGoalsMade: int = Field(0)
-    fieldGoalsPercentage: float = Field(0.0)
-    foulsOffensive: int = Field(0)
-    foulsDrawn: int = Field(0)
-    foulsPersonal: int = Field(0)
-    foulsTechnical: int = Field(0)
-    freeThrowsAttempted: int = Field(0)
-    freeThrowsMade: int = Field(0)
-    freeThrowsPercentage: float = Field(0.0)
-    points: int = Field(0)
-    pointsFastBreak: int = Field(0)
-    pointsInThePaint: int = Field(0)
-    pointsSecondChance: int = Field(0)
-    reboundsDefensive: int = Field(0)
-    reboundsOffensive: int = Field(0)
-    reboundsTotal: int = Field(0)
-    steals: int = Field(0)
-    turnovers: int = Field(0)
-    minutes: str = Field("")
-    threePointersMade: int = Field(0)
-    threePointersAttempted: int = Field(0)
-    threePointersPercentage: float = Field(0.0)
+    """球员统计数据"""
+    minutes: str = Field("PT00M00.00S", description="比赛时间")
+    seconds_played: float = Field(0.0, description="比赛时间（秒）")
 
+    # 基础统计
+    points: conint(ge=0) = Field(0, description="得分")
+    assists: conint(ge=0) = Field(0, description="助攻")
+    blocks: conint(ge=0) = Field(0, description="盖帽")
+    blocksReceived: conint(ge=0) = Field(0, description="被盖帽")
+    steals: conint(ge=0) = Field(0, description="抢断")
+    turnovers: conint(ge=0) = Field(0, description="失误")
+
+    # 投篮数据
+    fieldGoalsAttempted: conint(ge=0) = Field(0, description="投篮出手数")
+    fieldGoalsMade: conint(ge=0) = Field(0, description="投篮命中数")
+    fieldGoalsPercentage: Optional[confloat(ge=0.0, le=1.0)] = Field(None, description="投篮命中率")
+    threePointersAttempted: conint(ge=0) = Field(0, description="三分出手数")
+    threePointersMade: conint(ge=0) = Field(0, description="三分命中数")
+    threePointersPercentage: Optional[confloat(ge=0.0, le=1.0)] = Field(None, description="三分命中率")
+
+    # 罚球数据
+    freeThrowsAttempted: conint(ge=0) = Field(0, description="罚球出手数")
+    freeThrowsMade: conint(ge=0) = Field(0, description="罚球命中数")
+    freeThrowsPercentage: Optional[confloat(ge=0.0, le=1.0)] = Field(None, description="罚球命中率")
+
+    # 篮板数据
+    reboundsOffensive: conint(ge=0) = Field(0, description="进攻篮板")
+    reboundsDefensive: conint(ge=0) = Field(0, description="防守篮板")
+    reboundsTotal: conint(ge=0) = Field(0, description="总篮板")
+
+    # 犯规数据
+    foulsPersonal: conint(ge=0) = Field(0, description="个人犯规")
+    foulsTechnical: conint(ge=0) = Field(0, description="技术犯规")
+    foulsOffensive: conint(ge=0) = Field(0, description="进攻犯规")
+    foulsDrawn: conint(ge=0) = Field(0, description="被犯规次数")
+
+    # 其他数据
+    pointsFastBreak: conint(ge=0) = Field(0, description="快攻得分")
+    pointsInThePaint: conint(ge=0) = Field(0, description="油漆区得分")
+    pointsSecondChance: conint(ge=0) = Field(0, description="二次进攻得分")
+
+    model_config = ConfigDict(from_attributes=True)
+
+    @model_validator(mode='before')
+    @classmethod
+    def calculate_seconds(cls, data: Dict[str, Any]) -> Dict[str, Any]:
+        """将时间字符串转换为秒数"""
+        minutes_str = data.get('minutes', 'PT00M00.00S')
+        try:
+            minutes = float(minutes_str[2:-1].split('M')[0])
+            seconds = float(minutes_str.split('M')[1][:-1])
+            data['seconds_played'] = minutes * 60 + seconds
+        except Exception:
+            data['seconds_played'] = 0.0
+        return data
+
+    @model_validator(mode='after')
+    def calculate_percentages(self) -> 'PlayerStatistics':
+        """计算各项命中率"""
+        # 投篮命中率
+        fg_attempted = self.fieldGoalsAttempted
+        self.fieldGoalsPercentage = (
+            self.fieldGoalsMade / fg_attempted
+            if fg_attempted > 0 else None
+        )
+
+        # 三分命中率
+        three_attempted = self.threePointersAttempted
+        self.threePointersPercentage = (
+            self.threePointersMade / three_attempted
+            if three_attempted > 0 else None
+        )
+
+        # 罚球命中率
+        ft_attempted = self.freeThrowsAttempted
+        self.freeThrowsPercentage = (
+            self.freeThrowsMade / ft_attempted
+            if ft_attempted > 0 else None
+        )
+
+        return self
+
+    @model_validator(mode='after')
+    def validate_statistics(self) -> 'PlayerStatistics':
+        """验证统计数据的一致性"""
+        # 验证投篮数据
+        if self.fieldGoalsMade > self.fieldGoalsAttempted:
+            raise ValueError("FieldGoalsMade cannot be greater than FieldGoalsAttempted")
+        if self.threePointersMade > self.threePointersAttempted:
+            raise ValueError("ThreePointersMade cannot be greater than ThreePointersAttempted")
+        if self.freeThrowsMade > self.freeThrowsAttempted:
+            raise ValueError("FreeThrowsMade cannot be greater than FreeThrowsAttempted")
+
+        # 验证篮板数据
+        total_rebounds = self.reboundsOffensive + self.reboundsDefensive
+        if total_rebounds != self.reboundsTotal:
+            raise ValueError("Total rebounds must equal offensive + defensive rebounds")
+
+        # 验证得分计算
+        calculated_points = (
+            (self.fieldGoalsMade - self.threePointersMade) * 2 +
+            self.threePointersMade * 3 +
+            self.freeThrowsMade
+        )
+        if calculated_points != self.points:
+            raise ValueError(f"Points calculation mismatch: {calculated_points} vs {self.points}")
+
+        return self
 
 class Player(BaseModel):
-    """球员游戏数据模型，继承并扩展PlayerProfile"""
+    """球员游戏数据模型"""
     status: str = Field(..., description="球员状态")
-    order: int = Field(..., description="球员顺序")
-    personId: int = Field(..., description="球员ID")
+    order: conint(ge=0) = Field(..., description="球员顺序")
+    personId: conint(ge=0) = Field(..., description="球员ID")
     jerseyNum: str = Field(..., description="球衣号码")
     position: Optional[str] = Field(None, description="位置")
     starter: str = Field("0", description="是否首发")
     oncourt: str = Field("0", description="是否在场上")
     played: str = Field("0", description="是否参与比赛")
-    statistics: PlayerStatistics = Field(..., description="球员统计数据")
+    statistics: PlayerStatistics = Field(default_factory=PlayerStatistics, description="球员统计数据")
     name: str = Field(..., description="球员姓名")
     nameI: str = Field(..., description="球员姓名缩写")
     firstName: str = Field(..., description="球员名")
     familyName: str = Field(..., description="球员姓")
     notPlayingReason: Optional[str] = Field(None, description="不参赛原因")
     notPlayingDescription: Optional[str] = Field(None, description="不参赛描述")
-    
-    @validator('name', 'firstName', 'familyName', pre=True)
-    def register_player(cls, v, values):
-        if all(k in values for k in ['personId', 'firstName', 'familyName']):
-            PlayerRegistry.get_instance().register(
-                values['personId'],
-                values['firstName'],
-                values['familyName']
-            )
-        return v
+
+    model_config = ConfigDict(from_attributes=True)
 
     @property
     def profile(self) -> Optional[PlayerProfile]:
         """获取球员完整信息"""
         return PlayerProfile.find_by_id(self.personId)
 
+class PeriodScore(BaseModel):
+    """每节比分"""
+    period: conint(ge=1) = Field(..., description="节次")
+    periodType: str = Field(..., description="节次类型")
+    score: conint(ge=0) = Field(..., description="得分")
+
+    model_config = ConfigDict(from_attributes=True)
 
 class TeamStats(BaseModel):
-    """球队比赛统计数据模型"""
-    teamId: int = Field(..., description="球队ID")
+    """球队比赛统计数据"""
+    teamId: conint(ge=0) = Field(..., description="球队ID")
     teamName: str = Field(..., description="球队名称")
     teamCity: str = Field(..., description="球队城市")
     teamTricode: str = Field(..., description="球队三字母代码")
-    score: int = Field(..., description="球队得分")
+    score: conint(ge=0) = Field(..., description="球队得分")
     inBonus: str = Field(..., description="是否在罚球线内")
-    timeoutsRemaining: int = Field(..., description="剩余暂停次数")
-    periods: List[PeriodScore] = Field(..., description="各节得分")
-    players: List[Player] = Field(..., description="球队球员列表")
+    timeoutsRemaining: conint(ge=0) = Field(..., description="剩余暂停次数")
+    periods: List[PeriodScore] = Field(default_factory=list, description="各节得分")
+    players: List[Player] = Field(default_factory=list, description="球队球员列表")
     statistics: Dict[str, Any] = Field(default_factory=dict, description="球队统计数据")
-    
+
+    model_config = ConfigDict(from_attributes=True)
+
     @property
     def profile(self) -> Optional[TeamProfile]:
         """获取球队完整信息"""
-        return TeamProfile.from_id(self.teamId)
-    
-    @property
-    def logo_path(self) -> Optional[str]:
-        """获取球队logo路径"""
-        team_profile = self.profile
-        return str(team_profile.get_logo_path()) if team_profile else None
-
-    def get_stat(self, key: str, default: Any = 0) -> Any:
-        """获取指定的统计数据"""
-        return self.statistics.get(key, default)
+        return TeamProfile.get_team_by_id(self.teamId)
 
     @property
-    def field_goals(self) -> tuple[int, int, float]:
-        """获取投篮命中率数据"""
-        made = self.get_stat('fieldGoalsMade', 0)
-        attempted = self.get_stat('fieldGoalsAttempted', 0)
-        percentage = self.get_stat('fieldGoalsPercentage', 0.0)
-        return made, attempted, percentage
-
+    def fieldGoalsMade(self) -> int:
+        return self.statistics.get('fieldGoalsMade', 0)
+        
     @property
-    def three_pointers(self) -> tuple[int, int, float]:
-        """获取三分球命中率数据"""
-        made = self.get_stat('threePointersMade', 0)
-        attempted = self.get_stat('threePointersAttempted', 0)
-        percentage = self.get_stat('threePointersPercentage', 0.0)
-        return made, attempted, percentage
-
+    def fieldGoalsAttempted(self) -> int:
+        return self.statistics.get('fieldGoalsAttempted', 0)
+        
     @property
-    def free_throws(self) -> tuple[int, int, float]:
-        """获取罚球命中率数据"""
-        made = self.get_stat('freeThrowsMade', 0)
-        attempted = self.get_stat('freeThrowsAttempted', 0)
-        percentage = self.get_stat('freeThrowsPercentage', 0.0)
-        return made, attempted, percentage
+    def fieldGoalsPercentage(self) -> float:
+        return self.statistics.get('fieldGoalsPercentage', 0.0)
+        
+        # ... 其他属性类似
 
-
-class GameData(BaseModel):
-    """比赛数据"""
-    gameId: str = Field(..., description="比赛ID")
-    gameTimeLocal: datetime = Field(..., description="本地时间")
-    gameTimeUTC: datetime = Field(..., description="UTC时间")
-    gameTimeHome: datetime = Field(..., description="主队时间")
-    gameTimeAway: datetime = Field(..., description="客队时间")
-    gameEt: datetime = Field(..., description="东部时间")
-    duration: int = Field(..., description="比赛时长（分钟）")
-    gameCode: str = Field(..., description="比赛代码")
-    gameStatusText: str = Field(..., description="比赛状态文本")
-    gameStatus: GameStatusEnum = Field(..., description="比赛状态")
-    regulationPeriods: int = Field(..., description="常规赛节次")
-    period: int = Field(..., description="当前节次")
-    gameClock: str = Field(..., description="比赛时钟")
-    attendance: int = Field(..., description="观众人数")
-    sellout: str = Field(..., description="是否售罄")
-    arena: Arena = Field(..., description="场馆信息")
-    officials: List[Official] = Field(..., description="裁判列表")
-    homeTeam: TeamStats = Field(..., description="主队信息")
-    awayTeam: TeamStats = Field(..., description="客队信息")
-    statistics: Optional[Dict[str, Any]] = Field(None, description="比赛统计数据")
-
-    def get_player_stats(self, player_id: int, is_home: bool = True) -> Optional[PlayerStatistics]:
-        """获取指定球员的统计数据"""
-        team = self.homeTeam if is_home else self.awayTeam
-        for player in team.players:
-            if player.personId == player_id:
-                return player.statistics
-        return None
-    
-    def get_team_stats(self, is_home: bool = True) -> Optional[Dict[str, Any]]:
-        """获取球队统计数据"""
-        team = self.homeTeam if is_home else self.awayTeam
-        return team.statistics
-    
-    def get_player_by_id(self, player_id: int) -> Optional[Player]:
-        """通过ID查找球员"""
-        for player in self.homeTeam.players + self.awayTeam.players:
-            if player.personId == player_id:
-                return player
-        return None
-
-    def is_player_on_court(self, player_id: int) -> bool:
-        """检查球员是否在场上"""
-        player = self.get_player_by_id(player_id)
-        return bool(player and player.oncourt == "1")
-
-    def get_team_score(self, is_home: bool = True) -> int:
-        """获取球队得分"""
-        return self.homeTeam.score if is_home else self.awayTeam.score
-
-    def get_score_difference(self) -> int:
-        """获取比分差值（主队减客队）"""
-        return self.homeTeam.score - self.awayTeam.score
-
-    @model_validator(mode='after')
-    def check_game_integrity(self) -> 'GameData':
-        if not self.gameId:
-            raise ValueError("Missing gameId")
-
-        if not self.homeTeam or not self.homeTeam.teamId or not self.homeTeam.teamName:
-            raise ValueError("Missing homeTeam information")
-        if not self.awayTeam or not self.awayTeam.teamId or not self.awayTeam.teamName:
-            raise ValueError("Missing awayTeam information")
-
-        if self.gameStatus in {GameStatusEnum.IN_PROGRESS, GameStatusEnum.FINISHED}:
-            if not isinstance(self.homeTeam.score, int) or \
-                    not isinstance(self.awayTeam.score, int):
-                raise ValueError("Invalid score data")
-
-        return self
-
-
-# 3. 事件模型
-class CourtPosition(BaseModel):
-    """球场位置模型"""
-    x: Optional[float] = Field(None, description="X坐标")
-    y: Optional[float] = Field(None, description="Y坐标")
-    area: Optional[str] = Field(None, description="区域")
-    areaDetail: Optional[str] = Field(None, description="详细区域")
-    side: Optional[str] = Field(None, description="场地侧边")
-    xLegacy: Optional[int] = Field(None, description="旧版X坐标")
-    yLegacy: Optional[int] = Field(None, description="旧版Y坐标")
-
+# ===========================
+# 4. 事件模型
+# ===========================
 
 class BaseEvent(BaseModel):
-    """基础事件模型"""
-    actionNumber: int = Field(..., description="事件编号")
+    """基础事件类"""
+    actionNumber: int = Field(..., description="事件序号")
     clock: str = Field(..., description="比赛时钟")
-    timeActual: datetime = Field(..., description="事件发生的实际时间")
-    period: int = Field(..., description="比赛节次")
-    periodType: str = Field(..., description="比赛节类型")
-    isTargetScoreLastPeriod: bool = Field(False, description="是否为最后一节目标分数制")
-    orderNumber: int = Field(..., description="顺序号")
-    
-    # 可选字段
+    timeActual: str = Field(..., description="实际时间")
+    period: int = Field(..., description="比赛节数")
     teamId: Optional[int] = Field(None, description="球队ID")
-    teamTricode: Optional[str] = Field(None, description="球队三字母代码")
-    actionType: Optional[EventCategory] = Field(None, description="事件类型")
-    qualifiers: List[ShotQualifier] = Field(default_factory=list, description="事件限定词列表")
+    teamTricode: Optional[str] = Field(None, description="球队三字码")
+    actionType: str = Field(..., description="事件类型")
+    subType: Optional[str] = Field(None, description="子类型")
+    description: str = Field(..., description="事件描述")
     personId: Optional[int] = Field(None, description="球员ID")
-    description: Optional[str] = Field(None, description="事件描述")
     playerName: Optional[str] = Field(None, description="球员姓名")
-    playerNameI: Optional[str] = Field(None, description="球员姓名缩写")
-    possession: Optional[int] = Field(None, description="球权")
+    playerNameI: Optional[str] = Field(None, description="球员简称")
+    x: Optional[float] = Field(None, description="X坐标")
+    y: Optional[float] = Field(None, description="Y坐标")
+    xLegacy: Optional[int] = Field(None, description="传统X坐标")
+    yLegacy: Optional[int] = Field(None, description="传统Y坐标")
     scoreHome: Optional[str] = Field(None, description="主队得分")
     scoreAway: Optional[str] = Field(None, description="客队得分")
-    edited: Optional[datetime] = Field(None, description="编辑时间")
-    
-    # 使用 CourtPosition 模型
-    position: Optional[CourtPosition] = None
 
-    @validator('scoreHome', 'scoreAway', pre=True)
-    def convert_score_to_int(cls, v):
-        """将分数从字符串转换为整数"""
-        return int(v) if v is not None else None
+    model_config = ConfigDict(from_attributes=True, extra='allow')
 
-    @property
-    def score_difference(self) -> Optional[int]:
-        """计算比分差值"""
-        if self.scoreHome is not None and self.scoreAway is not None:
-            return self.scoreHome - self.scoreAway
-        return None
+class GameEvent(BaseEvent):
+    """比赛事件(开始/结束)"""
+    actionType: Literal["game"] = Field(..., description="事件类型")
+    subType: Literal["start", "end"] = Field(..., description="子类型")
+    description: str = Field(..., description="事件描述")
 
-
-class PeriodStartEvent(BaseEvent):
-    """比赛节开始事件"""
-    subType: Optional[str] = Field(None, description="子类型，例如 'start'")
-
-
-class StealEvent(BaseEvent):
-    """抢断事件"""
-    stealPersonId: Optional[int] = Field(None, description="抢断者ID")
-    stealPlayerName: Optional[str] = Field(None, description="抢断者姓名")
-    playerNameI: Optional[str] = Field(None, description="被抢断者姓名")
-    personIdsFilter: List[int] = Field(default_factory=list, description="抢断者和被抢断者ID")
-
-
-class BlockEvent(BaseEvent):
-    """封盖事件"""
-    blockPersonId: Optional[int] = Field(None, description="盖帽者ID")
-    blockPlayerName: Optional[str] = Field(None, description="盖帽者姓名")
-    playerNameI: Optional[str] = Field(None, description="被盖帽者姓名")
-    personIdsFilter: List[int] = Field(default_factory=list, description="盖帽者和被盖帽者ID")
-    shotActionNumber: Optional[int] = Field(None, description="关联投篮动作编号")
-
-
-class FoulEvent(BaseEvent):
-    """犯规事件"""
-    subType: FoulSubType
-    foulDrawnPersonId: Optional[int] = Field(None, description="被犯规者ID")
-    foulDrawnPlayerName: Optional[str] = Field(None, description="被犯规者姓名")
-    personIdsFilter: List[int] = Field(default_factory=list, description="犯规者和被犯规者ID")
-    freeThrowsAwarded: Optional[int] = Field(None, description="获得罚球数")
-
-
-class AssistEvent(BaseEvent):
-    """助攻事件"""
-    assistPersonId: Optional[int] = Field(None, description="助攻者ID")
-    assistPlayerNameInitial: Optional[str] = Field(None, description="助攻者姓名缩写")
-    playerNameI: Optional[str] = Field(None, description="得分者姓名")
-    personIdsFilter: List[int] = Field(default_factory=list, description="助攻者和得分者ID")
-    shotActionNumber: Optional[int] = Field(None, description="关联投篮动作编号")
-
+class PeriodEvent(BaseEvent):
+    """比赛节开始/结束事件"""
+    actionType: Literal["period"] = Field(..., description="事件类型")
+    subType: Literal["start", "end"] = Field(..., description="子类型")
 
 class JumpBallEvent(BaseEvent):
     """跳球事件"""
-    jumpBallWonPersonId: Optional[int] = Field(None, description="跳球获胜者ID")
-    jumpBallLostPersonId: Optional[int] = Field(None, description="跳球失败者ID")
+    actionType: Literal["jumpball"] = Field(..., description="事件类型")
+    jumpBallWonPersonId: int = Field(..., description="跳球获胜者ID")
+    jumpBallWonPlayerName: str = Field(..., description="跳球获胜者姓名")
+    jumpBallLostPersonId: int = Field(..., description="跳球失败者ID")
+    jumpBallLostPlayerName: str = Field(..., description="跳球失败者姓名")
     jumpBallRecoveredPersonId: Optional[int] = Field(None, description="获得球权者ID")
-    jumpBallWonPlayerName: Optional[str] = Field(None, description="跳球获胜者姓名")
-    jumpBallLostPlayerName: Optional[str] = Field(None, description="跳球失败者姓名")
     jumpBallRecoveredName: Optional[str] = Field(None, description="获得球权者姓名")
-    personIdsFilter: List[int] = Field(default_factory=list, description="所有相关球员ID")
-
 
 class ShotEvent(BaseEvent):
-    """投篮事件基类"""
-    subType: Optional[str] = Field(None, description="投篮类型")
-    shotResult: Optional[str] = Field(None, description="投篮结果")
-    pointsTotal: Optional[int] = Field(None, description="总得分")
-    shotDistance: Optional[float] = Field(None, description="投篮距离")
-    shotActionNumber: Optional[int] = Field(None, description="投篮动作编号")
-    
-    # 使用 CourtPosition 模型记录投篮位置
-    position: CourtPosition = Field(..., description="投篮位置")
-
-    @property
-    def is_made(self) -> bool:
-        """判断是否命中"""
-        return self.shotResult != "Missed"
-
+    """投篮事件"""
+    actionType: Literal["2pt", "3pt"] = Field(..., description="事件类型")
+    subType: str = Field(..., description="投篮类型")
+    area: str = Field(..., description="投篮区域")
+    areaDetail: Optional[str] = Field(None, description="详细区域")
+    side: Optional[str] = Field(None, description="场地侧边")
+    shotDistance: float = Field(..., description="投篮距离")
+    shotResult: ShotResult = Field(..., description="投篮结果")
+    isFieldGoal: Optional[int] = Field(None, description="是否为投篮")
+    qualifiers: List[str] = Field(default_factory=list, description="限定词")
+    assistPersonId: Optional[int] = Field(None, description="助攻者ID")
+    assistPlayerNameInitial: Optional[str] = Field(None, description="助攻者简称")
+    blockPersonId: Optional[int] = Field(None, description="盖帽者ID")
+    blockPlayerName: Optional[str] = Field(None, description="盖帽者姓名")
 
 class TwoPointEvent(ShotEvent):
-    """2分球事件"""
-    subType: TwoPointSubType
-    pointsTotal: Literal[2] = 2
-    
-    @property
-    def is_in_paint(self) -> bool:
-        """是否在油漆区内"""
-        return ShotQualifier.POINTS_IN_PAINT in self.qualifiers
-
+    """两分球事件"""
+    actionType: Literal["2pt"] = Field(..., description="事件类型")
 
 class ThreePointEvent(ShotEvent):
-    """3分球事件"""
-    subType: ThreePointSubType
-    pointsTotal: Literal[3] = 3
+    """三分球事件"""
+    actionType: Literal["3pt"] = Field(..., description="事件类型")
 
+class AssistEvent(BaseEvent):
+    """助攻事件"""
+    actionType: Literal["assist"] = Field(..., description="事件类型")
+    assistTotal: int = Field(..., description="助攻总数")
+    description: str = Field(..., description="事件描述")
+    playerName: str = Field(..., description="助攻者姓名")
+    playerNameI: str = Field(..., description="助攻者简称")
+    scoringPlayerName: str = Field(..., description="得分者姓名")
+    scoringPlayerNameI: str = Field(..., description="得分者简称")
+    scoringPersonId: int = Field(..., description="得分者ID")
 
-class FreeThrowEvent(ShotEvent):
+class FreeThrowEvent(BaseEvent):
     """罚球事件"""
-    pointsTotal: Literal[1] = 1
-    foulType: Optional[str] = Field(None, description="犯规类型")
-    
-    # 罚球不需要位置信息
-    position: Optional[CourtPosition] = Field(None)
-
+    actionType: Literal["freethrow"] = Field(..., description="事件类型")
+    subType: str = Field(..., description="罚球类型")
+    shotResult: ShotResult = Field(..., description="罚球结果")
+    description: str = Field(..., description="事件描述")
+    playerName: str = Field(..., description="罚球者姓名")
+    playerNameI: str = Field(..., description="罚球者简称")
+    pointsTotal: Optional[int] = Field(None, description="得分")
 
 class ReboundEvent(BaseEvent):
     """篮板事件"""
-    subType: ReboundSubType
-    reboundTotal: Optional[int] = Field(None, description="篮板总数")
-    reboundDefensiveTotal: Optional[int] = Field(None, description="防守篮板总数")
-    reboundOffensiveTotal: Optional[int] = Field(None, description="进攻篮板总数")
-    shotActionNumber: Optional[int] = Field(None, description="关联投篮动作编号")
-    personIdsFilter: List[int] = Field(default_factory=list, description="篮板球员ID")
+    actionType: Literal["rebound"] = Field(..., description="事件类型")
+    subType: Literal["offensive", "defensive"] = Field(..., description="篮板类型")
+    reboundTotal: int = Field(..., description="篮板总数")
+    reboundDefensiveTotal: int = Field(..., description="防守篮板总数")
+    reboundOffensiveTotal: int = Field(..., description="进攻篮板总数")
+    description: str = Field(..., description="事件描述")
+    playerName: str = Field(..., description="篮板球员姓名")
+    playerNameI: str = Field(..., description="篮板球员简称")
+    shotActionNumber: Optional[int] = Field(None, description="相关投篮事件编号")
 
+class BlockEvent(BaseEvent):
+    """盖帽事件"""
+    actionType: Literal["block"] = Field(..., description="事件类型")
+    playerName: str = Field(..., description="盖帽者姓名")
+    playerNameI: str = Field(..., description="盖帽者简称")
+
+class StealEvent(BaseEvent):
+    """抢断事件"""
+    actionType: Literal["steal"] = Field(..., description="事件类型")
+    subType: str = Field("", description="子类型")
+    description: str = Field(..., description="事件描述")
+    playerName: str = Field(..., description="抢断者姓名")
+    playerNameI: str = Field(..., description="抢断者简称")
 
 class TurnoverEvent(BaseEvent):
     """失误事件"""
-    subType: TurnoverSubType
-    turnoverTotal: Optional[int] = Field(None, description="失误总数")
-    stealPlayerName: Optional[str] = Field(None, description="抢断球员姓名")
-    stealPersonId: Optional[int] = Field(None, description="抢断球员ID")
-    personIdsFilter: List[int] = Field(default_factory=list, description="失误球员ID")
+    actionType: Literal["turnover"] = Field(..., description="事件类型")
+    subType: str = Field(..., description="失误类型")
+    descriptor: Optional[str] = Field(None, description="描述词")
+    turnoverTotal: int = Field(..., description="失误总数")
+    description: str = Field(..., description="事件描述")
+    playerName: str = Field(..., description="失误者姓名")
+    playerNameI: str = Field(..., description="失误者简称")
+    stealPersonId: Optional[int] = Field(None, description="抢断者ID")
+    stealPlayerName: Optional[str] = Field(None, description="抢断者姓名")
 
-
-class SubstitutionEvent(BaseEvent):
-    """换人事件"""
-    subType: Optional[str] = Field(None, description="换人类型")
-    incomingPlayer: Optional[str] = Field(None, description="换上球员姓名")
-    incomingPlayerId: Optional[int] = Field(None, description="换上球员ID")
-    outgoingPlayer: Optional[str] = Field(None, description="换下球员姓名")
-    outgoingPlayerId: Optional[int] = Field(None, description="换下球员ID")
-    personIdsFilter: List[int] = Field(default_factory=list, description="换人涉及的球员ID")
-
-
-class TimeoutEvent(BaseEvent):
-    """暂停事件"""
-    subType: Optional[str] = Field(None, description="暂停类型")
-    timeoutsRemaining: Optional[int] = Field(None, description="剩余暂停数")
-
+class FoulEvent(BaseEvent):
+    """犯规事件"""
+    actionType: Literal["foul"] = Field(..., description="事件类型")
+    subType: str = Field(..., description="犯规类型")
+    descriptor: Optional[str] = Field(None, description="描述词")
+    foulDrawnPlayerName: Optional[str] = Field(None, description="被犯规球员姓名")
+    foulDrawnPersonId: Optional[int] = Field(None, description="被犯规球员ID")
+    officialId: Optional[int] = Field(None, description="裁判ID")
+    description: str = Field(..., description="事件描述")
+    playerName: str = Field(..., description="犯规者姓名")
+    playerNameI: str = Field(..., description="犯规者简称")
 
 class ViolationEvent(BaseEvent):
     """违例事件"""
-    subType: Optional[str] = Field(None, description="违例类型")
-    violationTotal: Optional[int] = Field(None, description="违例总数")
-    personIdsFilter: List[int] = Field(default_factory=list, description="违例球员ID")
+    actionType: Literal["violation"] = Field(..., description="事件类型")
+    subType: str = Field(..., description="违例类型")
+    description: str = Field(..., description="事件描述")
+    officialId: Optional[int] = Field(None, description="裁判ID")
+    playerName: str = Field(..., description="违例者姓名")
+    playerNameI: str = Field(..., description="违例者简称")
 
+class TimeoutEvent(BaseEvent):
+    """暂停事件"""
+    actionType: Literal["timeout"] = Field(..., description="事件类型")
+    subType: str = Field(..., description="暂停类型")
+    description: str = Field(..., description="事件描述")
+
+class SubstitutionEvent(BaseEvent):
+    """换人事件"""
+    actionType: Literal["substitution"] = Field(..., description="事件类型")
+    subType: Optional[str] = Field(None, description="换人类型")
+    incomingPlayerName: str = Field(..., description="替补上场球员姓名")
+    incomingPlayerNameI: str = Field(..., description="替补上场球员简称")
+    incomingPersonId: int = Field(..., description="替补上场球员ID")
+    outgoingPlayerName: str = Field(..., description="替补下场球员姓名")
+    outgoingPlayerNameI: str = Field(..., description="替补下场球员简称")
+    outgoingPersonId: int = Field(..., description="替补下场球员ID")
+    description: str = Field(..., description="事件描述")
+
+# ===========================
+# 5. 核心游戏类
+# ===========================
 
 class PlayByPlay(BaseModel):
     """比赛回放数据"""
     game: Dict[str, Any] = Field(..., description="比赛信息")
     meta: Optional[Dict[str, Any]] = Field(None, description="元数据")
+    actions: List[BaseEvent] = Field(default_factory=list, description="所有事件列表")
 
-    @property
-    def actions(self) -> List[Dict[str, Any]]:
-        """获取所有事件"""
-        return self.game.get('actions', [])
+    model_config = ConfigDict(from_attributes=True)
 
-    def get_event_stats(self) -> Dict[str, int]:
-        """获取各类事件的统计数据"""
-        stats = {}
-        for action in self.actions:
-            event_type = action.get('actionType')
-            if event_type:
-                stats[event_type] = stats.get(event_type, 0) + 1
-        return stats
+class GameData(BaseModel):
+    """比赛详细数据模型"""
+    gameId: str = Field(default="", description="比赛ID")
+    gameTimeLocal: datetime = Field(default_factory=datetime.now, description="本地时间")
+    gameTimeUTC: datetime = Field(default_factory=datetime.utcnow, description="UTC时间")
+    gameTimeHome: datetime = Field(default_factory=datetime.now, description="主队时间")
+    gameTimeAway: datetime = Field(default_factory=datetime.now, description="客队时间")
+    gameEt: datetime = Field(default_factory=datetime.now, description="东部时间")
+    duration: conint(ge=0) = Field(default=0, description="比赛时长（分钟）")
+    gameCode: str = Field(default="", description="比赛代码")
+    gameStatus: GameStatusEnum = Field(default=GameStatusEnum.NOT_STARTED, description="比赛状态")
+    gameStatusText: str = Field(default="Not Started", description="比赛状态文本")
+    period: conint(ge=1) = Field(default=1, description="当前节次")
+    regulationPeriods: conint(ge=1) = Field(default=4, description="常规赛节次")
+    gameClock: str = Field(default="PT12M00.00S", description="比赛时钟")
+    attendance: conint(ge=0) = Field(default=0, description="观众人数")
+    sellout: str = Field(default="0", description="是否售罄")
+    arena: Arena = Field(default_factory=Arena, description="场馆信息")
+    officials: List[Official] = Field(default_factory=list, description="裁判列表")
+    homeTeam: TeamStats = Field(..., description="主队数据")
+    awayTeam: TeamStats = Field(..., description="客队数据")
+    statistics: Optional[Dict[str, Any]] = Field(None, description="比赛统计数据")
 
+    model_config = ConfigDict(from_attributes=True)
 
 class Game(BaseModel):
     """完整比赛数据模型"""
@@ -531,37 +495,34 @@ class Game(BaseModel):
     game: GameData = Field(..., description="比赛数据")
     playByPlay: Optional[PlayByPlay] = Field(None, description="比赛回放数据")
 
-    def get_player_stats(self, player_id: int, is_home: bool = True) -> Optional[PlayerStatistics]:
-        """获取球员统计数据的便捷方法"""
-        return self.game.get_player_stats(player_id, is_home)
-    
-    def get_team_stats(self, is_home: bool = True) -> Optional[Dict[str, Any]]:
-        """获取球队统计数据的便捷方法"""
-        return self.game.get_team_stats(is_home)
-    
-    def get_scoring_plays(self, player_id: Optional[int] = None) -> List[Dict[str, Any]]:
-        """获取得分事件列表"""
-        if not self.playByPlay:
-            return []
-        
-        scoring_plays = []
-        for action in self.playByPlay.actions_parsed:
-            if (hasattr(action, 'shotActionNumber') and 
-                (not player_id or action.personId == player_id)):
-                scoring_plays.append({
-                    'time': action.clock,
-                    'period': action.period,
-                    'player': action.playerName,
-                    'team': action.teamTricode,
-                    'score_diff': action.scoreHome - action.scoreAway if all(x is not None for x in [action.scoreHome, action.scoreAway]) else None,
-                    'description': action.description
-                })
-        
-        return scoring_plays
+    def get_shot_data(self, player_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """获取投篮数据
 
-    def get_player_on_court_status(self) -> Dict[int, bool]:
-        """获取所有球员的在场状态"""
-        status = {}
-        for player in self.game.homeTeam.players + self.game.awayTeam.players:
-            status[player.personId] = player.oncourt == "1"
-        return status
+        Args:
+            player_id: 球员ID，如果提供则只返回该球员的投篮数据
+
+        Returns:
+            List[Dict[str, Any]]: 投篮数据列表
+        """
+        shot_data = []
+        if self.playByPlay and self.playByPlay.actions:
+            for action in self.playByPlay.actions:
+                if action.actionType in ["2pt", "3pt"]:
+                    # 如果指定了球员ID，则只返回该球员的投篮
+                    if player_id is not None and action.personId != player_id:
+                        continue
+
+                    shot_data.append({
+                        'xLegacy': action.position.xLegacy if getattr(action, 'position', None) else None,
+                        'yLegacy': action.position.yLegacy if getattr(action, 'position', None) else None,
+                        'shotResult': action.shotResult if hasattr(action, 'shotResult') else None,
+                        'description': action.description,
+                        'player_id': action.personId,
+                        'team_id': action.teamId,
+                        'period': action.period,
+                        'actionType': action.actionType,
+                        'time': action.clock,
+                    })
+        return shot_data
+
+    model_config = ConfigDict(from_attributes=True)

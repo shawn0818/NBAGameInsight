@@ -4,8 +4,11 @@ from typing import Dict
 
 def test_nba_api() -> Dict:
     """测试 NBA API 请求"""
-    url = "https://stats.nba.com/stats/videodetailsasset?LeagueID=00&Season=2024-25&SeasonType=Regular+Season&TeamID=0&PlayerID=2544&GameID=0022400408&Outcome=&Location=&Month=0&SeasonSegment=&DateFrom=&DateTo=&OpponentTeamID=0&VsConference=&VsDivision=&Position=&RookieYear=&GameSegment=&Period=0&LastNGames=0&ClutchTime=&AheadBehind=&PointDiff=&RangeType=0&StartPeriod=0&EndPeriod=0&StartRange=0&EndRange=28800&ContextFilter=&ContextMeasure=FGM&OppPlayerID="
-    
+    #url = "https://stats.nba.com/stats/videodetailsasset?LeagueID=00&Season=2024-25&SeasonType=Regular+Season&TeamID=0&PlayerID=2544&GameID=0022400408&Outcome=&Location=&Month=0&SeasonSegment=&DateFrom=&DateTo=&OpponentTeamID=0&VsConference=&VsDivision=&Position=&RookieYear=&GameSegment=&Period=0&LastNGames=0&ClutchTime=&AheadBehind=&PointDiff=&RangeType=0&StartPeriod=0&EndPeriod=0&StartRange=0&EndRange=28800&ContextFilter=&ContextMeasure=FGM&OppPlayerID="
+    url = "https://stats.nba.com/stats/teamdetails?TeamID="
+    url2 = "https://cdn.nba.com/static/json/staticData/playerIndex.json"
+    url3 = "https://stats.nba.com/stats/commonallplayers?LeagueID=00"
+    url4 = "https://stats.nba.com/stats/teaminfocommon?LeagueID=00&Season=2024-25&SeasonType=Regular+Season&TeamID=1610612742"
     headers = {
         "Accept": "*/*",
         "Accept-Encoding": "gzip, deflate, br",
@@ -27,7 +30,7 @@ def test_nba_api() -> Dict:
 
     try:
         response = requests.get(
-            url=url,
+            url=url4,
             headers=headers,
             timeout=30,
         )
@@ -50,7 +53,7 @@ if __name__ == "__main__":
     result = test_nba_api()
     if result:
         # 保存结果到文件
-        with open('nba_api_response1.json', 'w', encoding='utf-8') as f:
+        with open('nba_api_response5.json', 'w', encoding='utf-8') as f:
             json.dump(result, f, indent=2)
         print("Response saved to nba_api_response.json")
     else:
