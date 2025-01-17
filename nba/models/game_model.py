@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, model_validator, ValidationError, conint,
 from nba.models.player_model import PlayerProfile
 from nba.models.team_model import TeamProfile
 
+
 # ===========================
 # 1. 基础枚举类
 # ===========================
@@ -15,10 +16,12 @@ class GameStatusEnum(IntEnum):
     IN_PROGRESS = 2
     FINISHED = 3
 
+
 class ShotResult(str, Enum):
     """投篮结果"""
     MADE = "Made"
     MISSED = "Missed"
+
 
 class EventCategory(str, Enum):
     """比赛事件类型"""
@@ -37,6 +40,7 @@ class EventCategory(str, Enum):
     FOUL = "foul"
     VIOLATION = "violation"
     GAME = "game"
+
 
 class ShotQualifier(str, Enum):
     """投篮限定词"""
@@ -62,6 +66,7 @@ class ShotQualifier(str, Enum):
     AND_ONE = "andone"
     BLOCKED = "blocked"
 
+
 # ===========================
 # 2. 基础数据模型
 # ===========================
@@ -77,6 +82,7 @@ class Arena(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+
 class Official(BaseModel):
     """裁判信息"""
     personId: conint(ge=0) = Field(..., description="裁判ID")
@@ -89,6 +95,7 @@ class Official(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+
 class CourtPosition(BaseModel):
     """场上位置模型"""
     x: Optional[float] = Field(None, description="X坐标 (0-100)")
@@ -100,6 +107,7 @@ class CourtPosition(BaseModel):
     yLegacy: Optional[int] = Field(None, description="旧版Y坐标")
 
     model_config = ConfigDict(from_attributes=True)
+
 
 # ===========================
 # 3. 统计数据模型
@@ -206,14 +214,15 @@ class PlayerStatistics(BaseModel):
 
         # 验证得分计算
         calculated_points = (
-            (self.fieldGoalsMade - self.threePointersMade) * 2 +
-            self.threePointersMade * 3 +
-            self.freeThrowsMade
+                (self.fieldGoalsMade - self.threePointersMade) * 2 +
+                self.threePointersMade * 3 +
+                self.freeThrowsMade
         )
         if calculated_points != self.points:
             raise ValueError(f"Points calculation mismatch: {calculated_points} vs {self.points}")
 
         return self
+
 
 class Player(BaseModel):
     """球员游戏数据模型"""
@@ -240,6 +249,22 @@ class Player(BaseModel):
         """获取球员完整信息"""
         return PlayerProfile.find_by_id(self.personId)
 
+    @property
+    def is_active(self) -> bool:
+        """判断球员是否处于活跃状态"""
+        return self.status == "ACTIVE" and self.notPlayingReason is None
+
+    @property
+    def is_on_court(self) -> bool:
+        """判断球员是否在场上"""
+        return self.oncourt == "1"
+
+    @property
+    def has_played(self) -> bool:
+        """判断球员是否参与过比赛"""
+        return self.played == "1"
+
+
 class PeriodScore(BaseModel):
     """每节比分"""
     period: conint(ge=1) = Field(..., description="节次")
@@ -247,6 +272,7 @@ class PeriodScore(BaseModel):
     score: conint(ge=0) = Field(..., description="得分")
 
     model_config = ConfigDict(from_attributes=True)
+
 
 class TeamStats(BaseModel):
     """球队比赛统计数据"""
@@ -271,16 +297,17 @@ class TeamStats(BaseModel):
     @property
     def fieldGoalsMade(self) -> int:
         return self.statistics.get('fieldGoalsMade', 0)
-        
+
     @property
     def fieldGoalsAttempted(self) -> int:
         return self.statistics.get('fieldGoalsAttempted', 0)
-        
+
     @property
     def fieldGoalsPercentage(self) -> float:
         return self.statistics.get('fieldGoalsPercentage', 0.0)
-        
+
         # ... 其他属性类似
+
 
 # ===========================
 # 4. 事件模型
@@ -309,16 +336,19 @@ class BaseEvent(BaseModel):
 
     model_config = ConfigDict(from_attributes=True, extra='allow')
 
+
 class GameEvent(BaseEvent):
     """比赛事件(开始/结束)"""
     actionType: Literal["game"] = Field(..., description="事件类型")
     subType: Literal["start", "end"] = Field(..., description="子类型")
     description: str = Field(..., description="事件描述")
 
+
 class PeriodEvent(BaseEvent):
     """比赛节开始/结束事件"""
     actionType: Literal["period"] = Field(..., description="事件类型")
     subType: Literal["start", "end"] = Field(..., description="子类型")
+
 
 class JumpBallEvent(BaseEvent):
     """跳球事件"""
@@ -330,6 +360,7 @@ class JumpBallEvent(BaseEvent):
     jumpBallRecoveredPersonId: Optional[int] = Field(None, description="获得球权者ID")
     jumpBallRecoveredName: Optional[str] = Field(None, description="获得球权者姓名")
 
+
 class ShotEvent(BaseEvent):
     """投篮事件"""
     actionType: Literal["2pt", "3pt"] = Field(..., description="事件类型")
@@ -339,20 +370,23 @@ class ShotEvent(BaseEvent):
     side: Optional[str] = Field(None, description="场地侧边")
     shotDistance: float = Field(..., description="投篮距离")
     shotResult: ShotResult = Field(..., description="投篮结果")
-    isFieldGoal: Optional[int] = Field(None, description="是否为投篮")
+    isFieldGoal: Optional[int] = Field(1, description="是否为投篮")
     qualifiers: List[str] = Field(default_factory=list, description="限定词")
     assistPersonId: Optional[int] = Field(None, description="助攻者ID")
     assistPlayerNameInitial: Optional[str] = Field(None, description="助攻者简称")
     blockPersonId: Optional[int] = Field(None, description="盖帽者ID")
     blockPlayerName: Optional[str] = Field(None, description="盖帽者姓名")
 
+
 class TwoPointEvent(ShotEvent):
     """两分球事件"""
     actionType: Literal["2pt"] = Field(..., description="事件类型")
 
+
 class ThreePointEvent(ShotEvent):
     """三分球事件"""
     actionType: Literal["3pt"] = Field(..., description="事件类型")
+
 
 class AssistEvent(BaseEvent):
     """助攻事件"""
@@ -365,15 +399,18 @@ class AssistEvent(BaseEvent):
     scoringPlayerNameI: str = Field(..., description="得分者简称")
     scoringPersonId: int = Field(..., description="得分者ID")
 
+
 class FreeThrowEvent(BaseEvent):
     """罚球事件"""
     actionType: Literal["freethrow"] = Field(..., description="事件类型")
     subType: str = Field(..., description="罚球类型")
+    isFieldGoal: Optional[int] = Field(0, description="是否为投篮")
     shotResult: ShotResult = Field(..., description="罚球结果")
     description: str = Field(..., description="事件描述")
     playerName: str = Field(..., description="罚球者姓名")
     playerNameI: str = Field(..., description="罚球者简称")
     pointsTotal: Optional[int] = Field(None, description="得分")
+
 
 class ReboundEvent(BaseEvent):
     """篮板事件"""
@@ -387,11 +424,13 @@ class ReboundEvent(BaseEvent):
     playerNameI: str = Field(..., description="篮板球员简称")
     shotActionNumber: Optional[int] = Field(None, description="相关投篮事件编号")
 
+
 class BlockEvent(BaseEvent):
     """盖帽事件"""
     actionType: Literal["block"] = Field(..., description="事件类型")
     playerName: str = Field(..., description="盖帽者姓名")
     playerNameI: str = Field(..., description="盖帽者简称")
+
 
 class StealEvent(BaseEvent):
     """抢断事件"""
@@ -400,6 +439,7 @@ class StealEvent(BaseEvent):
     description: str = Field(..., description="事件描述")
     playerName: str = Field(..., description="抢断者姓名")
     playerNameI: str = Field(..., description="抢断者简称")
+
 
 class TurnoverEvent(BaseEvent):
     """失误事件"""
@@ -413,6 +453,7 @@ class TurnoverEvent(BaseEvent):
     stealPersonId: Optional[int] = Field(None, description="抢断者ID")
     stealPlayerName: Optional[str] = Field(None, description="抢断者姓名")
 
+
 class FoulEvent(BaseEvent):
     """犯规事件"""
     actionType: Literal["foul"] = Field(..., description="事件类型")
@@ -425,6 +466,7 @@ class FoulEvent(BaseEvent):
     playerName: str = Field(..., description="犯规者姓名")
     playerNameI: str = Field(..., description="犯规者简称")
 
+
 class ViolationEvent(BaseEvent):
     """违例事件"""
     actionType: Literal["violation"] = Field(..., description="事件类型")
@@ -434,11 +476,13 @@ class ViolationEvent(BaseEvent):
     playerName: str = Field(..., description="违例者姓名")
     playerNameI: str = Field(..., description="违例者简称")
 
+
 class TimeoutEvent(BaseEvent):
     """暂停事件"""
     actionType: Literal["timeout"] = Field(..., description="事件类型")
     subType: str = Field(..., description="暂停类型")
     description: str = Field(..., description="事件描述")
+
 
 class SubstitutionEvent(BaseEvent):
     """换人事件"""
@@ -452,6 +496,7 @@ class SubstitutionEvent(BaseEvent):
     outgoingPersonId: int = Field(..., description="替补下场球员ID")
     description: str = Field(..., description="事件描述")
 
+
 # ===========================
 # 5. 核心游戏类
 # ===========================
@@ -463,6 +508,7 @@ class PlayByPlay(BaseModel):
     actions: List[BaseEvent] = Field(default_factory=list, description="所有事件列表")
 
     model_config = ConfigDict(from_attributes=True)
+
 
 class GameData(BaseModel):
     """比赛详细数据模型"""
@@ -488,6 +534,7 @@ class GameData(BaseModel):
     statistics: Optional[Dict[str, Any]] = Field(None, description="比赛统计数据")
 
     model_config = ConfigDict(from_attributes=True)
+
 
 class Game(BaseModel):
     """完整比赛数据模型"""

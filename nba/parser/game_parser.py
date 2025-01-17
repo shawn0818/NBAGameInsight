@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 from pydantic import ValidationError
 
 from nba.models.game_model import (
@@ -11,6 +11,7 @@ from nba.models.game_model import (
     AssistEvent, TurnoverEvent, SubstitutionEvent, TimeoutEvent, ViolationEvent,
     ShotEvent, GameEvent
 )
+from utils.time_handler import TimeParser, NBATimeHandler, BasketballGameTime
 
 
 class GameDataParser:
@@ -36,6 +37,43 @@ class GameDataParser:
 
     def __init__(self):
         self.logger = logging.getLogger(self.__class__.__name__)
+
+    def _parse_datetime(self, datetime_str: str) -> datetime:
+        """
+        解析ISO格式的时间字符串
+
+        Args:
+            datetime_str: ISO格式的时间字符串
+
+        Returns:
+            datetime: 解析后的datetime对象
+
+        Raises:
+            ValueError: 时间格式无效时抛出
+        """
+        try:
+            return TimeParser.parse_iso8601_datetime(datetime_str)
+        except Exception as e:
+            raise ValueError(f"Invalid datetime format: {datetime_str}") from e
+
+
+    def _parse_game_clock(self, clock_str: str) -> float:
+        """
+        解析比赛时钟时间为秒数
+
+        Args:
+            clock_str: 时钟时间字符串（格式：PT{minutes}M{seconds}S）
+
+        Returns:
+            float: 转换后的秒数
+
+        Raises:
+            ValueError: 时钟格式无效时抛出
+        """
+        try:
+            return TimeParser.parse_iso8601_duration(clock_str)
+        except Exception as e:
+            raise ValueError(f"Error parsing game clock: {clock_str}") from e
 
     def parse_game_data(self, data: Dict[str, Any]) -> Optional[Game]:
         """解析完整比赛数据"""
@@ -86,6 +124,16 @@ class GameDataParser:
                 data = game_data['game']
             else:
                 data = game_data
+
+            # 处理比赛状态
+            if 'gameStatus' in data:
+                status_value = data['gameStatus']
+                if isinstance(status_value, int):
+                    data['gameStatus'] = GameStatusEnum(status_value)
+                else:
+                    data['gameStatus'] = GameStatusEnum.NOT_STARTED
+            else:
+                data['gameStatus'] = GameStatusEnum.NOT_STARTED
 
             # 从data中提取并删除team数据，避免重复
             home_team_data = data.pop('homeTeam', {})
@@ -139,24 +187,39 @@ class GameDataParser:
                     timeoutsRemaining=0
                 )
 
+            # 处理每节比分
+            if 'periods' in team_data:
+                processed_periods = []
+                for period_data in team_data['periods']:
+                    try:
+                        period_score = PeriodScore(
+                            period=period_data['period'],
+                            periodType=period_data['periodType'],
+                            score=period_data['score']
+                        )
+                        processed_periods.append(period_score)
+                    except Exception as e:
+                        self.logger.error(f"处理节次数据时出错: {str(e)}")
+                        continue
+                team_data['periods'] = processed_periods
+
             # 处理球员数据
             if 'players' in team_data:
                 processed_players = []
                 for player in team_data['players']:
                     try:
-                        # 确保必要字段存在
+                        # 基础数据确认
                         if 'statistics' not in player:
                             player['statistics'] = {}
-                        if 'notPlayingReason' not in player:
-                            player['notPlayingReason'] = None
-                        if 'notPlayingDescription' not in player:
-                            player['notPlayingDescription'] = None
-                            
+
+                        # 处理球员状态相关字段
+                        self._process_player_status(player)
+
                         processed_players.append(Player(**player))
                     except Exception as e:
                         self.logger.error(f"处理球员数据时出错: {str(e)}")
                         continue
-                        
+
                 team_data['players'] = processed_players
 
             return TeamStats(**team_data)
@@ -165,58 +228,28 @@ class GameDataParser:
             self.logger.error(f"处理球队统计数据时出错: {str(e)}")
             raise
 
-    def _parse_playbyplay(self, data: Dict[str, Any]) -> Optional[PlayByPlay]:
-        """解析比赛回放数据"""
-        try:
-            # 添加更详细的日志
-            self.logger.debug(f"开始解析回放数据: {data.keys() if data else None}")
-            
-            if not data:
-                self.logger.warning("回放数据为空")
-                return None
-            
-            if 'game' not in data:
-                self.logger.warning("回放数据中缺少 'game' 字段")
-                return None
-            
-            # 检查actions的位置
-            actions_data = None
-            if 'actions' in data:
-                actions_data = data['actions']
-                self.logger.debug("从根级别找到actions")
-            elif 'actions' in data.get('game', {}):
-                actions_data = data['game']['actions']
-                self.logger.debug("从game字段中找到actions")
-            
-            if not actions_data:
-                self.logger.warning("未找到有效的actions数据")
-                return None
+    def _process_player_status(self, player: Dict[str, Any]) -> None:
+        """处理球员状态相关字段"""
+        # 检查并设置状态字段
+        if 'status' not in player:
+            player['status'] = 'INACTIVE' if player.get('notPlayingReason') else 'ACTIVE'
 
-            actions = []
-            for action_data in actions_data:
-                try:
-                    event = self._process_event(action_data)
-                    if event:
-                        actions.append(event)
-                except Exception as e:
-                    self.logger.error(f"处理事件时出错: {e}, 事件数据: {action_data}")
-                    continue
+        # 检查并设置场上状态
+        if 'oncourt' not in player:
+            is_active = player['status'] == 'ACTIVE'
+            no_injury = not player.get('notPlayingReason')
+            player['oncourt'] = '1' if is_active and no_injury else '0'
 
-            self.logger.info(f"成功解析 {len(actions)} 个事件")
-            
-            # 创建PlayByPlay对象
-            play_by_play = PlayByPlay(
-                game=data.get('game', {}),
-                meta=data.get('meta'),
-                actions=actions
-            )
-            
-            self.logger.debug(f"成功创建PlayByPlay对象，包含 {len(play_by_play.actions)} 个事件")
-            return play_by_play
+        # 检查并设置参赛状态
+        if 'played' not in player:
+            minutes = player.get('statistics', {}).get('minutes', 'PT00M00.00S')
+            player['played'] = '1' if minutes != 'PT00M00.00S' else '0'
 
-        except Exception as e:
-            self.logger.error(f"解析回放数据时出错: {e}")
-            return None
+        # 确保描述字段存在
+        if 'notPlayingReason' not in player:
+            player['notPlayingReason'] = None
+        if 'notPlayingDescription' not in player:
+            player['notPlayingDescription'] = None
 
     def _process_event(self, event_data: Dict[str, Any]) -> Optional[BaseEvent]:
         """处理单个事件数据"""
@@ -316,48 +349,57 @@ class GameDataParser:
             self.logger.error(f"处理事件时出错: {str(e)}")
             return None
 
-    def _parse_datetime(self, datetime_str: str) -> datetime:
-        """
-        解析ISO格式的时间字符串
 
-        Args:
-            datetime_str: ISO格式的时间字符串
-
-        Returns:
-            datetime: 解析后的datetime对象
-
-        Raises:
-            ValueError: 时间格式无效时抛出
-        """
+    def _parse_playbyplay(self, data: Dict[str, Any]) -> Optional[PlayByPlay]:
+        """解析比赛回放数据"""
         try:
-            return datetime.fromisoformat(datetime_str.replace('Z', '+00:00'))
+            # 添加更详细的日志
+            self.logger.debug(f"开始解析回放数据: {data.keys() if data else None}")
+
+            if not data:
+                self.logger.warning("回放数据为空")
+                return None
+
+            if 'game' not in data:
+                self.logger.warning("回放数据中缺少 'game' 字段")
+                return None
+
+            # 检查actions的位置
+            actions_data = None
+            if 'actions' in data:
+                actions_data = data['actions']
+                self.logger.debug("从根级别找到actions")
+            elif 'actions' in data.get('game', {}):
+                actions_data = data['game']['actions']
+                self.logger.debug("从game字段中找到actions")
+
+            if not actions_data:
+                self.logger.warning("未找到有效的actions数据")
+                return None
+
+            actions = []
+            for action_data in actions_data:
+                try:
+                    event = self._process_event(action_data)
+                    if event:
+                        actions.append(event)
+                except Exception as e:
+                    self.logger.error(f"处理事件时出错: {e}, 事件数据: {action_data}")
+                    continue
+
+            self.logger.info(f"成功解析 {len(actions)} 个事件")
+
+            # 创建PlayByPlay对象
+            play_by_play = PlayByPlay(
+                game=data.get('game', {}),
+                meta=data.get('meta'),
+                actions=actions
+            )
+
+            self.logger.debug(f"成功创建PlayByPlay对象，包含 {len(play_by_play.actions)} 个事件")
+            return play_by_play
+
         except Exception as e:
-            raise ValueError(f"Invalid datetime format: {datetime_str}") from e
+            self.logger.error(f"解析回放数据时出错: {e}")
+            return None
 
-    def _parse_game_clock(self, clock_str: str) -> float:
-        """
-        解析比赛时钟时间为秒数
-
-        Args:
-            clock_str: 时钟时间字符串（格式：PT{minutes}M{seconds}S）
-
-        Returns:
-            float: 转换后的秒数
-
-        Raises:
-            ValueError: 时钟格式无效时抛出
-        """
-        try:
-            if not clock_str.startswith('PT') or not clock_str.endswith('S'):
-                raise ValueError(f"Invalid clock format: {clock_str}")
-
-            parts = clock_str[2:-1].split('M')
-            if len(parts) != 2:
-                raise ValueError(f"Invalid clock format: {clock_str}")
-
-            minutes = float(parts[0])
-            seconds = float(parts[1])
-            return minutes * 60 + seconds
-
-        except Exception as e:
-            raise ValueError(f"Error parsing game clock: {clock_str}") from e
