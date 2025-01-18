@@ -22,12 +22,21 @@ class BaseNBAFetcher:
         """初始化HTTP请求管理器和日志"""
         self.http_manager = HTTPRequestManager(
             headers={
-                "Accept": "application/json",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                            "AppleWebKit/537.36 (KHTML, like Gecko) "
-                            "Chrome/131.0.0.0 Safari/537.36",
-                "Origin": "https://www.nba.com",
-                "Referer": "https://www.nba.com/"
+                'Accept': '*/*',
+                'Accept-Encoding': 'gzip, deflate, br, zstd',
+                'Accept-Language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Connection': 'keep-alive',
+                'DNT': '1',
+                'Host': 'stats.nba.com',
+                'Origin': 'https://www.nba.com',
+                'Referer': 'https://www.nba.com/',
+                'Sec-Ch-Ua': '"Not A(Brand";v="8", "Chromium";v="132", "Google Chrome";v="132"',
+                'Sec-Ch-Ua-Mobile': '?0',
+                'Sec-Ch-Ua-Platform': '"Windows"',
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'same-site',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36'
             },
             max_retries=NBAConfig.API.MAX_RETRIES,
             timeout=NBAConfig.API.TIMEOUT,

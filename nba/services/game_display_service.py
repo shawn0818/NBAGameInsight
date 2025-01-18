@@ -1,257 +1,268 @@
-"""比赛信息显示服务
-
-集成 DeepSeek API 实现智能翻译和内容总结
+"""
+game_display_service.py
+比赛数据显示服务，负责格式化和展示比赛相关的各类信息
 """
 
-import logging
-from typing import Dict, List, Optional, Any
+from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
-from pathlib import Path
-from openai import OpenAI
-import json
+import logging
+from functools import lru_cache
+import hashlib
 from datetime import datetime
 
-from nba.models.game_model import Game, PlayerStatistics
-
-
-@dataclass
-class AIConfig:
-    """AI 服务配置"""
-    api_key: str = "sk-e2170a0aac6545c19f21b063a5c2632b"
-    base_url: str = "https://api.deepseek.com"
-    model: str = "deepseek-chat"
-    temperature: float = 1.0
-    max_tokens: int = 1000
-    timeout: int = 30
+from nba.services.ai_service import AIService
+from nba.services.game_data_service import NBAGameDataProvider
 
 
 @dataclass
 class DisplayConfig:
-    """显示配置"""
+    """显示配置类"""
     language: str = "zh_CN"
-    date_format: str = "%Y-%m-%d %H:%M"
-    number_format: str = ",.2f"
     show_advanced_stats: bool = True
-    template_dir: Optional[Path] = None
+    cache_size: int = 128
 
 
 class DisplayService:
-    """比赛信息显示服务"""
+    """比赛数据显示服务"""
 
     def __init__(
             self,
-            display_config: Optional[DisplayConfig] = None,
-            ai_config: Optional[AIConfig] = None
+            game_data_service: NBAGameDataProvider,
+            display_config: DisplayConfig,
+            ai_service: Optional[AIService] = None
     ):
-        """初始化显示服务"""
-        self.display_config = display_config or DisplayConfig()
-        self.ai_config = ai_config
+        """初始化显示服务
+
+        Args:
+            game_data_service: 数据服务实例
+            display_config: 显示配置
+            ai_service: AI服务实例(可选)
+        """
         self.logger = logging.getLogger(self.__class__.__name__)
+        self.game_data_service = game_data_service
+        self.display_config = display_config
+        self.ai_service = ai_service
+        self._translation_cache = {}
 
-        if self.ai_config:
-            self.client = OpenAI(
-                api_key=self.ai_config.api_key,
-                base_url=self.ai_config.base_url
-            )
+    def _safe_get(self, data: Dict[str, Any], keys: List[str], default: Any = "N/A") -> Any:
+        """安全获取嵌套字典数据
 
-    def _get_completion(self, prompt: str, system_prompt: str) -> str:
-        """获取 AI 补全"""
+        Args:
+            data: 源数据字典
+            keys: 键的路径列表
+            default: 默认值
+
+        Returns:
+            找到的值或默认值
+        """
         try:
-            if not self.ai_config:
-                raise ValueError("AI 服务未配置")
+            result = data
+            for key in keys:
+                if not isinstance(result, dict):
+                    return default
+                result = result.get(key, default)
+            return result if result is not None else default
+        except Exception:
+            return default
 
-            response = self.client.chat.completions.create(
-                model=self.ai_config.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=self.ai_config.temperature,
-                max_tokens=self.ai_config.max_tokens,
-                stream=False
+    def _validate_data(self, data: Dict[str, Any], required_fields: List[str]) -> bool:
+        """验证数据完整性
+
+        Args:
+            data: 待验证的数据字典
+            required_fields: 必需的字段列表
+
+        Returns:
+            数据是否有效
+        """
+        return all(self._safe_get(data, field.split('.')) != "N/A"
+                   for field in required_fields)
+
+    @lru_cache(maxsize=128)
+    def _get_translation(self, text: str, target_language: str) -> str:
+        """获取或缓存翻译结果
+
+        Args:
+            text: 待翻译文本
+            target_language: 目标语言
+
+        Returns:
+            翻译后的文本
+        """
+        if not self.ai_service:
+            return text
+
+        cache_key = hashlib.md5(f"{text}:{target_language}".encode()).hexdigest()
+        if cache_key in self._translation_cache:
+            return self._translation_cache[cache_key]
+
+        translated = self.ai_service.translate(text=text, target_language=target_language)
+        self._translation_cache[cache_key] = translated
+        return translated
+
+    def format_game_basic_info(self, game_data: Dict[str, Any]) -> Optional[str]:
+        """格式化比赛基本信息
+
+        Args:
+            game_data: 比赛数据字典
+
+        Returns:
+            格式化的基本信息文本
+        """
+        required_fields = ['gameId', 'homeTeam.teamName', 'awayTeam.teamName']
+        if not self._validate_data(game_data, required_fields):
+            self.logger.error("无效的比赛基础数据")
+            return None
+
+        try:
+            # 格式化比赛时间
+            game_time = self._safe_get(game_data, ['gameTimeLocal'])
+            try:
+                formatted_time = datetime.strptime(game_time, "%Y-%m-%dT%H:%M:%S%z").strftime("%Y-%m-%d %H:%M")
+            except (ValueError, TypeError):
+                formatted_time = str(game_time)
+
+            info_items = [
+                f"比赛编号: {self._safe_get(game_data, ['gameId'])}",
+                f"比赛时间: {formatted_time}",
+                f"比赛地点: {self._safe_get(game_data, ['arena', 'arenaName'])}, "
+                f"{self._safe_get(game_data, ['arena', 'arenaCity'])}",
+                f"主队: {self._safe_get(game_data, ['homeTeam', 'teamName'])}",
+                f"客队: {self._safe_get(game_data, ['awayTeam', 'teamName'])}",
+                f"比赛状态: {self._safe_get(game_data, ['gameStatusText'])}",
+                f"观众人数: {self._safe_get(game_data, ['attendance'])}"
+            ]
+
+            return self._get_translation(
+                "\n".join(info_items),
+                self.display_config.language
             )
-
-            return response.choices[0].message.content
-
         except Exception as e:
-            self.logger.error(f"获取 AI 补全时出错: {e}")
-            return ""
+            self.logger.error(f"格式化比赛信息时出错: {str(e)}")
+            return None
 
-    def translate_content(self, content: str, target_lang: str) -> str:
-        """翻译内容"""
-        system_prompt = """你是一个专业的体育内容翻译专家。
-        你需要准确理解体育术语和行话，保持专业性的同时确保翻译的自然流畅。"""
+    def format_game_live_status(self, game_stats: Dict[str, Any]) -> Optional[str]:
+        """格式化比赛实时状态
 
-        prompt = f"""请将以下体育内容翻译成{target_lang}：\n\n{content}"""
+        Args:
+            game_stats: 比赛统计数据字典
 
-        return self._get_completion(prompt, system_prompt)
+        Returns:
+            格式化的比赛状态文本
+        """
+        required_fields = ['homeTeam.score', 'awayTeam.score']
+        if not self._validate_data(game_stats, required_fields):
+            return None
 
-    def generate_game_summary(self, game: Game) -> str:
-        """生成比赛总结"""
-        if not game:
-            return ""
-
-        game_info = self._format_game_info(game)
-
-        system_prompt = """你是一个专业的NBA比赛分析师，需要基于比赛数据生成专业、生动的比赛总结。"""
-
-        prompt = f"""请基于以下比赛数据生成一份专业的比赛总结：
-
-比赛数据：
-{json.dumps(game_info, ensure_ascii=False, indent=2)}
-
-要求：
-- 总结比赛的关键情节
-- 分析双方表现
-- 突出重要数据
-- 使用生动专业的语言
-- 篇幅控制在500字以内
-"""
-
-        return self._get_completion(prompt, system_prompt)
-
-    def _format_game_info(self, game: Game) -> Dict[str, Any]:
-        """格式化比赛信息"""
         try:
-            return {
-                "basic_info": {
-                    "date": game.game.gameTimeLocal.isoformat(),
-                    "arena": {
-                        "name": game.game.arena.arenaName,
-                        "city": game.game.arena.arenaCity,
-                        "attendance": game.game.attendance
-                    }
-                },
-                "teams": {
-                    "home": {
-                        "name": game.game.homeTeam.teamName,
-                        "score": game.game.homeTeam.score,
-                        "statistics": self._format_team_stats(game.game.homeTeam)
-                    },
-                    "away": {
-                        "name": game.game.awayTeam.teamName,
-                        "score": game.game.awayTeam.score,
-                        "statistics": self._format_team_stats(game.game.awayTeam)
-                    }
-                },
-                "officials": [
-                    {
-                        "name": official.name,
-                        "position": official.assignment
-                    }
-                    for official in game.game.officials
+            home_team = self._safe_get(game_stats, ['homeTeam'], {})
+            away_team = self._safe_get(game_stats, ['awayTeam'], {})
+
+            status_items = [
+                f"比赛状态: {self._safe_get(game_stats, ['gameStatusText'])}",
+                f"当前比分: {self._safe_get(home_team, ['score'])} - "
+                f"{self._safe_get(away_team, ['score'])}",
+                "",
+                f"主队 {self._safe_get(home_team, ['teamName'])}:",
+                f"本节得分: {self._safe_get(home_team, ['periods', -1, 'score'], 0)}",
+                f"犯规次数: {self._safe_get(home_team, ['fouls'], 0)}",
+                "",
+                f"客队 {self._safe_get(away_team, ['teamName'])}:",
+                f"本节得分: {self._safe_get(away_team, ['periods', -1, 'score'], 0)}",
+                f"犯规次数: {self._safe_get(away_team, ['fouls'], 0)}"
+            ]
+
+            return self._get_translation(
+                "\n".join(status_items),
+                self.display_config.language
+            )
+        except Exception as e:
+            self.logger.error(f"格式化比赛状态时出错: {str(e)}")
+            return None
+
+    def format_player_stats(self, player_stats: Dict[str, Any]) -> Optional[str]:
+        """格式化球员统计数据
+
+        Args:
+            player_stats: 球员统计数据字典
+
+        Returns:
+            格式化的球员统计文本
+        """
+        required_fields = ['name', 'statistics']
+        if not self._validate_data(player_stats, required_fields):
+            return None
+
+        try:
+            stats = self._safe_get(player_stats, ['statistics'], {})
+
+            basic_items = [
+                f"球员: {self._safe_get(player_stats, ['name'])}",
+                f"上场时间: {self._safe_get(stats, ['minutes'])}",
+                f"得分: {self._safe_get(stats, ['points'], 0)}",
+                f"篮板: {self._safe_get(stats, ['reboundsTotal'], 0)}",
+                f"助攻: {self._safe_get(stats, ['assists'], 0)}",
+                f"抢断: {self._safe_get(stats, ['steals'], 0)}",
+                f"盖帽: {self._safe_get(stats, ['blocks'], 0)}",
+                f"失误: {self._safe_get(stats, ['turnovers'], 0)}"
+            ]
+
+            shooting_items = [
+                f"投篮: {self._safe_get(stats, ['fieldGoalsMade'], 0)}/"
+                f"{self._safe_get(stats, ['fieldGoalsAttempted'], 0)}",
+                f"三分: {self._safe_get(stats, ['threePointersMade'], 0)}/"
+                f"{self._safe_get(stats, ['threePointersAttempted'], 0)}"
+            ]
+
+            if self.display_config.show_advanced_stats:
+                advanced_items = [
+                    "",
+                    "进阶数据:",
+                    f"投篮命中率: {self._safe_get(stats, ['fieldGoalsPercentage'], 0):.1f}%",
+                    f"三分命中率: {self._safe_get(stats, ['threePointersPercentage'], 0):.1f}%"
                 ]
-            }
-        except Exception as e:
-            self.logger.error(f"格式化比赛信息时出错: {e}")
-            return {}
+            else:
+                advanced_items = []
 
-    def _format_team_stats(self, team) -> Dict[str, Any]:
-        """格式化球队统计数据"""
+            all_items = basic_items + shooting_items + advanced_items
+            return self._get_translation(
+                "\n".join(all_items),
+                self.display_config.language
+            )
+        except Exception as e:
+            self.logger.error(f"格式化球员统计时出错: {str(e)}")
+            return None
+
+    def process_event(self, event_data: Dict[str, Any]) -> Optional[str]:
+        """处理比赛事件
+
+        Args:
+            event_data: 事件数据字典
+
+        Returns:
+            处理后的事件描述
+        """
         try:
-            # 确保 statistics 是 TeamStats 类型而不是 dict
-            if not hasattr(team, 'statistics'):
-                self.logger.error("Team object has no statistics attribute")
-                return {}
-            
-            stats = team.statistics
-            if not hasattr(stats, 'fieldGoalsMade'):
-                # 如果是字典类型，使用 get 方法
-                return {
-                    "field_goals": f"{stats.get('fieldGoalsMade', 0)}/{stats.get('fieldGoalsAttempted', 0)}",
-                    "field_goals_pct": stats.get('fieldGoalsPercentage', 0.0),
-                    "three_points": f"{stats.get('threePointersMade', 0)}/{stats.get('threePointersAttempted', 0)}",
-                    "three_points_pct": stats.get('threePointersPercentage', 0.0),
-                    "assists": stats.get('assists', 0),
-                    "rebounds": stats.get('reboundsTotal', 0),
-                    "steals": stats.get('steals', 0),
-                    "blocks": stats.get('blocks', 0),
-                    "turnovers": stats.get('turnovers', 0)
-                }
-            
-            # 如果是对象类型，直接访问属性
-            return {
-                "field_goals": f"{stats.fieldGoalsMade}/{stats.fieldGoalsAttempted}",
-                "field_goals_pct": stats.fieldGoalsPercentage,
-                "three_points": f"{stats.threePointersMade}/{stats.threePointersAttempted}",
-                "three_points_pct": stats.threePointersPercentage,
-                "assists": stats.assists,
-                "rebounds": stats.reboundsTotal,
-                "steals": stats.steals,
-                "blocks": stats.blocks,
-                "turnovers": stats.turnovers
-            }
+            event_time = (
+                f"{self._safe_get(event_data, ['period'])}节 "
+                f"{self._safe_get(event_data, ['clock'])}"
+            )
+            description = self._safe_get(event_data, ['description'])
+
+            event_text = f"[{event_time}] {description}"
+            return self._get_translation(
+                event_text,
+                self.display_config.language
+            )
         except Exception as e:
-            self.logger.error(f"格式化球队统计数据时出错: {e}")
-            return {}
+            self.logger.error(f"处理比赛事件时出错: {str(e)}")
+            return None
 
-    def analyze_player_performance(self, player_name: str, stats: Dict[str, Any]) -> str:
-        """分析球员表现"""
-        system_prompt = """你是一个专业的NBA球员分析师，需要基于统计数据进行深入分析。"""
-
-        prompt = f"""请基于以下数据分析这位球员的表现：
-
-球员数据：
-{json.dumps(stats, ensure_ascii=False, indent=2)}
-
-要求：
-- 评估整体表现
-- 突出数据亮点
-- 分析效率指标
-- 给出专业见解
-- 篇幅300字左右
-"""
-
-        return self._get_completion(prompt, system_prompt)
-
-    def analyze_key_moments(self, plays: List[Dict[str, Any]]) -> str:
-        """分析关键时刻"""
-        if not plays:
-            return ""
-
-        system_prompt = """你是一个专业的NBA比赛分析师，需要分析比赛的关键时刻和转折点。"""
-
-        prompt = f"""请分析以下比赛回放数据中的关键时刻：
-
-比赛回放：
-{json.dumps(plays, ensure_ascii=False, indent=2)}
-
-要求：
-- 识别最关键的3-5个时刻
-- 分析这些时刻的影响
-- 评估相关决策
-- 使用专业的分析视角
-- 篇幅300字左右
-"""
-
-        return self._get_completion(prompt, system_prompt)
-
-    def format_game_report(self, game: Game) -> Dict[str, Any]:
-        """生成完整比赛报告"""
+    def clear_cache(self) -> None:
+        """清理缓存数据"""
         try:
-            if not game:
-                return {}
-
-            # 获取比赛基本信息
-            game_info = self._format_game_info(game)
-
-            # 生成报告各部分内容
-            report = {
-                "basic_info": game_info["basic_info"],
-                "summary": self.generate_game_summary(game)
-            }
-
-            # 如果需要翻译
-            if self.display_config.language != "en":
-                for key in ["summary"]:
-                    if report.get(key):
-                        report[key] = self.translate_content(
-                            report[key],
-                            self.display_config.language
-                        )
-
-            return report
-
+            self._translation_cache.clear()
+            self._get_translation.cache_clear()
+            self.logger.info("显示服务缓存已清理")
         except Exception as e:
-            self.logger.error(f"生成比赛报告时出错: {e}")
-            return {}
+            self.logger.warning(f"清理缓存时出错: {str(e)}")

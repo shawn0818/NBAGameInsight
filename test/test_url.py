@@ -9,6 +9,7 @@ def test_nba_api() -> Dict:
     url2 = "https://cdn.nba.com/static/json/staticData/playerIndex.json"
     url3 = "https://stats.nba.com/stats/commonallplayers?LeagueID=00"
     url4 = "https://stats.nba.com/stats/teaminfocommon?LeagueID=00&Season=2024-25&SeasonType=Regular+Season&TeamID=1610612742"
+    url5 = "https://cdn.nba.com/static/json/liveData/playbyplay/playbyplay_0022400596.json"
     headers = {
         "Accept": "*/*",
         "Accept-Encoding": "gzip, deflate, br",
@@ -17,12 +18,6 @@ def test_nba_api() -> Dict:
         "Host": "stats.nba.com",
         "Origin": "https://www.nba.com",
         "Referer": "https://www.nba.com/",
-        "sec-ch-ua": "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\"",
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": "\"Windows\"",
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "same-site",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     
@@ -30,7 +25,7 @@ def test_nba_api() -> Dict:
 
     try:
         response = requests.get(
-            url=url4,
+            url=url2,
             headers=headers,
             timeout=30,
         )
@@ -53,8 +48,9 @@ if __name__ == "__main__":
     result = test_nba_api()
     if result:
         # 保存结果到文件
-        with open('nba_api_response5.json', 'w', encoding='utf-8') as f:
+        with open('test.json', 'w', encoding='utf-8') as f:
             json.dump(result, f, indent=2)
-        print("Response saved to nba_api_response.json")
+
+        print("Response saved to game_videodetail.json")
     else:
         print("No data returned")

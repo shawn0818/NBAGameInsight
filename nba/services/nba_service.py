@@ -1,642 +1,329 @@
-"""NBA统一服务模块
+# nba/services/nba_service.py
 
-整合所有子服务功能，提供统一的接口
-"""
-
-from typing import Optional, Dict, Any, List, Union, Tuple
-from pathlib import Path
+from typing import Optional, Dict, Any, List, Callable
 import logging
+from pathlib import Path
+from dataclasses import dataclass, field
+from functools import wraps
 from datetime import datetime
 
 from nba.services.game_data_service import NBAGameDataProvider, ServiceConfig
 from nba.services.game_video_service import GameVideoService
-from nba.services.game_display_service import DisplayService, DisplayConfig, AIConfig
-from nba.services.game_charts_service import (
-    NBAVisualizer,
-    GameFlowVisualizer,
-    PlayerPerformanceVisualizer,
-    TeamPerformanceVisualizer,
-    InteractionVisualizer,
-    ShotChartVisualizer
-)
-from nba.models.game_model import Game, PlayerStatistics, TeamStats
-from nba.models.video_model import VideoAsset, ContextMeasure
+from nba.services.game_display_service import DisplayService, DisplayConfig
+from nba.services.game_charts_service import GameChartsService
+from nba.services.ai_service import AIConfig
+from config.nba_config import NBAConfig
 
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 
-class NBAService:
-    """NBA统一服务接口，整合所有子服务功能"""
+@dataclass
+class NBAServiceConfig:
+    """NBA服务统一配置类"""
 
-    def __init__(
-            self,
-            default_team: Optional[str] = None,
-            default_player: Optional[str] = None,
-            date_str: Optional[str] = None,
-            display_language: str = "zh_CN",
-            enable_ai: bool = True
-    ):
+    # 基础配置
+    default_team: Optional[str] = None
+    default_player: Optional[str] = None
+    date_str: Optional[str] = None
+
+    # 显示配置
+    display_language: str = "zh_CN"
+    show_advanced_stats: bool = True
+
+    # AI配置
+    enable_ai: bool = False
+    ai_api_key: Optional[str] = None
+    ai_base_url: Optional[str] = None
+
+    # 输出配置
+    output_dir: Path = NBAConfig.PATHS.PICTURES_DIR
+
+    # 日志配置
+    log_level: int = logging.INFO
+    log_format: str = '%(asctime)s [%(levelname)s] %(name)s - %(message)s'
+
+    # 服务配置实例（内部使用）
+    service_config: ServiceConfig = field(init=False)
+    display_config: DisplayConfig = field(init=False)
+    ai_config: Optional[AIConfig] = field(init=False)
+
+    def __post_init__(self):
+        """初始化派生配置"""
+        # 配置日志
+        self._setup_logging()
+
+        # 配置AI服务
+        self._setup_ai_config()
+
+        # 初始化子服务配置
+        self._init_service_configs()
+
+    def _setup_logging(self) -> None:
+        """设置日志配置"""
+        if self.log_level:
+            logger.setLevel(self.log_level)
+        if self.log_format:
+            for handler in logger.handlers:
+                handler.setFormatter(logging.Formatter(self.log_format))
+
+    def _setup_ai_config(self) -> None:
+        """设置AI服务配置"""
+        if self.enable_ai and not self.ai_api_key:
+            self.enable_ai = False
+            logger.warning("未提供AI API密钥，已禁用AI功能")
+
+        self.ai_config = AIConfig(
+            api_key=self.ai_api_key,
+            base_url=self.ai_base_url
+        ) if self.enable_ai else None
+
+    def _init_service_configs(self) -> None:
+        """初始化子服务配置"""
+        self.service_config = ServiceConfig(
+            default_team=self.default_team,
+            default_player=self.default_player,
+            date_str=self.date_str,
+            cache_size=128,
+            cache_dir=NBAConfig.PATHS.CACHE_DIR,
+            auto_refresh=True,
+            refresh_interval=NBAConfig.API.SCHEDULE_UPDATE_INTERVAL
+        )
+
+        self.display_config = DisplayConfig(
+            language=self.display_language,
+            show_advanced_stats=self.show_advanced_stats
+        )
+
+
+def handle_service_exceptions(func: Callable) -> Callable:
+    """服务层异常处理装饰器"""
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            logger.error(f"服务调用错误 - {func.__name__}: {str(e)}", exc_info=True)
+
+            # 根据返回类型返回适当的空值
+            return_type = func.__annotations__.get('return')
+            if return_type == Dict:
+                return {}
+            elif return_type == List:
+                return []
+            elif return_type == str:
+                return ""
+            return None
+
+    return wrapper
+
+
+class NBAService:
+    """NBA数据服务统一接口
+
+    主要职责:
+    1. 统一配置管理
+    2. 服务组件协调
+    3. 提供简化的API
+    4. 统一的错误处理
+    5. 资源生命周期管理
+    """
+
+    def __init__(self, config: Optional[NBAServiceConfig] = None):
         """初始化NBA服务
 
         Args:
-            default_team: 默认的球队名称，如果不指定则使用ServiceConfig中的默认值
-            default_player: 默认的球员名称，如果不指定则使用ServiceConfig中的默认值
-            date_str: 默认的日期字符串，如果不指定则使用ServiceConfig中的默认值
-            display_language: 显示语言，默认中文
-            enable_ai: 是否启用AI分析功能
+            config: 服务配置对象，如果为None则使用默认配置
         """
-        self.logger = logger.getChild(self.__class__.__name__)
-
-        # 配置服务 - 只传入非None的值
-        service_config_params = {}
-        if default_team is not None:
-            service_config_params['default_team'] = default_team
-        if default_player is not None:
-            service_config_params['default_player'] = default_player
-        if date_str is not None:
-            service_config_params['date_str'] = date_str
-
-        service_config = ServiceConfig(**service_config_params)
-
-        display_config = DisplayConfig(
-            language=display_language,
-            show_advanced_stats=True
-        )
-
-        ai_config = AIConfig() if enable_ai else None
+        self.config = config or NBAServiceConfig()
+        self.logger = logging.getLogger(self.__class__.__name__)
 
         # 初始化子服务
-        self._data_provider = NBAGameDataProvider(config=service_config)
-        self._video_service = GameVideoService()
+        self._init_services()
+
+        self.logger.info("NBA服务初始化完成")
+
+    def _init_services(self) -> None:
+        """初始化所有子服务"""
+        # 数据服务（核心）
+        self._data_service = NBAGameDataProvider(self.config.service_config)
+
+        # 显示服务
         self._display_service = DisplayService(
-            display_config=display_config,
-            ai_config=ai_config
+            game_data_service=self._data_service,
+            display_config=self.config.display_config,
+            ai_service=self.config.ai_config
         )
 
         # 可视化服务
-        self._shot_visualizer = ShotChartVisualizer()
-        self._player_visualizer = PlayerPerformanceVisualizer()
-        self._team_visualizer = TeamPerformanceVisualizer()
-        self._interaction_visualizer = InteractionVisualizer()
-        self._flow_visualizer = GameFlowVisualizer()
+        self._viz_service = GameChartsService(game_data_service=self._data_service)
 
-    def get_game(self, team: Optional[str] = None,
-                 date: Optional[str] = None) -> Optional[Game]:
-        """获取比赛数据"""
-        return self._data_provider.get_game(team, date)
+        # 视频服务
+        self._video_service = GameVideoService()
 
-    def display_game_info(
-            self,
-            team: Optional[str] = None,
-            date: Optional[str] = None,
-            include_ai_analysis: bool = False
-    ) -> Dict[str, Any]:
-        """显示比赛信息，支持AI分析
+    @handle_service_exceptions
+    def get_game_info(self, team: Optional[str] = None,
+                      date: Optional[str] = None,
+                      include_ai_analysis: bool = False) -> Dict[str, Any]:
+        """获取比赛信息
 
         Args:
             team: 球队名称
             date: 比赛日期
-            include_ai_analysis: 是否包含AI分析报告
+            include_ai_analysis: 是否包含AI分析
 
         Returns:
-            Dict包含比赛信息和可选的AI分析
+            比赛信息字典，包含基本信息、实时状态和统计数据
         """
-        try:
-            game = self.get_game(team, date)
-            if not game:
-                self.logger.error("未找到比赛数据")
-                return {}
-
-            basic_info = self.get_game_basic_info(game)
-            stats = self.get_game_stats(game)
-
-            result = {
-                "basic_info": basic_info,
-                "statistics": stats
-            }
-
-            if include_ai_analysis:
-                ai_analysis = self._display_service.format_game_report(game)
-                result["ai_analysis"] = ai_analysis
-
-            return result
-
-        except Exception as e:
-            self.logger.error(f"生成比赛信息时出错: {e}")
+        # 获取原始比赛数据
+        game_data = self._data_service.get_game(team, date)
+        if not game_data:
             return {}
 
-    def download_game_highlights(
-            self,
-            team: Optional[str] = None,
-            player: Optional[str] = None,
-            date: Optional[str] = None,
-            action_type: str = "FGM",
-            to_gif: bool = False,
-            quality: str = "hd",
-            compress: bool = False,
-            output_dir: Optional[Path] = None
-    ) -> Dict[str, Path]:
-        """下载比赛精彩片段"""
-        try:
-            game = self.get_game(team, date)
-            if not game:
-                self.logger.error("未找到比赛数据")
-                return {}
+        # 转换为显示服务需要的格式
+        game_dict = game_data.game.to_dict()
 
-            videos = self.get_game_videos(
-                game_id=game.game.gameId,
-                player=player,
-                team=team,
-                action_type=action_type
-            )
+        # 获取并格式化信息
+        result = {
+            "basic_info": self._display_service.format_game_basic_info(game_dict),
+            "live_status": self._display_service.format_game_live_status(game_dict),
+            "statistics": self._data_service.get_game_stats(game_data)
+        }
 
-            if not videos:
-                self.logger.error("未找到视频数据")
-                return {}
+        # 添加AI分析（如果启用）
+        if include_ai_analysis and self.config.enable_ai:
+            events = self._data_service.get_filtered_events(game_data)
+            result["ai_analysis"] = self._display_service.analyze_events({
+                "game_id": game_dict["gameId"],
+                "events": events
+            })
 
-            self.logger.info(f"找到 {len(videos)} 个视频")
+        return result
 
-            return self._video_service.batch_download(
-                videos=videos,
-                output_dir=output_dir,
-                quality=quality,
-                to_gif=to_gif,
-                compress=compress
-            )
+    @handle_service_exceptions
+    def get_player_stats(self, player_name: str,
+                         team: Optional[str] = None,
+                         date: Optional[str] = None) -> Dict[str, Any]:
+        """获取球员统计数据
 
-        except Exception as e:
-            self.logger.error(f"下载视频时出错: {str(e)}", exc_info=True)
+        Args:
+            player_name: 球员姓名
+            team: 球队名称
+            date: 比赛日期
+
+        Returns:
+            球员统计数据字典
+        """
+        # 获取比赛数据
+        game_data = self._data_service.get_game(team, date)
+        if not game_data:
             return {}
 
-    def create_shot_chart(
-            self,
-            player: Optional[str] = None,
-            team: Optional[str] = None,
-            date: Optional[str] = None,
-            output_path: Optional[str] = None,
-            show_misses: bool = True,
-            show_makes: bool = True,
-            annotate: bool = False,
-            add_player_photo: bool = True,
-            creator_info: Optional[str] = None
+        # 查找球员数据
+        player_data = None
+        for team_data in [game_data.game.homeTeam, game_data.game.awayTeam]:
+            for player in team_data.players:
+                if player.name.lower() == player_name.lower():
+                    player_data = player
+                    break
+            if player_data:
+                break
 
-    ) -> None:
-        """生成投篮图表"""
-        try:
-            game = self.get_game(team, date)
-            if not game:
-                self.logger.error("未找到比赛数据")
-                return
+        if not player_data:
+            self.logger.warning(f"未找到球员: {player_name}")
+            return {}
 
-            player_id = self._data_provider._get_player_id(player) if player else None
-            shot_data = game.get_shot_data(player_id=player_id)
+        # 获取统计数据
+        stats = self._data_service.get_player_stats(player_data)
+        return {
+            "name": player_data.name,
+            "stats": self._display_service.format_player_stats(stats)
+        }
 
-            # 将 shot_data 列表转换为 DataFrame
-            import pandas as pd
-            shot_df = pd.DataFrame(shot_data)
+    @handle_service_exceptions
+    def get_team_stats(self, team: Optional[str] = None,
+                       date: Optional[str] = None) -> Dict[str, Any]:
+        """获取球队统计数据
 
-            self._shot_visualizer.plot_shot_chart(
-                shot_data=shot_df,  # 传递 DataFrame
-                player_id=player_id,
-                player_name=player,
-                team_name=team,
-                output_path=output_path,
-                show_misses=show_misses,
-                show_makes=show_makes,
-                annotate=annotate,
-                add_player_photo=add_player_photo
+        Args:
+            team: 球队名称
+            date: 比赛日期
+
+        Returns:
+            球队统计数据字典
+        """
+        game_data = self._data_service.get_game(team, date)
+        if not game_data:
+            return {}
+
+        return self._data_service.get_game_stats(game_data)
+
+    @handle_service_exceptions
+    def create_shot_chart(self, team: Optional[str] = None,
+                          player_name: Optional[str] = None,
+                          date: Optional[str] = None) -> Optional[Path]:
+        """创建投篮分布图
+
+        Args:
+            team: 球队名称
+            player_name: 球员姓名（可选）
+            date: 比赛日期
+
+        Returns:
+            图表文件路径
+        """
+        game_data = self._data_service.get_game(team, date)
+        if not game_data:
+            return None
+
+        # 获取球员ID（如果指定了球员）
+        player_id = None
+        if player_name:
+            player = next(
+                (p for t in [game_data.game.homeTeam, game_data.game.awayTeam]
+                 for p in t.players if p.name.lower() == player_name.lower()),
+                None
             )
-        except Exception as e:
-            self.logger.error(f"生成投篮图表时出错: {e}")
+            if player:
+                player_id = player.personId
 
-    def create_player_performance_chart(
-            self,
-            player: Optional[str] = None,
-            team: Optional[str] = None,
-            date: Optional[str] = None,
-            output_path: Optional[str] = None
-    ) -> None:
-        """生成球员表现分析图表"""
-        try:
-            game = self.get_game(team, date)
-            if not game:
-                self.logger.error("未找到比赛数据")
-                return
+        # 生成标题
+        title = f"{team or game_data.game.homeTeam.teamName}"
+        if player_name:
+            title += f" - {player_name}"
+        title += " 投篮分布图"
 
-            player_id = self._data_provider._get_player_id(player) if player else None
-            player_name = player or self._data_provider.config.default_player
+        # 生成输出路径
+        output_path = (
+                self.config.output_dir /
+                f"shot_chart_{game_data.game.gameId}"
+                f"{'_' + player_name.replace(' ', '_') if player_name else ''}.png"
+        )
 
-            if hasattr(game, 'playByPlay') and game.playByPlay:
-                plays = game.playByPlay.actions
-                self._player_visualizer.plot_performance_timeline(
-                    plays=plays,
-                    player_name=player_name,
-                    output_path=output_path
-                )
-            else:
-                self.logger.error("未找到比赛回放数据")
-
-        except Exception as e:
-            self.logger.error(f"生成球员表现图表时出错: {e}")
-
-    def create_team_comparison(
-            self,
-            team: Optional[str] = None,
-            date: Optional[str] = None,
-            output_path: Optional[str] = None
-    ) -> None:
-        """生成球队对比图表"""
-        try:
-            game = self.get_game(team, date)
-            if not game:
-                self.logger.error("未找到比赛数据")
-                return
-
-            self._team_visualizer.plot_team_comparison(
-                home_stats=game.game.homeTeam.statistics,
-                away_stats=game.game.awayTeam.statistics,
-                home_team=game.game.homeTeam.teamName,
-                away_team=game.game.awayTeam.teamName,
-                output_path=output_path
-            )
-        except Exception as e:
-            self.logger.error(f"生成球队对比图表时出错: {e}")
-
-    def create_assist_network(
-            self,
-            team: Optional[str] = None,
-            date: Optional[str] = None,
-            output_path: Optional[str] = None
-    ) -> None:
-        """生成助攻网络图"""
-        try:
-            game = self.get_game(team, date)
-            if not game:
-                self.logger.error("未找到比赛数据")
-                return
-
-            if not game.playByPlay or not game.playByPlay.actions:
-                self.logger.error("未找到有效的比赛回放数据")
-                return
-
-            plays = self._data_provider.get_play_by_play(game)
-            if not plays:
-                self.logger.error("处理回放数据失败")
-                return
-
-            team_name = team or self._data_provider.config.default_team
-            self._interaction_visualizer.plot_assist_network(
-                plays=plays,
-                team_name=team_name,
-                output_path=output_path
-            )
-
-        except Exception as e:
-            self.logger.error(f"生成助攻网络图时出错: {e}")
-
-    def create_game_flow(
-            self,
-            team: Optional[str] = None,
-            date: Optional[str] = None,
-            output_path: Optional[str] = None
-    ) -> None:
-        """生成比赛流程图"""
-        try:
-            game = self.get_game(team, date)
-            if not game:
-                self.logger.error("未找到比赛数据")
-                return
-
-            if hasattr(game, 'playByPlay') and game.playByPlay:
-                plays = game.playByPlay.actions
-                self._flow_visualizer.plot_score_flow(
-                    plays=plays,
-                    home_team=game.game.homeTeam.teamName,
-                    away_team=game.game.awayTeam.teamName,
-                    output_path=output_path
-                )
-            else:
-                self.logger.error("未找到比赛回放数据")
-
-        except Exception as e:
-            self.logger.error(f"生成比赛流程图时出错: {e}")
-
-    def analyze_game_moments(
-            self,
-            team: Optional[str] = None,
-            date: Optional[str] = None
-    ) -> str:
-        """分析比赛关键时刻"""
-        try:
-            game = self.get_game(team, date)
-            if not game:
-                return "未找到比赛数据"
-
-            plays = []
-            if hasattr(game, 'playByPlay') and game.playByPlay and game.playByPlay.actions:
-                for action in game.playByPlay.actions:
-                    play = {
-                        "period": action.period,
-                        "clock": action.clock,
-                        "action_type": action.actionType.value if action.actionType else None,
-                        "description": action.description,
-                        "team": action.teamTricode,
-                        "score": {
-                            "home": action.scoreHome,
-                            "away": action.scoreAway
-                        } if action.scoreHome is not None else None
-                    }
-                    plays.append(play)
-
-            return self._display_service.analyze_key_moments(plays)
-
-        except Exception as e:
-            self.logger.error(f"分析比赛关键时刻时出错: {e}")
-            return "分析比赛关键时刻时出错"
+        return self._viz_service.plot_player_shots(
+            game=game_data,
+            player_id=player_id,
+            title=title,
+            output_path=str(output_path)
+        )
 
     def refresh_data(self) -> None:
         """刷新所有数据"""
-        try:
-            self._data_provider.refresh_all_data()
-            self.logger.info("数据刷新完成")
-        except Exception as e:
-            self.logger.error(f"刷新数据时出错: {e}")
+        self._data_service.refresh_all_data()
 
     def __enter__(self):
         """上下文管理器入口"""
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """上下文管理器退出，清理资源"""
-        if hasattr(self, '_data_provider'):
-            try:
-                self._data_provider.clear_cache()
-            except Exception as e:
-                self.logger.error(f"清理资源时出错: {e}")
-
-    def display_player_stats(
-            self,
-            player: Optional[str] = None,
-            date: Optional[str] = None,
-            include_analysis: bool = False
-    ) -> Dict[str, Any]:
-        """显示球员数据，支持AI分析"""
+        """清理资源"""
         try:
-            game = self.get_game(None, date)  # 先获取比赛数据
-            if not game:
-                self.logger.error("未找到比赛数据")
-                return {}
-
-            # 查找球员统计数据
-            player_name = player or self._data_provider.config.default_player
-            player_stats = None
-
-            # 在主队和客队中查找球员
-            for team_player in game.game.homeTeam.players + game.game.awayTeam.players:
-                if team_player.name.lower() == player_name.lower():
-                    player_stats = team_player.statistics
-                    break
-
-            if not player_stats:
-                self.logger.error(f"未找到球员统计数据: {player_name}")
-                return {}
-
-            # 格式化球员统计数据
-            stats = {
-                "points": player_stats.points,
-                "rebounds": player_stats.reboundsTotal,
-                "assists": player_stats.assists,
-                "steals": player_stats.steals,
-                "blocks": player_stats.blocks,
-                "turnovers": player_stats.turnovers,
-                "minutes": player_stats.seconds_played / 60,
-                "shooting": {
-                    "fg": f"{player_stats.fieldGoalsMade}/{player_stats.fieldGoalsAttempted}",
-                    "fg_pct": player_stats.fieldGoalsPercentage,
-                    "three": f"{player_stats.threePointersMade}/{player_stats.threePointersAttempted}",
-                    "three_pct": player_stats.threePointersPercentage,
-                    "ft": f"{player_stats.freeThrowsMade}/{player_stats.freeThrowsAttempted}",
-                    "ft_pct": player_stats.freeThrowsPercentage
-                }
-            }
-
-            result = {"statistics": stats}
-
-            if include_analysis:
-                result["analysis"] = self._display_service.analyze_player_performance(
-                    player_name,
-                    stats
-                )
-
-            return result
-
+            if hasattr(self, '_data_service'):
+                self._data_service.clear_cache()
         except Exception as e:
-            self.logger.error(f"显示球员统计数据时出错: {e}")
-            return {}
-
-    def display_team_stats(
-            self,
-            team: Optional[str] = None,
-            date: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """显示球队统计数据"""
-        try:
-            game = self.get_game(team, date)
-            if not game:
-                self.logger.error("未找到比赛数据")
-                return {}
-
-            return {
-                "home_team": {
-                    "name": game.game.homeTeam.teamName,
-                    "statistics": {
-                        "field_goals": f"{game.game.homeTeam.statistics.get('fieldGoalsMade', 0)}/{game.game.homeTeam.statistics.get('fieldGoalsAttempted', 0)}",
-                        "field_goals_pct": game.game.homeTeam.statistics.get('fieldGoalsPercentage', 0.0),
-                        "three_points": f"{game.game.homeTeam.statistics.get('threePointersMade', 0)}/{game.game.homeTeam.statistics.get('threePointersAttempted', 0)}",
-                        "three_points_pct": game.game.homeTeam.statistics.get('threePointersPercentage', 0.0),
-                        "assists": game.game.homeTeam.statistics.get('assists', 0),
-                        "rebounds": game.game.homeTeam.statistics.get('reboundsTotal', 0),
-                        "steals": game.game.homeTeam.statistics.get('steals', 0),
-                        "blocks": game.game.homeTeam.statistics.get('blocks', 0),
-                        "turnovers": game.game.homeTeam.statistics.get('turnovers', 0)
-                    }
-                },
-                "away_team": {
-                    "name": game.game.awayTeam.teamName,
-                    "statistics": {
-                        "field_goals": f"{game.game.awayTeam.statistics.get('fieldGoalsMade', 0)}/{game.game.awayTeam.statistics.get('fieldGoalsAttempted', 0)}",
-                        "field_goals_pct": game.game.awayTeam.statistics.get('fieldGoalsPercentage', 0.0),
-                        "three_points": f"{game.game.awayTeam.statistics.get('threePointersMade', 0)}/{game.game.awayTeam.statistics.get('threePointersAttempted', 0)}",
-                        "three_points_pct": game.game.awayTeam.statistics.get('threePointersPercentage', 0.0),
-                        "assists": game.game.awayTeam.statistics.get('assists', 0),
-                        "rebounds": game.game.awayTeam.statistics.get('reboundsTotal', 0),
-                        "steals": game.game.awayTeam.statistics.get('steals', 0),
-                        "blocks": game.game.awayTeam.statistics.get('blocks', 0),
-                        "turnovers": game.game.awayTeam.statistics.get('turnovers', 0)
-                    }
-                }
-            }
-
-        except Exception as e:
-            self.logger.error(f"显示球队统计数据时出错: {e}")
-            return {}
-
-    def get_game_videos(
-            self,
-            game_id: Optional[str] = None,
-            player: Optional[str] = None,
-            team: Optional[str] = None,
-            action_type: str = "FGM"
-    ) -> Dict[str, VideoAsset]:
-        """获取比赛视频"""
-        try:
-            if not game_id:
-                game = self.get_game(team)
-                if not game:
-                    self.logger.error("未找到比赛数据")
-                    return {}
-                game_id = game.game.gameId
-
-            context_measure = getattr(ContextMeasure, action_type, ContextMeasure.FGM)
-            player_id = self._data_provider._get_player_id(player) if player else None
-            team_id = self._data_provider._get_team_id(team) if team else None
-
-            return self._video_service.get_game_videos(
-                game_id=game_id,
-                context_measure=context_measure,
-                player_id=player_id,
-                team_id=team_id
-            )
-        except Exception as e:
-            self.logger.error(f"获取比赛视频时出错: {e}")
-            return {}
-
-    def get_game_basic_info(self, game: Game) -> Dict[str, Any]:
-        """获取比赛基本信息"""
-        try:
-            return {
-                "game_time": game.game.gameTimeLocal,
-                "arena": {
-                    "name": game.game.arena.arenaName,
-                    "city": game.game.arena.arenaCity,
-                    "attendance": game.game.attendance
-                },
-                "officials": [
-                    {
-                        "name": official.name,
-                        "position": official.assignment
-                    }
-                    for official in game.game.officials
-                ],
-                "status": game.game.gameStatusText
-            }
-        except Exception as e:
-            self.logger.error(f"获取比赛基本信息时出错: {e}")
-            return {}
-
-    def get_game_stats(self, game: Game) -> Dict[str, Any]:
-        """获取比赛统计数据"""
-        try:
-            return {
-                "score": {
-                    "home": game.game.homeTeam.score,
-                    "away": game.game.awayTeam.score
-                },
-                "home_team": {
-                    "name": game.game.homeTeam.teamName,
-                    "stats": self._get_team_stats(game.game.homeTeam),
-                    "players": [
-                        {
-                            "name": p.name,
-                            "stats": self._get_player_stats(p.statistics)
-                        }
-                        for p in game.game.homeTeam.players
-                    ]
-                },
-                "away_team": {
-                    "name": game.game.awayTeam.teamName,
-                    "stats": self._get_team_stats(game.game.awayTeam),
-                    "players": [
-                        {
-                            "name": p.name,
-                            "stats": self._get_player_stats(p.statistics)
-                        }
-                        for p in game.game.awayTeam.players
-                    ]
-                }
-            }
-        except Exception as e:
-            self.logger.error(f"获取比赛统计数据时出错: {e}")
-            return {}
-
-    def get_play_by_play(self, game: Game) -> List[Dict[str, Any]]:
-        """获取比赛回合数据，处理成适合AI分析的格式"""
-        try:
-            if not game.playByPlay or not game.playByPlay.actions:
-                return []
-
-            plays = []
-            for action in game.playByPlay.actions:
-                play = {
-                    "period": action.period,
-                    "clock": action.clock,
-                    "action_type": action.actionType.value if action.actionType else None,
-                    "description": action.description,
-                    "team": action.teamTricode,
-                    "score": {
-                        "home": action.scoreHome,
-                        "away": action.scoreAway
-                    } if action.scoreHome is not None else None
-                }
-                plays.append(play)
-
-            return plays
-        except Exception as e:
-            self.logger.error(f"获取比赛回合数据时出错: {e}")
-            return []
-
-    def _get_player_stats(self, stats: PlayerStatistics) -> Dict[str, Any]:
-        """格式化球员统计数据"""
-        try:
-            return {
-                "points": stats.points,
-                "rebounds": stats.reboundsTotal,
-                "assists": stats.assists,
-                "steals": stats.steals,
-                "blocks": stats.blocks,
-                "turnovers": stats.turnovers,
-                "minutes": stats.seconds_played / 60,
-                "shooting": {
-                    "fg": f"{stats.fieldGoalsMade}/{stats.fieldGoalsAttempted}",
-                    "fg_pct": stats.fieldGoalsPercentage,
-                    "three": f"{stats.threePointersMade}/{stats.threePointersAttempted}",
-                    "three_pct": stats.threePointersPercentage,
-                    "ft": f"{stats.freeThrowsMade}/{stats.freeThrowsAttempted}",
-                    "ft_pct": stats.freeThrowsPercentage
-                }
-            }
-        except Exception as e:
-            self.logger.error(f"格式化球员统计数据时出错: {e}")
-            return {}
-
-    def _get_team_stats(self, team: TeamStats) -> Dict[str, Any]:
-        """格式化球队统计数据"""
-        try:
-            stats = team.statistics
-            if not isinstance(stats, dict):
-                stats = {}
-
-            return {
-                "field_goals": f"{stats.get('fieldGoalsMade', 0)}/{stats.get('fieldGoalsAttempted', 0)}",
-                "field_goals_pct": stats.get('fieldGoalsPercentage', 0.0),
-                "three_points": f"{stats.get('threePointersMade', 0)}/{stats.get('threePointersAttempted', 0)}",
-                "three_points_pct": stats.get('threePointersPercentage', 0.0),
-                "rebounds": stats.get('reboundsTotal', 0),
-                "assists": stats.get('assists', 0),
-                "steals": stats.get('steals', 0),
-                "blocks": stats.get('blocks', 0),
-                "turnovers": stats.get('turnovers', 0)
-            }
-        except Exception as e:
-            self.logger.error(f"格式化球队统计数据时出错: {e}")
-            return {}
+            self.logger.error(f"清理资源时出错: {str(e)}")

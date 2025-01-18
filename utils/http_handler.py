@@ -18,23 +18,6 @@ class HTTPConfig:
     
     所有配置参数都可以通过类属性访问和修改。
     """
-    HEADERS: Dict[str, str] = {
-        "Accept": "*/*",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Connection": "keep-alive",
-        "Host": "stats.nba.com",
-        "Origin": "https://www.nba.com",
-        "Referer": "https://www.nba.com/",
-        "sec-ch-ua": "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\"",
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": "\"Windows\"",
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "same-site",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-    
     TIMEOUT: int = 30
     MAX_RETRIES: int = 3
     RETRY_DELAY: int = 5
@@ -92,7 +75,7 @@ class HTTPRequestManager:
             retry_status_codes: 需要重试的HTTP状态码列表
             fallback_urls: 故障转移URL映射，格式：{"primary_url": "fallback_url"}
         """
-        self.headers = headers
+        self.headers = headers or {}  # 改为空字典作为默认值
         self.timeout = timeout or NBAConfig.API.TIMEOUT
         self.max_retries = max_retries or NBAConfig.API.MAX_RETRIES
         self.backoff_factor = backoff_factor or 0.3
