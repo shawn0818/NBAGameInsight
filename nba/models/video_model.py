@@ -2,6 +2,17 @@ from typing import Optional, Dict, Any
 from pydantic import BaseModel
 from enum import Enum
 
+
+class VideoQuality(BaseModel):
+    """不同质量的视频信息"""
+    duration: int  # 视频时长
+    url: str       # 视频URL
+    thumbnail: str # 缩略图URL
+
+    class Config:
+        frozen = True
+
+
 class ContextMeasure(str, Enum):
     """视频查询的上下文度量类型"""
     FG3M = "FG3M"  # 三分命中
@@ -15,16 +26,6 @@ class ContextMeasure(str, Enum):
     STL = "STL"    # 抢断
     BLK = "BLK"    # 盖帽
     TOV = "TOV"    # 失误
-
-
-class VideoQuality(BaseModel):
-    """不同质量的视频信息"""
-    duration: int  # 视频时长
-    url: str       # 视频URL
-    thumbnail: str # 缩略图URL
-
-    class Config:
-        frozen = True
 
 
 class VideoAsset(BaseModel):
@@ -61,55 +62,6 @@ class VideoAsset(BaseModel):
     class Config:
         frozen = True
 
-
-class VideoRequestParams(BaseModel):
-    """视频查询参数构建器"""
-    game_id: str
-    player_id: Optional[str] = None
-    team_id: Optional[str] = None
-    context_measure: ContextMeasure = ContextMeasure.FGM
-    season: str = "2024-25"
-    season_type: str = "Regular Season"
-
-    def build(self) -> dict:
-        """构建与NBA API完全一致的查询参数"""
-        return {
-            'LeagueID': "00",
-            'Season': self.season,
-            'SeasonType': self.season_type,
-            'TeamID': int(self.team_id) if self.team_id else 0,
-            'PlayerID': int(self.player_id) if self.player_id else 0,
-            'GameID': self.game_id,
-            'ContextMeasure': self.context_measure.value,
-            # 默认参数
-            'Outcome': '',
-            'Location': '',
-            'Month': 0,
-            'SeasonSegment': '',
-            'DateFrom': '',
-            'DateTo': '',
-            'OpponentTeamID': 0,
-            'VsConference': '',
-            'VsDivision': '',
-            'Position': '',
-            'RookieYear': '',
-            'GameSegment': '',
-            'Period': 0,
-            'LastNGames': 0,
-            'ClutchTime': '',
-            'AheadBehind': '',
-            'PointDiff': '',
-            'RangeType': 0,
-            'StartPeriod': 0,
-            'EndPeriod': 0,
-            'StartRange': 0,
-            'EndRange': 28800,
-            'ContextFilter': '',
-            'OppPlayerID': ''
-        }
-
-    class Config:
-        frozen = True
 
 
 class VideoResponse(BaseModel):

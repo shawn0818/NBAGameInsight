@@ -38,48 +38,15 @@ class GameDataParser:
     def __init__(self):
         self.logger = logging.getLogger(self.__class__.__name__)
 
-    def _parse_datetime(self, datetime_str: str) -> datetime:
-        """
-        解析ISO格式的时间字符串
-
-        Args:
-            datetime_str: ISO格式的时间字符串
-
-        Returns:
-            datetime: 解析后的datetime对象
-
-        Raises:
-            ValueError: 时间格式无效时抛出
-        """
-        try:
-            return TimeParser.parse_iso8601_datetime(datetime_str)
-        except Exception as e:
-            raise ValueError(f"Invalid datetime format: {datetime_str}") from e
-
-
-    def _parse_game_clock(self, clock_str: str) -> float:
-        """
-        解析比赛时钟时间为秒数
-
-        Args:
-            clock_str: 时钟时间字符串（格式：PT{minutes}M{seconds}S）
-
-        Returns:
-            float: 转换后的秒数
-
-        Raises:
-            ValueError: 时钟格式无效时抛出
-        """
-        try:
-            return TimeParser.parse_iso8601_duration(clock_str)
-        except Exception as e:
-            raise ValueError(f"Error parsing game clock: {clock_str}") from e
-
     def parse_game_data(self, data: Dict[str, Any]) -> Optional[Game]:
         """解析完整比赛数据"""
         try:
             if not isinstance(data, dict):
                 raise ValueError("Invalid game data format")
+
+            # 如果是缓存数据，提取实际数据
+            if 'timestamp' in data and 'data' in data:
+                data = data['data']
 
             # 处理比赛基本信息
             game_data = self._process_game_data(data)
@@ -109,15 +76,7 @@ class GameDataParser:
             return None
 
     def _process_game_data(self, game_data: Dict[str, Any]) -> GameData:
-        """
-        处理比赛基础信息
-
-        Args:
-            game_data: 比赛基础数据字典
-
-        Returns:
-            GameData: 处理后的比赛数据对象
-        """
+        """处理比赛基础信息"""
         try:
             # 处理嵌套的数据结构
             if 'meta' in game_data and 'game' in game_data:
@@ -228,29 +187,6 @@ class GameDataParser:
             self.logger.error(f"处理球队统计数据时出错: {str(e)}")
             raise
 
-    def _process_player_status(self, player: Dict[str, Any]) -> None:
-        """处理球员状态相关字段"""
-        # 检查并设置状态字段
-        if 'status' not in player:
-            player['status'] = 'INACTIVE' if player.get('notPlayingReason') else 'ACTIVE'
-
-        # 检查并设置场上状态
-        if 'oncourt' not in player:
-            is_active = player['status'] == 'ACTIVE'
-            no_injury = not player.get('notPlayingReason')
-            player['oncourt'] = '1' if is_active and no_injury else '0'
-
-        # 检查并设置参赛状态
-        if 'played' not in player:
-            minutes = player.get('statistics', {}).get('minutes', 'PT00M00.00S')
-            player['played'] = '1' if minutes != 'PT00M00.00S' else '0'
-
-        # 确保描述字段存在
-        if 'notPlayingReason' not in player:
-            player['notPlayingReason'] = None
-        if 'notPlayingDescription' not in player:
-            player['notPlayingDescription'] = None
-
     def _process_event(self, event_data: Dict[str, Any]) -> Optional[BaseEvent]:
         """处理单个事件数据"""
         try:
@@ -261,7 +197,6 @@ class GameDataParser:
 
             # 处理团队失误事件
             if event_type == 'turnover' and event_data.get('qualifiers', []) == ['team']:
-                # 为团队失误添加必要字段
                 event_data.update({
                     'playerName': 'TEAM',
                     'playerNameI': 'TEAM',
@@ -269,9 +204,8 @@ class GameDataParser:
                 })
                 return TurnoverEvent(**event_data)
 
-            # 处理团队篮板事件（包括deadball情况）
+            # 处理团队篮板事件
             elif event_type == 'rebound' and 'team' in event_data.get('qualifiers', []):
-                # 为团队篮板添加必要字段
                 event_data.update({
                     'playerName': 'TEAM',
                     'playerNameI': 'TEAM',
@@ -280,31 +214,6 @@ class GameDataParser:
                     'reboundOffensiveTotal': 1 if event_data['subType'] == 'offensive' else 0
                 })
                 return ReboundEvent(**event_data)
-
-            # ... 其他现有的事件处理代码保持不变 ...
-
-            # 处理换人事件
-            elif event_type == 'substitution':
-                # 根据 subType 设置进出场球员信息
-                if event_data['subType'] == 'out':
-                    event_data.update({
-                        'incomingPlayerName': event_data['playerName'],
-                        'incomingPlayerNameI': event_data['playerNameI'],
-                        'incomingPersonId': event_data['personId'],
-                        'outgoingPlayerName': event_data['playerName'],
-                        'outgoingPlayerNameI': event_data['playerNameI'],
-                        'outgoingPersonId': event_data['personId']
-                    })
-                else:  # subType == 'in'
-                    event_data.update({
-                        'incomingPlayerName': event_data['playerName'],
-                        'incomingPlayerNameI': event_data['playerNameI'],
-                        'incomingPersonId': event_data['personId'],
-                        'outgoingPlayerName': event_data['playerName'],
-                        'outgoingPlayerNameI': event_data['playerNameI'],
-                        'outgoingPersonId': event_data['personId']
-                    })
-                return SubstitutionEvent(**event_data)
 
             # 处理投篮事件
             elif event_type in ['2pt', '3pt']:
@@ -334,6 +243,28 @@ class GameDataParser:
                     event_data['shotActionNumber'] = None
                 return ReboundEvent(**event_data)
 
+            # 处理换人事件
+            elif event_type == 'substitution':
+                # 根据 subType 设置进出场球员信息
+                if event_data['subType'] == 'out':
+                    event_data.update({
+                        'incomingPlayerName': event_data['playerName'],
+                        'incomingPlayerNameI': event_data['playerNameI'],
+                        'incomingPersonId': event_data['personId'],
+                        'outgoingPlayerName': event_data['playerName'],
+                        'outgoingPlayerNameI': event_data['playerNameI'],
+                        'outgoingPersonId': event_data['personId']
+                    })
+                else:  # subType == 'in'
+                    event_data.update({
+                        'incomingPlayerName': event_data['playerName'],
+                        'incomingPlayerNameI': event_data['playerNameI'],
+                        'incomingPersonId': event_data['personId'],
+                        'outgoingPlayerName': event_data['playerName'],
+                        'outgoingPlayerNameI': event_data['playerNameI'],
+                        'outgoingPersonId': event_data['personId']
+                    })
+
             # 其他事件类型
             event_class = self.EVENT_TYPE_MAP.get(event_type)
             if not event_class:
@@ -349,6 +280,28 @@ class GameDataParser:
             self.logger.error(f"处理事件时出错: {str(e)}")
             return None
 
+    def _process_player_status(self, player: Dict[str, Any]) -> None:
+        """处理球员状态相关字段"""
+        # 检查并设置状态字段
+        if 'status' not in player:
+            player['status'] = 'INACTIVE' if player.get('notPlayingReason') else 'ACTIVE'
+
+        # 检查并设置场上状态
+        if 'oncourt' not in player:
+            is_active = player['status'] == 'ACTIVE'
+            no_injury = not player.get('notPlayingReason')
+            player['oncourt'] = '1' if is_active and no_injury else '0'
+
+        # 检查并设置参赛状态
+        if 'played' not in player:
+            minutes = player.get('statistics', {}).get('minutes', 'PT00M00.00S')
+            player['played'] = '1' if minutes != 'PT00M00.00S' else '0'
+
+        # 确保描述字段存在
+        if 'notPlayingReason' not in player:
+            player['notPlayingReason'] = None
+        if 'notPlayingDescription' not in player:
+            player['notPlayingDescription'] = None
 
     def _parse_playbyplay(self, data: Dict[str, Any]) -> Optional[PlayByPlay]:
         """解析比赛回放数据"""
@@ -360,23 +313,24 @@ class GameDataParser:
                 self.logger.warning("回放数据为空")
                 return None
 
-            if 'game' not in data:
-                self.logger.warning("回放数据中缺少 'game' 字段")
+            # 1. 处理缓存数据结构
+            if 'timestamp' in data and 'data' in data:
+                data = data['data']
+
+            # 2. 检查数据结构
+            if not isinstance(data, dict):
+                self.logger.warning("无效的数据格式")
                 return None
 
-            # 检查actions的位置
-            actions_data = None
-            if 'actions' in data:
-                actions_data = data['actions']
-                self.logger.debug("从根级别找到actions")
-            elif 'actions' in data.get('game', {}):
-                actions_data = data['game']['actions']
-                self.logger.debug("从game字段中找到actions")
+            # 3. 定位 actions 数据
+            game_data = data.get('game', {})
+            actions_data = game_data.get('actions', [])
 
             if not actions_data:
                 self.logger.warning("未找到有效的actions数据")
                 return None
 
+            # 4. 处理事件
             actions = []
             for action_data in actions_data:
                 try:
@@ -387,19 +341,123 @@ class GameDataParser:
                     self.logger.error(f"处理事件时出错: {e}, 事件数据: {action_data}")
                     continue
 
+            if not actions:
+                self.logger.warning("没有解析到任何有效事件")
+                return None
+
             self.logger.info(f"成功解析 {len(actions)} 个事件")
 
-            # 创建PlayByPlay对象
+            # 5. 创建回放对象
             play_by_play = PlayByPlay(
-                game=data.get('game', {}),
-                meta=data.get('meta'),
+                game=game_data,
+                meta=data.get('meta', {}),
                 actions=actions
             )
 
-            self.logger.debug(f"成功创建PlayByPlay对象，包含 {len(play_by_play.actions)} 个事件")
             return play_by_play
 
         except Exception as e:
             self.logger.error(f"解析回放数据时出错: {e}")
             return None
 
+    def _parse_datetime(self, datetime_str: str) -> datetime:
+        """
+        解析ISO格式的时间字符串
+
+        Args:
+            datetime_str: ISO格式的时间字符串
+
+        Returns:
+            datetime: 解析后的datetime对象
+
+        Raises:
+            ValueError: 时间格式无效时抛出
+        """
+        try:
+            return TimeParser.parse_iso8601_datetime(datetime_str)
+        except Exception as e:
+            raise ValueError(f"Invalid datetime format: {datetime_str}") from e
+
+    def _parse_game_clock(self, clock_str: str) -> float:
+        """
+        解析比赛时钟时间为秒数
+
+        Args:
+            clock_str: 时钟时间字符串（格式：PT{minutes}M{seconds}S）
+
+        Returns:
+            float: 转换后的秒数
+
+        Raises:
+            ValueError: 时钟格式无效时抛出
+        """
+        try:
+            return TimeParser.parse_iso8601_duration(clock_str)
+        except Exception as e:
+            raise ValueError(f"Error parsing game clock: {clock_str}") from e
+
+    def _get_event_class(self, event_type: str) -> Optional[type]:
+        """
+        根据事件类型获取对应的事件类
+
+        Args:
+            event_type: 事件类型字符串
+
+        Returns:
+            type: 事件类，如果找不到对应类型则返回None
+        """
+        return self.EVENT_TYPE_MAP.get(event_type)
+
+    def _validate_event_data(self, event_data: Dict[str, Any], event_class: type) -> Dict[str, Any]:
+        """
+        验证并处理事件数据
+
+        Args:
+            event_data: 事件数据字典
+            event_class: 事件类
+
+        Returns:
+            Dict[str, Any]: 处理后的事件数据
+
+        Raises:
+            ValidationError: 数据验证失败时抛出
+        """
+        try:
+            # 创建事件类实例进行验证
+            event = event_class(**event_data)
+            return event.model_dump()
+        except Exception as e:
+            raise ValidationError(f"Event validation failed: {str(e)}")
+
+    def is_valid_game_data(self, data: Dict[str, Any]) -> bool:
+        """
+        验证比赛数据是否有效
+
+        Args:
+            data: 待验证的比赛数据
+
+        Returns:
+            bool: 数据是否有效
+        """
+        try:
+            if not isinstance(data, dict):
+                return False
+
+            required_fields = {'game', 'meta'}
+            if not all(field in data for field in required_fields):
+                return False
+
+            # 检查game对象
+            game_data = data['game']
+            if not isinstance(game_data, dict):
+                return False
+
+            required_game_fields = {'gameId', 'gameStatus', 'homeTeam', 'awayTeam'}
+            if not all(field in game_data for field in required_game_fields):
+                return False
+
+            return True
+
+        except Exception as e:
+            self.logger.error(f"验证比赛数据时出错: {e}")
+            return False

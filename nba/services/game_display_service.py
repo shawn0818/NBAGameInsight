@@ -3,15 +3,15 @@ game_display_service.py
 比赛数据显示服务，负责格式化和展示比赛相关的各类信息
 """
 
-from typing import Optional, List, Dict, Any
+from typing import Optional, List
 from dataclasses import dataclass
 import logging
 from functools import lru_cache
 import hashlib
-from datetime import datetime
 
 from nba.services.ai_service import AIService
 from nba.services.game_data_service import NBAGameDataProvider
+from nba.models.game_model import GameData, PlayerStatistics, TeamStats, BaseEvent
 
 
 @dataclass
@@ -20,6 +20,7 @@ class DisplayConfig:
     language: str = "zh_CN"
     show_advanced_stats: bool = True
     cache_size: int = 128
+    use_ai: bool = False
 
 
 class DisplayService:
@@ -44,40 +45,6 @@ class DisplayService:
         self.ai_service = ai_service
         self._translation_cache = {}
 
-    def _safe_get(self, data: Dict[str, Any], keys: List[str], default: Any = "N/A") -> Any:
-        """安全获取嵌套字典数据
-
-        Args:
-            data: 源数据字典
-            keys: 键的路径列表
-            default: 默认值
-
-        Returns:
-            找到的值或默认值
-        """
-        try:
-            result = data
-            for key in keys:
-                if not isinstance(result, dict):
-                    return default
-                result = result.get(key, default)
-            return result if result is not None else default
-        except Exception:
-            return default
-
-    def _validate_data(self, data: Dict[str, Any], required_fields: List[str]) -> bool:
-        """验证数据完整性
-
-        Args:
-            data: 待验证的数据字典
-            required_fields: 必需的字段列表
-
-        Returns:
-            数据是否有效
-        """
-        return all(self._safe_get(data, field.split('.')) != "N/A"
-                   for field in required_fields)
-
     @lru_cache(maxsize=128)
     def _get_translation(self, text: str, target_language: str) -> str:
         """获取或缓存翻译结果
@@ -100,126 +67,80 @@ class DisplayService:
         self._translation_cache[cache_key] = translated
         return translated
 
-    def format_game_basic_info(self, game_data: Dict[str, Any]) -> Optional[str]:
-        """格式化比赛基本信息
-
-        Args:
-            game_data: 比赛数据字典
-
-        Returns:
-            格式化的基本信息文本
-        """
-        required_fields = ['gameId', 'homeTeam.teamName', 'awayTeam.teamName']
-        if not self._validate_data(game_data, required_fields):
-            self.logger.error("无效的比赛基础数据")
-            return None
-
+    def format_game_basic_info(self, game_data: GameData) -> Optional[str]:
+        """格式化比赛基本信息"""
         try:
-            # 格式化比赛时间
-            game_time = self._safe_get(game_data, ['gameTimeLocal'])
-            try:
-                formatted_time = datetime.strptime(game_time, "%Y-%m-%dT%H:%M:%S%z").strftime("%Y-%m-%d %H:%M")
-            except (ValueError, TypeError):
-                formatted_time = str(game_time)
+            if not game_data:
+                self.logger.warning("无比赛信息")
+                return None
 
-            info_items = [
-                f"比赛编号: {self._safe_get(game_data, ['gameId'])}",
-                f"比赛时间: {formatted_time}",
-                f"比赛地点: {self._safe_get(game_data, ['arena', 'arenaName'])}, "
-                f"{self._safe_get(game_data, ['arena', 'arenaCity'])}",
-                f"主队: {self._safe_get(game_data, ['homeTeam', 'teamName'])}",
-                f"客队: {self._safe_get(game_data, ['awayTeam', 'teamName'])}",
-                f"比赛状态: {self._safe_get(game_data, ['gameStatusText'])}",
-                f"观众人数: {self._safe_get(game_data, ['attendance'])}"
-            ]
+            # 添加安全的属性访问
+            info_items = []
+
+            if hasattr(game_data, 'gameId'):
+                info_items.append(f"比赛编号: {game_data.gameId}")
+
+            if hasattr(game_data, 'gameTimeLocal'):
+                formatted_time = game_data.gameTimeLocal.strftime("%Y-%m-%d %H:%M")
+                info_items.append(f"比赛时间: {formatted_time}")
+
+            if hasattr(game_data, 'arena'):
+                arena = game_data.arena
+                if hasattr(arena, 'arenaName') and hasattr(arena, 'arenaCity'):
+                    info_items.append(f"比赛地点: {arena.arenaName}, {arena.arenaCity}")
+
+            if hasattr(game_data, 'homeTeam') and hasattr(game_data, 'awayTeam'):
+                info_items.append(f"主队: {game_data.homeTeam.teamName}")
+                info_items.append(f"客队: {game_data.awayTeam.teamName}")
+
+            if hasattr(game_data, 'gameStatusText'):
+                info_items.append(f"比赛状态: {game_data.gameStatusText}")
+
+            if hasattr(game_data, 'attendance'):
+                info_items.append(f"观众人数: {game_data.attendance}")
+
+            if not info_items:
+                return None
 
             return self._get_translation(
                 "\n".join(info_items),
                 self.display_config.language
             )
         except Exception as e:
-            self.logger.error(f"格式化比赛信息时出错: {str(e)}")
+            self.logger.error(f"格式化比赛信息时出错: {str(e)}", exc_info=True)
             return None
 
-    def format_game_live_status(self, game_stats: Dict[str, Any]) -> Optional[str]:
-        """格式化比赛实时状态
-
-        Args:
-            game_stats: 比赛统计数据字典
-
-        Returns:
-            格式化的比赛状态文本
-        """
-        required_fields = ['homeTeam.score', 'awayTeam.score']
-        if not self._validate_data(game_stats, required_fields):
-            return None
-
-        try:
-            home_team = self._safe_get(game_stats, ['homeTeam'], {})
-            away_team = self._safe_get(game_stats, ['awayTeam'], {})
-
-            status_items = [
-                f"比赛状态: {self._safe_get(game_stats, ['gameStatusText'])}",
-                f"当前比分: {self._safe_get(home_team, ['score'])} - "
-                f"{self._safe_get(away_team, ['score'])}",
-                "",
-                f"主队 {self._safe_get(home_team, ['teamName'])}:",
-                f"本节得分: {self._safe_get(home_team, ['periods', -1, 'score'], 0)}",
-                f"犯规次数: {self._safe_get(home_team, ['fouls'], 0)}",
-                "",
-                f"客队 {self._safe_get(away_team, ['teamName'])}:",
-                f"本节得分: {self._safe_get(away_team, ['periods', -1, 'score'], 0)}",
-                f"犯规次数: {self._safe_get(away_team, ['fouls'], 0)}"
-            ]
-
-            return self._get_translation(
-                "\n".join(status_items),
-                self.display_config.language
-            )
-        except Exception as e:
-            self.logger.error(f"格式化比赛状态时出错: {str(e)}")
-            return None
-
-    def format_player_stats(self, player_stats: Dict[str, Any]) -> Optional[str]:
+    def format_player_stats(self, stats: PlayerStatistics) -> Optional[str]:
         """格式化球员统计数据
-
+        
         Args:
-            player_stats: 球员统计数据字典
-
+            stats: PlayerStatistics对象
+            
         Returns:
             格式化的球员统计文本
         """
-        required_fields = ['name', 'statistics']
-        if not self._validate_data(player_stats, required_fields):
-            return None
-
         try:
-            stats = self._safe_get(player_stats, ['statistics'], {})
-
             basic_items = [
-                f"球员: {self._safe_get(player_stats, ['name'])}",
-                f"上场时间: {self._safe_get(stats, ['minutes'])}",
-                f"得分: {self._safe_get(stats, ['points'], 0)}",
-                f"篮板: {self._safe_get(stats, ['reboundsTotal'], 0)}",
-                f"助攻: {self._safe_get(stats, ['assists'], 0)}",
-                f"抢断: {self._safe_get(stats, ['steals'], 0)}",
-                f"盖帽: {self._safe_get(stats, ['blocks'], 0)}",
-                f"失误: {self._safe_get(stats, ['turnovers'], 0)}"
+                f"上场时间: {stats.minutes}",
+                f"得分: {stats.points}",
+                f"篮板: {stats.reboundsTotal}",
+                f"助攻: {stats.assists}",
+                f"抢断: {stats.steals}",
+                f"盖帽: {stats.blocks}",
+                f"失误: {stats.turnovers}"
             ]
 
             shooting_items = [
-                f"投篮: {self._safe_get(stats, ['fieldGoalsMade'], 0)}/"
-                f"{self._safe_get(stats, ['fieldGoalsAttempted'], 0)}",
-                f"三分: {self._safe_get(stats, ['threePointersMade'], 0)}/"
-                f"{self._safe_get(stats, ['threePointersAttempted'], 0)}"
+                f"投篮: {stats.fieldGoalsMade}/{stats.fieldGoalsAttempted}",
+                f"三分: {stats.threePointersMade}/{stats.threePointersAttempted}"
             ]
 
             if self.display_config.show_advanced_stats:
                 advanced_items = [
                     "",
                     "进阶数据:",
-                    f"投篮命中率: {self._safe_get(stats, ['fieldGoalsPercentage'], 0):.1f}%",
-                    f"三分命中率: {self._safe_get(stats, ['threePointersPercentage'], 0):.1f}%"
+                    f"投篮命中率: {stats.fieldGoalsPercentage:.1f}%" if stats.fieldGoalsPercentage else "投篮命中率: N/A",
+                    f"三分命中率: {stats.threePointersPercentage:.1f}%" if stats.threePointersPercentage else "三分命中率: N/A"
                 ]
             else:
                 advanced_items = []
@@ -233,23 +154,48 @@ class DisplayService:
             self.logger.error(f"格式化球员统计时出错: {str(e)}")
             return None
 
-    def process_event(self, event_data: Dict[str, Any]) -> Optional[str]:
-        """处理比赛事件
-
+    def format_game_status(self, home_team: TeamStats, away_team: TeamStats) -> Optional[str]:
+        """格式化比赛状态
+        
         Args:
-            event_data: 事件数据字典
-
+            home_team: 主队 TeamStats对象
+            away_team: 客队 TeamStats对象
+            
         Returns:
-            处理后的事件描述
+            格式化的比赛状态文本
         """
         try:
-            event_time = (
-                f"{self._safe_get(event_data, ['period'])}节 "
-                f"{self._safe_get(event_data, ['clock'])}"
-            )
-            description = self._safe_get(event_data, ['description'])
+            status_items = [
+                f"当前比分: {home_team.score} - {away_team.score}",
+                "",
+                f"主队 {home_team.teamName}:",
+                f"本节得分: {home_team.periods[-1].score if home_team.periods else 0}",
+                "",
+                f"客队 {away_team.teamName}:",
+                f"本节得分: {away_team.periods[-1].score if away_team.periods else 0}"
+            ]
 
-            event_text = f"[{event_time}] {description}"
+            return self._get_translation(
+                "\n".join(status_items),
+                self.display_config.language
+            )
+        except Exception as e:
+            self.logger.error(f"格式化比赛状态时出错: {str(e)}")
+            return None
+
+    def format_event(self, event: BaseEvent) -> Optional[str]:
+        """格式化比赛事件
+        
+        Args:
+            event: BaseEvent对象
+            
+        Returns:
+            格式化的事件描述
+        """
+        try:
+            event_time = f"{event.period}节 {event.clock}"
+            event_text = f"[{event_time}] {event.description}"
+            
             return self._get_translation(
                 event_text,
                 self.display_config.language
@@ -257,6 +203,34 @@ class DisplayService:
         except Exception as e:
             self.logger.error(f"处理比赛事件时出错: {str(e)}")
             return None
+
+    def generate_game_summary(self, events: List[BaseEvent]) -> str:
+        """生成比赛总结
+        
+        Args:
+            events: 比赛事件列表
+            
+        Returns:
+            比赛总结文本
+        """
+        try:
+            if not self.ai_service:
+                return f"比赛共有 {len(events)} 个事件"
+            
+            # 将事件转换为文本
+            events_text = "\n".join([
+                f"- [{e.period}节 {e.clock}] {e.description}"
+                for e in events
+            ])
+            
+            return self.ai_service.generate_summary(
+                content=events_text,
+                context="这是一场NBA比赛的事件记录",
+                max_length=200
+            )
+        except Exception as e:
+            self.logger.error(f"生成比赛总结时出错: {str(e)}")
+            return "无法生成比赛总结"
 
     def clear_cache(self) -> None:
         """清理缓存数据"""

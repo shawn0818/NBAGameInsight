@@ -4,15 +4,15 @@ import pandas as pd
 import logging
 from utils.time_handler import NBATimeHandler
 
-logger = logging.getLogger(__name__)
-
 class ScheduleParser:
     """NBA赛程数据解析器"""
-    
+    # 定义为类属性
     DATE_KEYWORDS = {'today', 'next', 'last'}
 
-    @staticmethod
-    def parse_raw_schedule(schedule_data: Dict) -> pd.DataFrame:
+    def __init__(self):
+        self.logger = logging.getLogger(self.__class__.__name__)
+
+    def parse_raw_schedule(self, schedule_data: Dict) -> pd.DataFrame:
         """解析原始赛程数据为DataFrame"""
         try:
             df = pd.json_normalize(
@@ -23,20 +23,19 @@ class ScheduleParser:
             )
             
             if df.empty:
-                logger.warning("解析后的赛程数据为空")
+                self.logger.warning("解析后的赛程数据为空")
                 return df
 
-            # 统一处理时区转换
-            df = ScheduleParser._process_timezone(df)
-            logger.info(f"解析赛程数据成功，共 {len(df)} 场比赛")
+            # 处理时区
+            df = self._process_timezone(df)
+            self.logger.info(f"解析赛程数据成功，共 {len(df)} 场比赛")
             return df
             
         except Exception as e:
-            logger.error(f"Error parsing raw schedule: {e}")
+            self.logger.error(f"Error parsing raw schedule: {e}")
             return pd.DataFrame()
 
-    @staticmethod
-    def _process_timezone(df: pd.DataFrame) -> pd.DataFrame:
+    def _process_timezone(self, df: pd.DataFrame) -> pd.DataFrame:
         """统一处理时区转换"""
         if df.empty:
             return df
@@ -56,8 +55,8 @@ class ScheduleParser:
         
         return df
 
-    @staticmethod
     def get_game_id(
+        self,
         schedule_df: pd.DataFrame,
         team_id: int,
         date_query: Union[str, datetime.date, datetime, None] = 'today'
@@ -68,26 +67,25 @@ class ScheduleParser:
                 return None
 
             # 获取过滤后的球队比赛数据
-            team_games = ScheduleParser._filter_team_games(schedule_df, team_id)
+            team_games = self._filter_team_games(schedule_df, team_id)
             if team_games.empty:
                 return None
 
             # 处理日期查询
             if isinstance(date_query, str):
-                game_id = ScheduleParser._handle_date_keyword(team_games, date_query)
+                game_id = self._handle_date_keyword(team_games, date_query)
             else:
-                game_id = ScheduleParser._handle_date_object(team_games, date_query)
+                game_id = self._handle_date_object(team_games, date_query)
             
             if game_id:
-                logger.info(f"找到比赛ID: {game_id}")
+                self.logger.info(f"找到比赛ID: {game_id}")
             return game_id
 
         except Exception as e:
-            logger.error(f"获取比赛ID失败: {e}")
+            self.logger.error(f"获取比赛ID失败: {e}")
             return None
 
-    @staticmethod
-    def _filter_team_games(df: pd.DataFrame, team_id: int) -> pd.DataFrame:
+    def _filter_team_games(self, df: pd.DataFrame, team_id: int) -> pd.DataFrame:
         """过滤指定球队的比赛"""
         team_filter = (
             (df['homeTeam_teamId'] == team_id) | 
@@ -95,72 +93,90 @@ class ScheduleParser:
         )
         return df[team_filter].copy()
 
-    @staticmethod
-    def _handle_date_keyword(team_games: pd.DataFrame, keyword: str) -> Optional[str]:
+    def _handle_date_keyword(self, team_games: pd.DataFrame, keyword: str) -> Optional[str]:
         """处理日期关键字查询"""
-        keyword = keyword.lower()
-        if keyword not in ScheduleParser.DATE_KEYWORDS:
-            try:
-                date_query = datetime.strptime(keyword, '%Y-%m-%d').date()
-                return ScheduleParser._get_game_by_date(team_games, date_query)
-            except ValueError:
-                logger.error(f"无效的日期格式: {keyword}")
-                return None
+        try:
+            keyword = keyword.lower()
+            if keyword not in self.DATE_KEYWORDS:
+                try:
+                    date_query = datetime.strptime(keyword, '%Y-%m-%d').date()
+                    return self._get_game_by_date(team_games, date_query)
+                except ValueError:
+                    self.logger.error(f"无效的日期格式: {keyword}")
+                    return None
 
-        if keyword == 'next':
-            return ScheduleParser._get_next_game(team_games)
-        elif keyword == 'last':
-            return ScheduleParser._get_last_game(team_games)
-        else:  # today
-            return ScheduleParser._get_game_by_date(
-                team_games, 
-                datetime.now(NBATimeHandler.BEIJING_TZ).date()
-            )
+            if keyword == 'next':
+                return self._get_next_game(team_games)
+            elif keyword == 'last':
+                return self._get_last_game(team_games)
+            else:  # today
+                return self._get_game_by_date(
+                    team_games, 
+                    datetime.now(NBATimeHandler.BEIJING_TZ).date()
+                )
+        except Exception as e:
+            self.logger.error(f"处理日期关键字时出错: {e}")
+            return None
 
-    @staticmethod
     def _handle_date_object(
+        self,
         team_games: pd.DataFrame, 
-        date_query: Union[datetime.date, datetime, None]
+        date_query: Union[datetime.date, datetime, None] = None
     ) -> Optional[str]:
         """处理日期对象查询"""
-        if isinstance(date_query, datetime):
-            date_query = date_query.date()
-            
-        if date_query:
-            return ScheduleParser._get_game_by_date(team_games, date_query)
-            
-        # 没有日期参数时，获取最近的比赛
-        now = datetime.now(NBATimeHandler.UTC_TZ)
-        games = team_games[team_games['gameDateTimeUTC'] >= now]
-        return ScheduleParser._get_first_game_id(games)
+        try:
+            if date_query:
+                if isinstance(date_query, datetime):
+                    date_query = date_query.date()
+                return self._get_game_by_date(team_games, date_query)
 
-    @staticmethod
-    def _get_game_by_date(games: pd.DataFrame, date: datetime.date) -> Optional[str]:
+            # 没有日期参数时，获取最近结束的比赛
+            now_utc = NBATimeHandler.get_current_utc()
+            games = team_games[team_games['gameDateTimeUTC'] < now_utc]
+            return self._get_first_game_id(
+                games.sort_values('gameDateTimeUTC', ascending=False)
+            )
+        except Exception as e:
+            self.logger.error(f"处理日期对象时出错: {e}")
+            return None
+
+    def _get_game_by_date(self, games: pd.DataFrame, date: datetime.date) -> Optional[str]:
         """获取指定日期的比赛ID"""
-        games = games[games['gameDateBJS'] == date]
-        return ScheduleParser._get_first_game_id(games)
+        try:
+            games = games[games['gameDateBJS'] == date]
+            return self._get_first_game_id(games)
+        except Exception as e:
+            self.logger.error(f"获取指定日期比赛时出错: {e}")
+            return None
 
-    @staticmethod
-    def _get_next_game(games: pd.DataFrame) -> Optional[str]:
+    def _get_next_game(self, games: pd.DataFrame) -> Optional[str]:
         """获取下一场比赛ID"""
-        now = datetime.now(NBATimeHandler.UTC_TZ)
-        upcoming_games = games[
-            (games['gameDateTimeUTC'] > now) & 
-            (games['gameStatus'] == 1)
-        ].sort_values('gameDateTimeUTC')
-        return ScheduleParser._get_first_game_id(upcoming_games)
+        try:
+            now = datetime.now(NBATimeHandler.UTC_TZ)
+            upcoming_games = games[
+                (games['gameDateTimeUTC'] > now) & 
+                (games['gameStatus'] == 1)
+            ].sort_values('gameDateTimeUTC')
+            return self._get_first_game_id(upcoming_games)
+        except Exception as e:
+            self.logger.error(f"获取下一场比赛时出错: {e}")
+            return None
 
-    @staticmethod
-    def _get_last_game(games: pd.DataFrame) -> Optional[str]:
-        """获取上一场比赛ID"""
-        now = datetime.now(NBATimeHandler.UTC_TZ)
-        finished_games = games[
-            (games['gameDateTimeUTC'] < now) & 
-            (games['gameStatus'] == 3)
-        ].sort_values('gameDateTimeUTC', ascending=False)
-        return ScheduleParser._get_first_game_id(finished_games)
+    def _get_last_game(self, games: pd.DataFrame) -> Optional[str]:
+        """获取最近一场已结束的比赛ID"""
+        try:
+            now = datetime.now(NBATimeHandler.UTC_TZ)
+            finished_games = games[
+                games['gameDateTimeUTC'] < now
+            ].sort_values('gameDateTimeUTC', ascending=False)
+            return self._get_first_game_id(finished_games)
+        except Exception as e:
+            self.logger.error(f"获取最近一场比赛时出错: {e}")
+            return None
 
-    @staticmethod
-    def _get_first_game_id(games: pd.DataFrame) -> Optional[str]:
+    def _get_first_game_id(self, games: pd.DataFrame) -> Optional[str]:
         """获取第一场比赛的ID"""
-        return str(games.iloc[0]['gameId']) if not games.empty else None
+        try:
+            return str(games.iloc[0]['gameId']) if not games.empty else None
+        except Exception:
+            return None

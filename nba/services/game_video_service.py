@@ -1,198 +1,185 @@
-from typing import Optional, Dict
+import asyncio
+from typing import Optional, Dict, Set
 from pathlib import Path
 import logging
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 
-from nba.models.video_model import VideoAsset, ContextMeasure, VideoRequestParams
+from nba.models.video_model import VideoAsset, ContextMeasure
 from utils.video_downloader import VideoDownloader, VideoConverter
-from nba.parser.video_query_parser import NBAVideoProcessor
+from nba.fetcher.video_fetcher import VideoFetcher
+from nba.parser.video_parser import VideoParser
 from config.nba_config import NBAConfig
 
 
 class GameVideoService:
-    """NBA比赛视频服务
-    
-    提供比赛视频相关的功能，包括：
-    1. 视频资源获取
-    2. 视频下载和处理
-    3. 格式转换（MP4到GIF）
-    4. 视频压缩
-    
-    支持批量处理和自定义输出格式。
-    """
+    """NBA比赛视频服务"""
 
-    def __init__(self, video_processor: Optional[NBAVideoProcessor] = None,
+    def __init__(self,
+                 video_fetcher: Optional[VideoFetcher] = None,
+                 video_parser: Optional[VideoParser] = None,
                  downloader: Optional[VideoDownloader] = None,
-                 converter: Optional[VideoConverter] = None):
-        """初始化视频服务
-        
-        Args:
-            video_processor: 视频处理器实例
-            downloader: 视频下载器实例
-            converter: 视频转换器实例
-        """
-        self.logger = logging.getLogger("nba.services.game_video_service")
-        self.video_processor = video_processor or NBAVideoProcessor()
+                 converter: Optional[VideoConverter] = None,
+                 max_workers: int = 4):
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.video_fetcher = video_fetcher or VideoFetcher()
+        self.video_parser = video_parser or VideoParser()
         self.downloader = downloader or VideoDownloader()
         self.converter = converter or VideoConverter()
+        self.executor = ThreadPoolExecutor(max_workers=max_workers)
+        self.temp_files: Set[Path] = set()
 
-    def get_game_videos(
-        self,
-        game_id: str,
-        context_measure: ContextMeasure = ContextMeasure.FGM,
-        player_id: Optional[int] = None,
-        team_id: Optional[int] = None
-    ) -> Dict[str, VideoAsset]:
-        """
-        获取比赛视频
-
-        Args:
-            game_id (str): 比赛ID
-            context_measure (ContextMeasure): 上下文度量类型
-            player_id (Optional[int]): 球员ID
-            team_id (Optional[int]): 球队ID
-
-        Returns:
-            Dict[str, VideoAsset]: 以event_id为key的视频资产字典
-        """
+    async def get_game_videos(self, game_id: str,
+                              context_measure: ContextMeasure = ContextMeasure.FGM,
+                              player_id: Optional[int] = None,
+                              team_id: Optional[int] = None) -> Dict[str, VideoAsset]:
+        """获取比赛视频"""
         try:
-            # 构建查询参数
-            query = VideoRequestParams(
-                game_id=game_id,
-                player_id=str(player_id) if player_id else None,
-                team_id=str(team_id) if team_id else None,
-                context_measure=context_measure
+            raw_video_data = await asyncio.get_event_loop().run_in_executor(
+                self.executor,
+                self.video_fetcher.get_game_videos_raw,
+                game_id,
+                context_measure,
+                player_id,
+                team_id
             )
 
-            self.logger.debug(f"查询参数: {query}")
+            if not raw_video_data:
+                self.logger.warning(f"未获取到视频数据: game_id={game_id}")
+                return {}
 
-            # 获取视频数据
-            videos = self.video_processor.get_videos_by_query(query)
-            self.logger.info(f"获取到 {len(videos)} 个视频")
+            videos = await asyncio.get_event_loop().run_in_executor(
+                self.executor,
+                self.video_parser.parse_videos,
+                raw_video_data
+            )
 
-            return videos
+            if not videos:
+                return {}
+
+            self.logger.info(f"成功获取 {len(videos.resultSets['video_assets'])} 个视频")
+            return videos.resultSets['video_assets']
 
         except Exception as e:
-            self.logger.error(f"获取视频时出错: {e}", exc_info=True)
+            self.logger.error(f"获取视频失败: {e}", exc_info=True)
             return {}
 
-    def download_video(
-        self,
-        video_asset: VideoAsset,
-        output_path: Path,
-        quality: str = 'hd',
-        to_gif: bool = False,
-        compress: bool = False
-    ) -> Optional[Path]:
-        """
-        下载并处理单个视频
-
-        Args:
-            video_asset (VideoAsset): 视频资产
-            output_path (Path): 输出路径
-            quality (str): 视频质量 ('sd' 或 'hd')
-            to_gif (bool): 是否转换为GIF
-            compress (bool): 是否压缩视频
-
-        Returns:
-            Optional[Path]: 处理后的视频路径或None
-        """
+    async def download_video(self,
+                             video_asset: VideoAsset,
+                             output_path: Path,
+                             quality: str = 'hd',
+                             to_gif: bool = False,
+                             compress: bool = False) -> Optional[Path]:
+        """下载并处理单个视频"""
         try:
-            # 确保输出目录存在
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # 获取指定质量的视频URL
-            video_quality = video_asset.qualities.get(quality)
+            video_quality = video_asset.get_preferred_quality(quality)
             if not video_quality:
-                self.logger.error(f"找不到 {quality} 质量的视频")
-                return None
+                raise ValueError(f"未找到 {quality} 质量的视频")
 
             # 下载视频
-            if not self.downloader.download(video_quality.url, output_path):
-                self.logger.error(f"下载视频失败: {video_quality.url}")
-                return None
+            success = await asyncio.get_event_loop().run_in_executor(
+                self.executor,
+                self.downloader.download,
+                video_quality.url,
+                output_path
+            )
+
+            if not success:
+                raise Exception(f"下载视频失败: {video_quality.url}")
+
+            result_path = output_path
 
             # 处理视频格式
             if to_gif:
-                return self._convert_to_gif(output_path)
+                result_path = await self._convert_to_gif(output_path)
+            elif compress:
+                result_path = await self._compress_video(output_path)
 
-            if compress:
-                return self._compress_video(output_path)
-
-            return output_path
+            return result_path
 
         except Exception as e:
-            self.logger.error(f"处理视频时出错: {e}")
-            if output_path.exists():
-                output_path.unlink()
+            self.logger.error(f"处理视频失败: {e}", exc_info=True)
+            self._cleanup_temp_files()
             return None
 
-    def batch_download(
-        self,
-        videos: Dict[str, VideoAsset],
-        output_dir: Optional[Path] = None,
-        quality: str = 'hd',
-        to_gif: bool = False,
-        compress: bool = False
-    ) -> Dict[str, Path]:
-        """
-        批量下载视频
-
-        Args:
-            videos (Dict[str, VideoAsset]): 视频资产字典
-            output_dir (Optional[Path]): 输出目录
-            quality (str): 视频质量 ('sd' 或 'hd')
-            to_gif (bool): 是否转换为GIF
-            compress (bool): 是否压缩视频
-
-        Returns:
-            Dict[str, Path]: 下载结果字典 {event_id: Path}
-        """
+    async def batch_download(self,
+                             videos: Dict[str, VideoAsset],
+                             output_dir: Optional[Path] = None,
+                             quality: str = 'hd',
+                             to_gif: bool = False,
+                             compress: bool = False,
+                             max_concurrent: int = 3) -> Dict[str, Path]:
+        """批量下载视频"""
         output_dir = output_dir or NBAConfig.PATHS.VIDEO_DIR
         results = {}
+        sem = asyncio.Semaphore(max_concurrent)
 
-        for event_id, video in videos.items():
-            try:
-                self.logger.info(f"处理视频 {event_id}")
-                output_path = output_dir / f"{event_id}.mp4"
+        async def download_task(event_id: str, video: VideoAsset):
+            async with sem:
+                try:
+                    output_path = output_dir / f"{event_id}.mp4"
+                    result_path = await self.download_video(
+                        video_asset=video,
+                        output_path=output_path,
+                        quality=quality,
+                        to_gif=to_gif,
+                        compress=compress
+                    )
+                    if result_path:
+                        results[event_id] = result_path
+                except Exception as e:
+                    self.logger.error(f"下载视频失败 {event_id}: {e}")
 
-                result_path = self.download_video(
-                    video_asset=video,
-                    output_path=output_path,
-                    quality=quality,
-                    to_gif=to_gif,
-                    compress=compress
-                )
-
-                if result_path:
-                    results[event_id] = result_path
-                    self.logger.info(f"成功处理视频 {event_id}: {result_path}")
-
-            except Exception as e:
-                self.logger.error(f"处理视频 {event_id} 时出错: {e}", exc_info=True)
-                continue
-
+        tasks = [download_task(event_id, video) for event_id, video in videos.items()]
+        await asyncio.gather(*tasks)
         return results
 
-    def _convert_to_gif(self, video_path: Path) -> Optional[Path]:
-        """将视频转换为GIF"""
+    async def _convert_to_gif(self, video_path: Path) -> Optional[Path]:
+        """转换视频为GIF"""
         gif_path = video_path.with_suffix('.gif')
-        if self.converter.to_gif(
-            video_path=video_path,
-            output_path=gif_path,
-            fps=12,
-            scale=960,
-            remove_source=True
-        ):
-            return gif_path
-        return None
+        success = await asyncio.get_event_loop().run_in_executor(
+            self.executor,
+            self.converter.to_gif,
+            video_path,
+            gif_path,
+            12,  # fps
+            960,  # scale
+            True  # remove_source
+        )
+        return gif_path if success else None
 
-    def _compress_video(self, video_path: Path) -> Optional[Path]:
+    async def _compress_video(self, video_path: Path) -> Optional[Path]:
         """压缩视频"""
         compressed_path = video_path.with_name(f"{video_path.stem}_compressed{video_path.suffix}")
-        if self.converter.compress_video(
-            video_path=video_path,
-            output_path=compressed_path,
-            remove_source=True
-        ):
-            return compressed_path
-        return None
+        success = await asyncio.get_event_loop().run_in_executor(
+            self.executor,
+            self.converter.compress_video,
+            video_path,
+            compressed_path,
+            True  # remove_source
+        )
+        return compressed_path if success else None
+
+    def _cleanup_temp_files(self):
+        """清理临时文件"""
+        for temp_file in self.temp_files:
+            if temp_file.exists():
+                try:
+                    temp_file.unlink()
+                except Exception as e:
+                    self.logger.error(f"清理临时文件失败 {temp_file}: {e}")
+        self.temp_files.clear()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        self._cleanup_temp_files()
+        self.executor.shutdown(wait=True)
+
+    def close(self):
+        self._cleanup_temp_files()
+        self.executor.shutdown(wait=True)
+        self.video_fetcher.__exit__(None, None, None)

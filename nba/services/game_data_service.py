@@ -10,19 +10,13 @@ from nba.parser.schedule_parser import ScheduleParser
 from nba.fetcher.player_fetcher import PlayerFetcher
 from nba.parser.player_parser import PlayerParser
 from nba.fetcher.schedule_fetcher import ScheduleFetcher
-from nba.models.game_model import Game, TeamStats, Player, GameData, PlayerStatistics
+from nba.models.game_model import Game, TeamStats, Player, GameData, PlayerStatistics, BaseEvent
 from nba.models.player_model import PlayerProfile
 from nba.models.team_model import TeamProfile, get_team_id
 from nba.fetcher.team_fetcher import TeamFetcher
 from nba.parser.team_parser import TeamParser
 from config.nba_config import NBAConfig
 
-# 配置日志
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(name)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
 
 @dataclass
 class ServiceConfig:
@@ -32,8 +26,8 @@ class ServiceConfig:
     date_str: str = "last"
     cache_size: int = 128
     cache_dir: Path = NBAConfig.PATHS.CACHE_DIR
-    auto_refresh: bool = True
-    refresh_interval: int = NBAConfig.API.SCHEDULE_UPDATE_INTERVAL
+    auto_refresh: bool = False
+    use_pydantic_v2: bool = True
 
 class NBAGameDataProvider:
     """NBA比赛数据提供服务"""
@@ -52,7 +46,7 @@ class NBAGameDataProvider:
     ):
         """初始化数据提供服务"""
         self.config = config or ServiceConfig()
-        self.logger = logger.getChild(self.__class__.__name__)
+        self.logger = logging.getLogger(self.__class__.__name__)
 
         # 添加调试日志
         self.logger.info(f"ServiceConfig初始化完成，配置信息：")
@@ -84,22 +78,18 @@ class NBAGameDataProvider:
         """初始化所有服务组件"""
         self._initialize_player_data()
         self._initialize_team_data()
-        if self.config.auto_refresh:
-            self._setup_auto_refresh()
 
-    def _setup_auto_refresh(self) -> None:
-        """设置自动刷新机制"""
-        self.logger.info(f"启用自动刷新，间隔: {self.config.refresh_interval}秒")
-        # TODO: 实现自动刷新逻辑，例如使用定时任务
-        pass
 
     def refresh_all_data(self) -> None:
-        """手动刷新所有数据"""
-        self.logger.info("开始手动刷新所有数据")
-        self._initialize_player_data(force_update=True)
-        self._initialize_team_data(force_update=True)
-        self.clear_cache()
+        """
+        重新初始化所有数据。
+        注意：这个方法应该只在需要重置服务状态时使用，
+        正常的数据更新应该依赖 fetcher 层的缓存机制。
+        """
+        self.logger.warning("正在执行完整的数据重新初始化...")
+        self._initialize_services()
 
+    # 数据初始化相关方法
     def _initialize_data(
             self,
             fetcher_func,
@@ -146,7 +136,6 @@ class NBAGameDataProvider:
             self.player_id_map = {}
             self.player_name_map = {}
 
-
     def _initialize_team_data(self, force_update: bool = False) -> None:
         """初始化球队数据"""
         try:
@@ -158,38 +147,26 @@ class NBAGameDataProvider:
                 self.logger.error(f"无法获取球队ID，球队名称: {team_name}")
                 return
 
-            self.logger.info(f"获取到球队ID: {team_id}，球队: {team_name}")
-
             raw_data = self.team_fetcher.get_team_details(
                 team_id=team_id,
                 force_update=force_update
             )
-            if not raw_data:
-                self.logger.error(f"无法获取球队数据，球队: {team_name}")
-                return
+            if raw_data:
+                team_data = self.team_parser.parse_team_details(raw_data)
+                if team_data:
+                    self.logger.info(f"成功初始化球队 {team_name} 的数据")
+                    self.teams = [team_data] if not isinstance(team_data, list) else team_data
+                    self.team_id_map = {team.team_id: team for team in self.teams}
+                    self.team_name_map = {
+                        f"{team.city} {team.nickname}".lower(): team
+                        for team in self.teams
+                    }
+                    return
 
-            team_data = self.team_parser.parse_team_details(raw_data)
-            if not team_data:
-                self.logger.error(f"解析球队数据失败，球队: {team_name}")
-                return
-
-            self.logger.info(f"成功初始化球队 {team_name} 的数据")
-
-            if isinstance(team_data, list):
-                self.teams = team_data
-            else:
-                self.teams = [team_data]
-
-            if self.teams:
-                self.team_id_map = {team.team_id: team for team in self.teams}
-                self.team_name_map = {
-                    f"{team.city} {team.nickname}".lower(): team
-                    for team in self.teams
-                }
-            else:
-                self.teams = []
-                self.team_id_map = {}
-                self.team_name_map = {}
+            self.logger.error(f"初始化球队数据失败，球队: {team_name}")
+            self.teams = []
+            self.team_id_map = {}
+            self.team_name_map = {}
 
         except Exception as e:
             self.logger.error(f"初始化球队数据时出错: {e}", exc_info=True)
@@ -197,9 +174,9 @@ class NBAGameDataProvider:
             self.team_id_map = {}
             self.team_name_map = {}
 
+    # 比赛数据获取相关方法
     def get_game(self, team: Optional[str] = None,
-                 date: Optional[str] = None,
-                 force_refresh: bool = False) -> Optional[Game]:
+                 date: Optional[str] = None) -> Optional[Game]:
         """获取比赛数据"""
         try:
             team_name = team or self.config.default_team
@@ -207,216 +184,65 @@ class NBAGameDataProvider:
                 raise ValueError("必须提供球队名称或设置默认球队")
 
             date_str = date or self.config.date_str
-
             game_id = self._find_game_id(team_name, date_str)
-            if not game_id:
-                return None
+            
+            if game_id:
+                return self._fetch_game_data_sync(game_id)
+            return None
 
-            return self._fetch_game_data_sync(game_id)
         except Exception as e:
             self.logger.error(f"获取比赛数据时出错: {e}", exc_info=True)
             return None
 
-    def get_game_basic_info(self, game: Game) -> Dict[str, Any]:
+
+    def get_game_basic_info(self, game: Game) -> GameData:
         """获取比赛基本信息"""
-        try:
-            game_data: GameData = game.game
-            return {
-                "game_id": game_data.gameId,
-                "game_time": game_data.gameTimeLocal,
-                "status": game_data.gameStatusText,
-                "duration": game_data.duration,
-                "arena": {
-                    "name": game_data.arena.arenaName,
-                    "city": game_data.arena.arenaCity,
-                    "state": game_data.arena.arenaState,
-                    "attendance": game_data.attendance
-                },
-                "teams": {
-                    "home": {
-                        "id": game_data.homeTeam.teamId,
-                        "name": game_data.homeTeam.teamName,
-                        "city": game_data.homeTeam.teamCity,
-                        "code": game_data.homeTeam.teamTricode
-                    },
-                    "away": {
-                        "id": game_data.awayTeam.teamId,
-                        "name": game_data.awayTeam.teamName,
-                        "city": game_data.awayTeam.teamCity,
-                        "code": game_data.awayTeam.teamTricode
-                    }
-                },
-                "officials": [
-                    {
-                        "name": official.name,
-                        "position": official.assignment
-                    }
-                    for official in game_data.officials
-                ]
-            }
-        except Exception as e:
-            self.logger.error(f"获取比赛基本信息时出错: {e}", exc_info=True)
-            return {}
+        return game.game
 
-
-    def get_player_stats(self, player: Player) -> Dict[str, Any]:
+    def get_player_stats(self, player: Player) -> PlayerStatistics:
         """获取球员统计数据"""
-        stats: PlayerStatistics = player.statistics
-        return {
-            "name": player.name,
-            "minutes": stats.minutes,
-            "points": stats.points,
-            "field_goals": f"{stats.fieldGoalsMade}/{stats.fieldGoalsAttempted}",
-            "field_goals_pct": stats.fieldGoalsPercentage,
-            "three_points": f"{stats.threePointersMade}/{stats.threePointersAttempted}",
-            "three_points_pct": stats.threePointersPercentage,
-            "rebounds": stats.reboundsTotal,
-            "assists": stats.assists,
-            "steals": stats.steals,
-            "blocks": stats.blocks,
-            "turnovers": stats.turnovers
-        }
+        return player.statistics
 
     def get_game_stats(self, game: Game) -> Dict[str, Any]:
         """获取比赛统计数据"""
         try:
-            def format_team_stats(team: TeamStats) -> Dict[str, Any]:
-                return {
-                    "name": team.teamName,
-                    "stats": {
-                        "points": team.score,
-                        "field_goals": f"{team.statistics.get('fieldGoalsMade', 0)}/{team.statistics.get('fieldGoalsAttempted', 0)}",
-                        "field_goals_pct": team.statistics.get('fieldGoalsPercentage', 0.0),
-                        "three_points": f"{team.statistics.get('threePointersMade', 0)}/{team.statistics.get('threePointersAttempted', 0)}",
-                        "three_points_pct": team.statistics.get('threePointersPercentage', 0.0),
-                        "rebounds": team.statistics.get('reboundsTotal', 0),
-                        "assists": team.statistics.get('assists', 0),
-                        "steals": team.statistics.get('steals', 0),
-                        "blocks": team.statistics.get('blocks', 0),
-                        "turnovers": team.statistics.get('turnovers', 0)
-                    },
-                    "players": [
-                        self.get_player_stats(p)
-                        for p in team.players
-                    ]
-                }
+            if not game or not game.game:
+                return {}
 
             return {
-                "home_team": format_team_stats(game.game.homeTeam),
-                "away_team": format_team_stats(game.game.awayTeam)
+                "home_team": game.game.homeTeam if hasattr(game.game, 'homeTeam') else None,
+                "away_team": game.game.awayTeam if hasattr(game.game, 'awayTeam') else None
             }
-
         except Exception as e:
-            self.logger.error(f"获取比赛统计数据时出错: {e}", exc_info=True)
+            self.logger.error(f"获取比赛统计数据时出错: {str(e)}")
             return {}
 
-    def get_filtered_events(
-            self,
-            game: Game,
-            player_id: Optional[int] = None,
-            event_type: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
-        """获取过滤后的比赛事件
-
+    def get_game_events(self, game: Game) -> List[BaseEvent]:
+        """获取比赛事件列表
+        
+        直接返回原始事件列表，让调用方决定如何处理事件。
+        事件类型和筛选可以由调用方基于 BaseEvent 的类型系统来处理。
+        
         Args:
-            game: 比赛数据
-            player_id: 球员ID,用于筛选特定球员的事件
-            event_type: 事件类型,用于筛选特定类型的事件
-
+            game: Game 对象
+            
         Returns:
-            过滤后的比赛事件列表
+            List[BaseEvent]: 比赛事件列表
         """
         try:
-            if not game.playByPlay or not game.playByPlay.actions:
+            if not game.playByPlay:
+                self.logger.warning("没有找到比赛回放数据")
                 return []
-
-            events = []
-            for action in game.playByPlay.actions:
-                # 根据条件筛选
-                if player_id and action.personId != player_id:
-                    continue
-                if event_type and action.actionType != event_type:
-                    continue
-
-                # 基础事件信息
-                event = {
-                    "period": action.period,
-                    "clock": action.clock,
-                    "action_type": action.actionType,
-                    "description": action.description,
-                    "team": action.teamTricode,
-                    "player": {
-                        "id": action.personId,
-                        "name": action.playerName
-                    } if action.personId else None,
-                    "coordinates": {
-                        "x": action.x,
-                        "y": action.y
-                    } if action.x is not None else None,
-                    "score": {
-                        "home": action.scoreHome,
-                        "away": action.scoreAway
-                    } if action.scoreHome is not None else None
-                }
-
-                # 根据事件类型添加特定信息
-                if action.actionType in ["2pt", "3pt"]:
-                    event.update({
-                        "shot_info": {
-                            "result": action.shotResult,
-                            "distance": action.shotDistance,
-                            "area": action.area
-                        }
-                    })
-                elif action.actionType == "rebound":
-                    event.update({
-                        "rebound_type": action.subType
-                    })
-                elif action.actionType == "turnover":
-                    event.update({
-                        "turnover_type": action.subType
-                    })
-
-                events.append(event)
-
-            return events
+                
+            return game.playByPlay.actions
 
         except Exception as e:
-            self.logger.error(f"获取过滤后的比赛事件时出错: {e}", exc_info=True)
+            self.logger.error(f"获取比赛事件时出错: {e}", exc_info=True)
             return []
 
-    def get_player_info(self, identifier: Union[int, str]) -> Optional[PlayerProfile]:
-        """
-        获取球员详细信息。
-
-        Args:
-            identifier: 可以是球员ID或球员姓名
-
-        Returns:
-            PlayerProfile对象，如果未找到返回None
-        """
-        try:
-            if isinstance(identifier, str):
-                player_id = PlayerProfile.find_by_name(identifier)
-                if player_id:
-                    return PlayerProfile.find_by_id(player_id)
-            else:
-                return PlayerProfile.find_by_id(identifier)
-            return None
-        except Exception as e:
-            self.logger.error(f"获取球员信息时出错: {e}", exc_info=True)
-            return None
 
     def get_team_info(self, identifier: Union[int, str]) -> Optional[TeamProfile]:
-        """
-        获取球队详细信息。
-
-        Args:
-            identifier: 可以是球队ID或球队名称
-
-        Returns:
-            TeamProfile对象，如果未找到返回None
-        """
+        """获取球队详细信息"""
         try:
             if isinstance(identifier, int):
                 return TeamProfile.get_team_by_id(identifier)
@@ -429,14 +255,16 @@ class NBAGameDataProvider:
             self.logger.error(f"获取球队信息时出错: {e}", exc_info=True)
             return None
 
-    def clear_cache(self) -> None:
-        """清理缓存数据"""
+    def _get_team_id(self, team_name: str) -> Optional[int]:
+        """获取球队ID"""
         try:
-            if hasattr(self.get_game, 'cache_clear'):
-                self.get_game.cache_clear()
-                self.logger.info("成功清理 get_game 缓存")
+            if not team_name:
+                return None
+            result = get_team_id(team_name)
+            return result[0] if result else None
         except Exception as e:
-            self.logger.warning(f"清理缓存时出错: {e}")
+            self.logger.error(f"获取球队ID时出错: {str(e)}", exc_info=True)
+            return None
 
     def _find_game_id(self, team_name: str, date_str: str) -> Optional[str]:
         """查找指定球队在特定日期的比赛ID"""
@@ -467,76 +295,77 @@ class NBAGameDataProvider:
             self.logger.error(f"查找比赛时出错: {e}", exc_info=True)
             return None
 
-    def _get_team_id(self, team_name: str) -> Optional[int]:
-        """获取球队ID"""
-        try:
-            if not team_name:
-                return None
-
-            result = get_team_id(team_name)
-            return result[0] if result else None
-
-        except Exception as e:
-            self.logger.error(f"获取球队ID时出错: {str(e)}", exc_info=True)
-            return None
-
     @lru_cache(maxsize=128)
     def _fetch_game_data_sync(self, game_id: str) -> Optional[Game]:
-        """同步获取比赛数据"""
+        """同步获取比赛数据
+
+        Args:
+            game_id: 比赛ID
+
+        Returns:
+            Optional[Game]: 完整的比赛数据对象
+        """
         self.logger.info(f"开始获取比赛数据，比赛ID: {game_id}")
         try:
-            pbp_data = self.game_fetcher.get_playbyplay(
-                game_id,
-                force_update=self.config.auto_refresh
-            )
+            # 1. 获取 boxscore 数据
             boxscore_data = self.game_fetcher.get_boxscore(
                 game_id,
                 force_update=self.config.auto_refresh
             )
-
-            self.logger.debug(f"PlayByPlay数据: {pbp_data}")
-            self.logger.debug(f"Boxscore数据: {boxscore_data}")
-
-            if not pbp_data or not boxscore_data:
-                self.logger.error("无法获取完整的比赛数据")
+            if not boxscore_data:
+                self.logger.warning("无法获取 boxscore 数据")
                 return None
 
+            # 2. 创建基础 game 对象
+            game = self.game_parser.parse_game_data(boxscore_data)
+            if not game:
+                self.logger.warning("解析 boxscore 数据失败")
+                return None
+
+            # 3. 获取 playbyplay 数据
             try:
-                if 'game' not in pbp_data:
-                    self.logger.error("PlayByPlay数据缺少game字段")
-                    return None
+                pbp_data = self.game_fetcher.get_playbyplay(
+                    game_id,
+                    force_update=self.config.auto_refresh
+                )
 
-                if 'game' not in boxscore_data:
-                    self.logger.error("Boxscore数据缺少game字段")
-                    return None
-
-                if 'homeTeam' not in boxscore_data['game'] or 'awayTeam' not in boxscore_data['game']:
-                    self.logger.error("Boxscore数据缺少球队信息")
-                    return None
-
-                playbyplay = self.game_parser.parse_game_data(pbp_data)
-                game = self.game_parser.parse_game_data(boxscore_data)
-
-                if game.game and (game.game.homeTeam or game.game.awayTeam):
-                    self.logger.info("成功解析比赛数据")
-                    if game.game.homeTeam:
-                        self.logger.info(f"主队球员数: {len(game.game.homeTeam.players)}")
-                    if game.game.awayTeam:
-                        self.logger.info(f"客队球员数: {len(game.game.awayTeam.players)}")
+                # 如果获取到了 playbyplay 数据，尝试解析
+                if pbp_data:
+                    # 直接调用解析方法
+                    playbyplay = self.game_parser._parse_playbyplay(pbp_data)
+                    if playbyplay:
+                        game.playByPlay = playbyplay
+                        self.logger.debug(f"成功添加回放数据，包含 {len(playbyplay.actions)} 个事件")
+                    else:
+                        self.logger.warning("回放数据解析失败，跳过处理")
                 else:
-                    self.logger.error("球队数据解析失败")
-                    return None
+                    self.logger.warning("未获取到回放数据，跳过处理")
 
-                game.playByPlay = playbyplay
-                return game
-
-            except ValueError as ve:
-                self.logger.error(f"数据验证错误: {ve}", exc_info=True)
-                return None
             except Exception as e:
-                self.logger.error(f"数据解析错误: {e}", exc_info=True)
-                return None
+                self.logger.error(f"处理回放数据时出错: {e}")
+                # 即使回放数据处理失败，仍然返回基础比赛数据
+                self.logger.warning("回放数据处理失败，继续返回基础比赛数据")
+
+            return game
 
         except Exception as e:
-            self.logger.error(f"获取或解析比赛数据时出错: {e}", exc_info=True)
+            self.logger.error(f"获取比赛数据时出错: {e}")
             return None
+
+    def clear_cache(self) -> None:
+        """清理缓存数据"""
+        try:
+            if hasattr(self.get_game, 'cache_clear'):
+                self.get_game.cache_clear()
+                self.logger.info("成功清理 get_game 缓存")
+
+        except Exception as e:
+            self.logger.warning(f"清理缓存时出错: {e}")
+
+    def __enter__(self):
+            """上下文管理器入口"""
+            return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+            """上下文管理器退出"""
+            self.clear_cache()
