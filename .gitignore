@@ -3,6 +3,7 @@
 *.json
 
 # 忽略目录 build/
+.env
 .vscode/
 pictures/
 video_gif/

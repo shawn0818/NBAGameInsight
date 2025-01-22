@@ -32,6 +32,10 @@ class ServiceConfig:
 class NBAGameDataProvider:
     """NBA比赛数据提供服务"""
 
+    ## ===========================
+    ## 1.比赛相关fetcher层，parser层的注入以及初始化
+    ## ===========================
+
     def __init__(
             self,
             config: Optional[ServiceConfig] = None,
@@ -49,9 +53,9 @@ class NBAGameDataProvider:
         self.logger = logging.getLogger(self.__class__.__name__)
 
         # 添加调试日志
-        self.logger.info(f"ServiceConfig初始化完成，配置信息：")
-        self.logger.info(f"default_team: {self.config.default_team}")
-        self.logger.info(f"default_player: {self.config.default_player}")
+        self.logger.info(f"ServiceConfig初始化完成，"
+                         f"配置信息：default_team: {self.config.default_team}，"
+                         f"default_player: {self.config.default_player}")
 
         # 注入或初始化组件
         self.schedule_fetcher = schedule_fetcher or ScheduleFetcher()
@@ -79,7 +83,6 @@ class NBAGameDataProvider:
         self._initialize_player_data()
         self._initialize_team_data()
 
-
     def refresh_all_data(self) -> None:
         """
         重新初始化所有数据。
@@ -89,7 +92,12 @@ class NBAGameDataProvider:
         self.logger.warning("正在执行完整的数据重新初始化...")
         self._initialize_services()
 
-    # 数据初始化相关方法
+
+
+    ## ===========================
+    ## 2.比赛相关的球队数据和球员数据初始化，用来映射他们的名称与ID
+    ## ===========================
+
     def _initialize_data(
             self,
             fetcher_func,
@@ -116,6 +124,9 @@ class NBAGameDataProvider:
         except Exception as e:
             self.logger.error(f"{failure_msg}时出错: {e}", exc_info=True)
             return None
+
+
+    # 数据初始化相关方法
 
     def _initialize_player_data(self, force_update: bool = False) -> None:
         """初始化球员数据"""
@@ -174,7 +185,11 @@ class NBAGameDataProvider:
             self.team_id_map = {}
             self.team_name_map = {}
 
-    # 比赛数据获取相关方法
+
+    ## ===========================
+    ## 3.获取到某一个GAME的完整数据
+    ## ===========================
+
     def get_game(self, team: Optional[str] = None,
                  date: Optional[str] = None) -> Optional[Game]:
         """获取比赛数据"""
@@ -192,112 +207,6 @@ class NBAGameDataProvider:
 
         except Exception as e:
             self.logger.error(f"获取比赛数据时出错: {e}", exc_info=True)
-            return None
-
-
-    def get_game_basic_info(self, game: Game) -> GameData:
-        """获取比赛基本信息"""
-        return game.game
-
-    def get_player_stats(self, player: Player) -> PlayerStatistics:
-        """获取球员统计数据"""
-        return player.statistics
-
-    def get_game_stats(self, game: Game) -> Dict[str, Any]:
-        """获取比赛统计数据"""
-        try:
-            if not game or not game.game:
-                return {}
-
-            return {
-                "home_team": game.game.homeTeam if hasattr(game.game, 'homeTeam') else None,
-                "away_team": game.game.awayTeam if hasattr(game.game, 'awayTeam') else None
-            }
-        except Exception as e:
-            self.logger.error(f"获取比赛统计数据时出错: {str(e)}")
-            return {}
-
-    def get_game_events(self, game: Game) -> List[BaseEvent]:
-        """获取比赛事件列表
-        
-        直接返回原始事件列表，让调用方决定如何处理事件。
-        事件类型和筛选可以由调用方基于 BaseEvent 的类型系统来处理。
-        
-        Args:
-            game: Game 对象
-            
-        Returns:
-            List[BaseEvent]: 比赛事件列表
-        """
-        try:
-            # 修改这里：确保传入的是 Game 对象而不是 GameData
-            if not isinstance(game, Game):
-                self.logger.warning("传入的不是 Game 对象")
-                return []
-
-            if not game.playByPlay:
-                self.logger.warning("没有找到比赛回放数据")
-                return []
-                
-            return game.playByPlay.actions
-
-        except Exception as e:
-            self.logger.error(f"获取比赛事件时出错: {e}", exc_info=True)
-            return []
-
-
-    def get_team_info(self, identifier: Union[int, str]) -> Optional[TeamProfile]:
-        """获取球队详细信息"""
-        try:
-            if isinstance(identifier, int):
-                return TeamProfile.get_team_by_id(identifier)
-            else:
-                team_id = get_team_id(identifier)
-                if team_id:
-                    return TeamProfile.get_team_by_id(team_id[0])
-            return None
-        except Exception as e:
-            self.logger.error(f"获取球队信息时出错: {e}", exc_info=True)
-            return None
-
-    def _get_team_id(self, team_name: str) -> Optional[int]:
-        """获取球队ID"""
-        try:
-            if not team_name:
-                return None
-            result = get_team_id(team_name)
-            return result[0] if result else None
-        except Exception as e:
-            self.logger.error(f"获取球队ID时出错: {str(e)}", exc_info=True)
-            return None
-
-    def _find_game_id(self, team_name: str, date_str: str) -> Optional[str]:
-        """查找指定球队在特定日期的比赛ID"""
-        try:
-            team_id = self._get_team_id(team_name)
-            if not team_id:
-                self.logger.warning(f"未找到球队: {team_name}")
-                return None
-
-            schedule_data = self.schedule_fetcher.get_schedule(
-                force_update=self.config.auto_refresh
-            )
-            if not schedule_data:
-                self.logger.error("无法获取赛程数据")
-                return None
-
-            schedule_df = self.schedule_parser.parse_raw_schedule(schedule_data)
-            game_id = self.schedule_parser.get_game_id(schedule_df, team_id, date_str)
-
-            if game_id:
-                self.logger.info(f"找到 {team_name} 的比赛: {game_id}")
-            else:
-                self.logger.warning(f"未找到 {team_name} 的比赛")
-
-            return game_id
-
-        except Exception as e:
-            self.logger.error(f"查找比赛时出错: {e}", exc_info=True)
             return None
 
     @lru_cache(maxsize=128)
@@ -356,6 +265,130 @@ class NBAGameDataProvider:
         except Exception as e:
             self.logger.error(f"获取比赛数据时出错: {e}")
             return None
+
+    def _find_game_id(self, team_name: str, date_str: str) -> Optional[str]:
+        """查找指定球队在特定日期的比赛ID"""
+        try:
+            team_id = self._get_team_id(team_name)
+            if not team_id:
+                self.logger.warning(f"未找到球队: {team_name}")
+                return None
+
+            schedule_data = self.schedule_fetcher.get_schedule(
+                force_update=self.config.auto_refresh
+            )
+            if not schedule_data:
+                self.logger.error("无法获取赛程数据")
+                return None
+
+            schedule_df = self.schedule_parser.parse_raw_schedule(schedule_data)
+            game_id = self.schedule_parser.get_game_id(schedule_df, team_id, date_str)
+
+            if game_id:
+                self.logger.info(f"找到 {team_name} 的比赛: {game_id}")
+            else:
+                self.logger.warning(f"未找到 {team_name} 的比赛")
+
+            return game_id
+
+        except Exception as e:
+            self.logger.error(f"查找比赛时出错: {e}", exc_info=True)
+            return None
+
+    def _get_team_id(self, team_name: str) -> Optional[int]:
+        """获取球队ID"""
+        try:
+            if not team_name:
+                return None
+            result = get_team_id(team_name)
+            return result[0] if result else None
+        except Exception as e:
+            self.logger.error(f"获取球队ID时出错: {str(e)}", exc_info=True)
+            return None
+
+
+
+    ## ===========================
+    ## 3.提供GAME数据
+    ## ===========================
+
+    def get_basic_game_info(self, game: Game) -> GameData:
+        """
+        获取比赛基本信息。
+
+        **参数:**
+            game: Game 对象，包含完整的比赛数据。
+
+        **返回:**
+            GameData: 比赛的基本信息数据。
+        """
+        """获取比赛基本信息"""
+        return game.game
+
+
+    def get_player_game_stats(self, player: Player) -> PlayerStatistics:
+        """
+        获取球员在比赛中的统计数据。
+
+        **参数:**
+            player: Player 对象，包含球员的比赛数据。
+
+        **返回:**
+            PlayerStatistics: 球员的比赛统计数据。
+        """
+        return player.statistics
+
+    def get_team_game_stats(self, game: Game) -> Dict[str, Any]:
+        """
+        获取比赛中主客队的基本统计信息（队名）。
+
+        **参数:**
+            game: Game 对象，包含完整的比赛数据。
+
+        **返回:**
+            Dict[str, Any]: 包含主客队基本信息的字典，键为主队 'home_team' 和客队 'away_team'。
+                             如果无法获取比赛或球队信息，则返回空字典。
+        """
+        try:
+            if not game or not game.game:
+                return {}
+            return {
+                "home_team": game.game.homeTeam if hasattr(game.game, 'homeTeam') else None,
+                "away_team": game.game.awayTeam if hasattr(game.game, 'awayTeam') else None
+            }
+        except Exception as e:
+            self.logger.error(f"获取比赛球队统计数据时出错: {str(e)}")
+            return {}
+
+    def get_game_events(self, game: Game) -> List[BaseEvent]:
+        """
+        获取比赛事件列表。
+
+        直接返回原始事件列表，让调用方决定如何处理事件。
+        事件类型和筛选可以由调用方基于 BaseEvent 的类型系统来处理。
+
+        **参数:**
+            game: Game 对象。
+
+        **返回:**
+            List[BaseEvent]: 比赛事件列表。如果 Game 对象无效或没有回放数据，则返回空列表。
+        """
+        try:
+            if not isinstance(game, Game):
+                self.logger.warning("传入的不是 Game 对象")
+                return []
+            if not game.playByPlay:
+                self.logger.warning("没有找到比赛回放数据")
+                return []
+            return game.playByPlay.actions
+        except Exception as e:
+            self.logger.error(f"获取比赛事件时出错: {e}", exc_info=True)
+            return []
+
+    
+    ## ===========================
+    ## 4.辅助方法
+    ## ===========================
 
     def clear_cache(self) -> None:
         """清理缓存数据"""

@@ -1,8 +1,8 @@
 # nba/services/ai_service.py
 
+from openai import OpenAI
 from dataclasses import dataclass
 import logging
-import openai
 from typing import Optional
 
 
@@ -27,10 +27,6 @@ class AIService:
         self.config = config
         self.logger = logging.getLogger(self.__class__.__name__)
 
-        # 配置OpenAI SDK
-        openai.api_key = self.config.api_key
-        openai.api_base = self.config.base_url
-
     def translate(self, text: str, target_language: str) -> str:
         """
         翻译文本到目标语言
@@ -42,9 +38,16 @@ class AIService:
         Returns:
             翻译后的文本
         """
+        self.logger.info(f"开始翻译文本，目标语言: {target_language}")
+
         try:
-            system_prompt = f"你是一个专业的翻译助手，擅长将文本从任何语言翻译成{target_language}。"
-            user_prompt = f"请将以下文本翻译成{target_language}:\n\n{text}"
+            system_prompt = (
+                f"你是一个专业的 NBA 翻译助手，精通篮球术语和 NBA 相关内容的翻译。"
+                f"请将文本准确翻译成{target_language}，保持专业性，"
+                f"确保篮球术语、球员名字和球队名称的准确性。"
+                f"如果遇到专业术语，应使用目标语言中约定俗成的表达方式。"
+            )
+            user_prompt = f"请将以下 NBA 相关内容翻译成{target_language}:\n\n{text}"
 
             return self._get_completion(
                 system_prompt=system_prompt,
@@ -58,37 +61,45 @@ class AIService:
 
     def generate_summary(self, content: str, context: str = "", max_length: int = 100) -> str:
         """
-        生成内容总结
+        生成 NBA 比赛内容总结
 
         Args:
-            content: 需要总结的内容
-            context: 额外的上下文信息
+            content: 需要总结的比赛内容
+            context: 额外的比赛背景信息
             max_length: 最大字数限制
-
-        Returns:
-            生成的总结文本
         """
         try:
-            system_prompt = "你是一个专业的体育内容分析师，擅长总结和分析体育相关内容。"
+            system_prompt = (
+                "你是一个专业的 NBA 比赛分析师，精通中文篮球术语。"
+                "请从专业角度分析比赛数据与过程，重点关注："
+                "1. 比赛的关键转折点"
+                "2. 双方球员的突出表现"
+                "3. 战术特点和效果"
+                "4. 胜负关键因素"
+                "使用专业、准确的篮球术语。"
+            )
+
             user_prompt = (
-                f"请基于以下内容生成一个简短的总结：\n\n"
-                f"内容：\n{content}\n"
-                f"上下文：\n{context}\n"
+                f"请基于以下信息生成一个专业的NBA比赛分析总结：\n\n"
+                f"比赛内容：\n{content}\n"
+                f"比赛背景：\n{context}\n"
                 f"要求：\n"
-                f"- 简要总结关键点\n"
-                f"- 使用简洁明了的语言\n"
-                f"- 篇幅控制在{max_length}字以内\n"
+                f"- 总结控制在{max_length}字以内\n"
+                f"- 重点分析比赛胜负的关键因素\n"
+                f"- 点评关键球员的表现\n"
+                f"- 分析战术层面的特点"
             )
 
             return self._get_completion(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 temperature=0.7,
-                max_tokens=150
+                max_tokens=250  # 增加 token 限制以获得更详细的分析
             )
         except Exception as e:
-            self.logger.error(f"生成总结时出错: {e}", exc_info=True)
+            self.logger.error(f"生成比赛总结时出错: {e}", exc_info=True)
             return "AI分析不可用。"
+
 
     def _get_completion(
             self,
@@ -110,7 +121,12 @@ class AIService:
             AI生成的文本
         """
         try:
-            response = openai.ChatCompletion.create(
+            client = OpenAI(
+                api_key=self.config.api_key,
+                base_url=self.config.base_url
+            )
+
+            response = client.chat.completions.create(
                 model=self.config.model_name,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -121,7 +137,7 @@ class AIService:
                 stream=False
             )
 
-            return response.choices[0].message['content'].strip()
+            return response.choices[0].message.content.strip()
         except Exception as e:
             self.logger.error(f"获取AI完成时出错: {e}", exc_info=True)
             raise

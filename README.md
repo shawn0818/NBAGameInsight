@@ -39,7 +39,7 @@
 4. **业务服务层 (Services)**
    ```python
    class GameDataService:
-       def get_game_stats(self, game_id: str, output_format: str = 'dataframe'):
+       def get_team_game_stats(self, game_id: str, output_format: str = 'dataframe'):
            # 统一的数据访问接口
            data = self.fetcher.get_boxscore(game_id)
            return self.transformer.transform(data, output_format)
@@ -95,8 +95,8 @@ with GameFetcher() as game:
 service = GameDataService()
 
 # 获取不同格式的数据
-df = service.get_game_stats("0022300001", output_format="dataframe")
-box_score = service.get_game_stats("0022300001", output_format="model")
+df = service.get_team_game_stats("0022300001", output_format="dataframe")
+box_score = service.get_team_game_stats("0022300001", output_format="model")
 
 # 使用模型对象
 print(f"Home Team Score: {box_score.home_team_score}")
