@@ -549,7 +549,7 @@ class Game(BaseModel):
             player_id: 球员ID，如果提供则只返回该球员的投篮数据
 
         Returns:
-            List[Dict[str, Any]]: 投篮数据列表
+            List[Dict[str, Any]]: 投篮数据列表，包含是否被助攻的信息
         """
         shot_data = []
         if self.playByPlay and self.playByPlay.actions:
@@ -560,8 +560,8 @@ class Game(BaseModel):
                         continue
 
                     shot_data.append({
-                        'xLegacy': action.position.xLegacy if getattr(action, 'position', None) else None,
-                        'yLegacy': action.position.yLegacy if getattr(action, 'position', None) else None,
+                        'xLegacy': action.xLegacy if hasattr(action, 'xLegacy') else None,
+                        'yLegacy': action.yLegacy if hasattr(action, 'yLegacy') else None,
                         'shotResult': action.shotResult if hasattr(action, 'shotResult') else None,
                         'description': action.description,
                         'player_id': action.personId,
@@ -569,7 +569,49 @@ class Game(BaseModel):
                         'period': action.period,
                         'actionType': action.actionType,
                         'time': action.clock,
+                        # 添加助攻相关信息
+                        'assisted': True if hasattr(action,
+                                                    'assistPersonId') and action.assistPersonId is not None else False,
+                        'assist_player_id': getattr(action, 'assistPersonId', None),
+                        'assist_player_name': getattr(action, 'assistPlayerNameInitial', None)
                     })
         return shot_data
+
+    def get_assisted_shot_data(self, passer_id: int) -> List[Dict[str, Any]]:
+        """获取特定球员的助攻导致的队友得分位置数据
+
+        Args:
+            passer_id: 传球者(助攻者)的ID
+
+        Returns:
+            List[Dict[str, Any]]: 经过该球员助攻的所有队友投篮数据
+        """
+        assisted_shots = []
+        if self.playByPlay and self.playByPlay.actions:
+            for action in self.playByPlay.actions:
+                # 只关注投篮事件
+                if action.actionType not in ["2pt", "3pt"]:
+                    continue
+
+                # 检查是否是该球员的助攻
+                if (hasattr(action, "assistPersonId") and
+                        action.assistPersonId == passer_id and
+                        action.shotResult == "Made"):  # 只记录命中的球
+
+                    assisted_shots.append({
+                        'x': action.xLegacy if hasattr(action, 'xLegacy') else None,
+                        'y': action.yLegacy if hasattr(action, 'yLegacy') else None,
+                        'shot_type': action.actionType,
+                        'shooter_id': action.personId,  # 投篮者ID
+                        'shooter_name': action.playerName,  # 投篮者姓名
+                        'team_id': action.teamId,
+                        'period': action.period,
+                        'time': action.clock,
+                        'description': action.description,
+                        'area': getattr(action, 'area', None),  # 投篮区域
+                        'distance': getattr(action, 'shotDistance', None)  # 投篮距离
+                    })
+
+        return assisted_shots
 
     model_config = ConfigDict(from_attributes=True)
