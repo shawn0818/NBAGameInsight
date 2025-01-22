@@ -48,6 +48,7 @@ class NBAConfig:
         LOGS_DIR = DATA_DIR / "logs"
         STORAGE_DIR = _ROOT / "storage"
         CACHE_DIR = DATA_DIR / "cache"
+        TEMP_DIR = DATA_DIR / ".temp"
 
         # 媒体存储目录
         PICTURES_DIR = STORAGE_DIR / "images"
@@ -71,6 +72,7 @@ class NBAConfig:
             cls.LOGS_DIR.mkdir(parents=True, exist_ok=True)
             cls.STORAGE_DIR.mkdir(parents=True, exist_ok=True)
             cls.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            cls.TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
             # 媒体目录
             cls.PICTURES_DIR.mkdir(parents=True, exist_ok=True)

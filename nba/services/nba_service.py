@@ -1,291 +1,347 @@
 # nba/services/nba_service.py
-from logging.handlers import RotatingFileHandler
-from typing import Optional, Dict, Any, List, Callable, Union
-import logging
-import asyncio
+
+from typing import Optional, Dict, Any, List
 from pathlib import Path
-from dataclasses import dataclass, field
-from functools import wraps
-from datetime import datetime
+from dataclasses import dataclass
+from enum import Enum
+import logging
+import time
 
 from nba.services.game_data_service import NBAGameDataProvider, ServiceConfig
-from nba.services.game_video_service import GameVideoService
+from nba.services.game_video_service import GameVideoService, VideoOutputConfig
 from nba.services.game_display_service import DisplayService, DisplayConfig
 from nba.services.game_charts_service import GameChartsService
-from nba.services.ai_service import AIConfig
 from nba.models.video_model import ContextMeasure
 from config.nba_config import NBAConfig
-
-# 初始化日志
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 
 @dataclass
 class NBAServiceConfig:
-    """NBA服务统一配置类"""
+    """NBA服务统一配置"""
     # 基础配置
-    default_team: str = "Lakers"  # 修改：设置默认值
-    default_player: str = "LeBron James"  # 修改：设置默认值
-    date_str: str = "last"  # 修改：设置默认值为 "last"
-
-    # 显示配置
-    display_language: str = "zh_CN"
-    show_advanced_stats: bool = True
+    team: str = "Lakers"
+    player: str = "LeBron James"
+    date_str: str = "last"
+    language: str = "zh_CN"
 
     # 视频配置
     video_quality: str = "hd"
-    max_concurrent_downloads: int = 3
-    video_output_dir: Path = NBAConfig.PATHS.VIDEO_DIR
+    to_gif: bool = False
+    compress_video: bool = False
+    compression_preset: str = 'medium'
+    compression_crf: int = 23
+    compression_audio_bitrate: str = '128k'
+    video_fps: int = 12
+    video_scale: int = 960
+    video_show_progress: bool = True
+    video_max_workers: int = 3  # 新增: 最大并行下载数
 
-    # AI配置
-    enable_ai: bool = False
-    ai_api_key: Optional[str] = None
-    ai_base_url: Optional[str] = None
+    # 存储路径配置
+    figure_path: Path = NBAConfig.PATHS.PICTURES_DIR
+    cache_dir: Path = NBAConfig.PATHS.CACHE_DIR
+    storage_dir: Path = NBAConfig.PATHS.STORAGE_DIR
+    video_dir: Path = NBAConfig.PATHS.VIDEO_DIR
+    gif_dir: Path = NBAConfig.PATHS.GIF_DIR
 
-    # 输出配置
-    output_dir: Path = NBAConfig.PATHS.PICTURES_DIR
-
-    # 服务配置实例（内部使用）
-    service_config: ServiceConfig = field(init=False)
-    display_config: DisplayConfig = field(init=False)
-    ai_config: Optional[AIConfig] = field(init=False)
-
-    def __post_init__(self):
-        """初始化派生配置"""
-        # 配置AI服务
-        self._setup_ai_config()
-        # 初始化子服务配置
-        self._init_service_configs()
-
-    def _setup_ai_config(self) -> None:
-        """设置AI服务配置"""
-        if self.enable_ai and not self.ai_api_key:
-            self.enable_ai = False
-            logger.warning("未提供AI API密钥，已禁用AI功能")
-
-        self.ai_config = AIConfig(
-            api_key=self.ai_api_key,
-            base_url=self.ai_base_url
-        ) if self.enable_ai else None
-
-    def _init_service_configs(self) -> None:
-        """初始化子服务配置"""
-        self.service_config = ServiceConfig(
-            default_team=self.default_team,
-            default_player=self.default_player,
-            date_str=self.date_str,
-            cache_dir=NBAConfig.PATHS.CACHE_DIR,
-            auto_refresh=False
-        )
-
-        self.display_config = DisplayConfig(
-            language=self.display_language,
-            show_advanced_stats=self.show_advanced_stats
-        )
+    # 其他配置
+    show_advanced_stats: bool = True
+    cache_size: int = 128
+    auto_refresh: bool = False
+    use_pydantic_v2: bool = True
 
 
-def handle_service_exceptions(func: Callable) -> Callable:
-    """服务层异常处理装饰器"""
-    if asyncio.iscoroutinefunction(func):
-        @wraps(func)
-        async def async_wrapper(*args, **kwargs):
-            try:
-                return await func(*args, **kwargs)
-            except Exception as e:
-                logger.error(f"服务调用错误 - {func.__name__}: {str(e)}", exc_info=True)
-                return_type = func.__annotations__.get('return')
-                if return_type == Dict:
-                    return {}
-                elif return_type == List:
-                    return []
-                elif return_type == str:
-                    return ""
-                return None
+class ServiceStatus(Enum):
+    """服务状态枚举"""
+    AVAILABLE = "可用"
+    UNAVAILABLE = "不可用"
+    DEGRADED = "降级"
 
-        return async_wrapper
-    else:
-        @wraps(func)
-        def sync_wrapper(*args, **kwargs):
-            try:
-                return func(*args, **kwargs)
-            except Exception as e:
-                logger.error(f"服务调用错误 - {func.__name__}: {str(e)}", exc_info=True)
-                return_type = func.__annotations__.get('return')
-                if return_type == Dict:
-                    return {}
-                elif return_type == List:
-                    return []
-                elif return_type == str:
-                    return ""
-                return None
 
-        return sync_wrapper
+@dataclass
+class ServiceHealth:
+    """服务健康状态"""
+    status: ServiceStatus
+    last_check: float
+    error_count: int = 0
+    last_error: Optional[str] = None
+
+    @property
+    def is_available(self) -> bool:
+        return self.status == ServiceStatus.AVAILABLE
 
 
 class NBAService:
     """NBA数据服务统一接口"""
 
     def __init__(self, config: Optional[NBAServiceConfig] = None):
-        """初始化NBA服务"""
+        """初始化服务"""
         self.config = config or NBAServiceConfig()
         self.logger = logging.getLogger(self.__class__.__name__)
+
+        # 确保所需目录存在
+        NBAConfig.PATHS.ensure_directories()
+
+        # 服务健康状态
+        self._service_status = {
+            'data': ServiceHealth(ServiceStatus.UNAVAILABLE, time.time()),
+            'display': ServiceHealth(ServiceStatus.UNAVAILABLE, time.time()),
+            'chart': ServiceHealth(ServiceStatus.UNAVAILABLE, time.time()),
+            'video': ServiceHealth(ServiceStatus.UNAVAILABLE, time.time())
+        }
+
+        # 初始化服务
         self._init_services()
-        self.logger.info("NBA服务初始化完成")
+
+        # 记录可用服务
+        available = [name for name, status in self._service_status.items()
+                     if status.is_available]
+        self.logger.info(f"可用服务: {available}")
 
     def _init_services(self) -> None:
-        """初始化所有子服务"""
-        self._data_service = NBAGameDataProvider(self.config.service_config)
-        self._display_service = DisplayService(
-            game_data_service=self._data_service,
-            display_config=self.config.display_config,
-            ai_service=self.config.ai_config
-        )
-        self._viz_service = GameChartsService(game_data_service=self._data_service)
-        self._video_service = GameVideoService()
+        """分离式初始化各个服务"""
+        self._init_data_service()
+        if self._service_status['data'].is_available:
+            self._init_display_service()
+            self._init_chart_service()
+        self._init_video_service()
 
-    @handle_service_exceptions
-    def get_game_info(self, team: Optional[str] = None,
-                      date: Optional[str] = None,
-                      include_ai_analysis: bool = False) -> Dict[str, Any]:
-        """获取比赛信息"""
+    def _init_data_service(self) -> None:
+        """初始化数据服务"""
         try:
-            game_data = self._data_service.get_game(team, date)
-            if not game_data or not game_data.game:
-                logger.warning("没有获取到比赛数据")
-                return {}
+            # 创建数据服务配置
+            service_config = ServiceConfig(
+                default_team=self.config.team,
+                default_player=self.config.player,
+                date_str=self.config.date_str,
+                cache_dir=self.config.cache_dir,
+                cache_size=self.config.cache_size,
+                auto_refresh=self.config.auto_refresh,
+                use_pydantic_v2=self.config.use_pydantic_v2
+            )
 
-            # 确保game对象存在
-            game = game_data.game
+            self._data_service = NBAGameDataProvider(service_config)
+            self._update_service_status('data', ServiceStatus.AVAILABLE)
+        except Exception as e:
+            self.logger.error(f"数据服务初始化失败: {str(e)}")
+            self._update_service_status('data', ServiceStatus.UNAVAILABLE, str(e))
 
-            result = {
-                "basic_info": self._display_service.format_game_basic_info(game),
-                "status": self._display_service.format_game_status(
-                    game.homeTeam,
-                    game.awayTeam
-                ) if hasattr(game, 'homeTeam') and hasattr(game, 'awayTeam') else None,
-                "statistics": self._data_service.get_game_stats(game_data)
+    def _init_display_service(self) -> None:
+        """初始化显示服务"""
+        try:
+            # 创建显示服务配置
+            display_config = DisplayConfig(
+                language=self.config.language,
+                show_advanced_stats=self.config.show_advanced_stats,
+                cache_size=self.config.cache_size
+            )
+
+            self._display_service = DisplayService(
+                game_data_service=self._data_service,
+                display_config=display_config
+            )
+            self._update_service_status('display', ServiceStatus.AVAILABLE)
+        except Exception as e:
+            self.logger.error(f"显示服务初始化失败: {str(e)}")
+            self._update_service_status('display', ServiceStatus.UNAVAILABLE, str(e))
+
+    def _init_chart_service(self) -> None:
+        """初始化图表服务"""
+        try:
+            self._chart_service = GameChartsService(
+                game_data_service=self._data_service,
+                figure_path=self.config.figure_path
+            )
+            self._update_service_status('chart', ServiceStatus.AVAILABLE)
+        except Exception as e:
+            self.logger.error(f"图表服务初始化失败: {str(e)}")
+            self._update_service_status('chart', ServiceStatus.UNAVAILABLE, str(e))
+
+    def _init_video_service(self) -> None:
+        """初始化视频服务"""
+        try:
+            # 创建视频服务配置
+            video_config = VideoOutputConfig(
+                format='gif' if self.config.to_gif else 'mp4',
+                quality=self.config.video_quality,
+                compress=self.config.compress_video,
+                compression_preset=self.config.compression_preset,
+                compression_crf=self.config.compression_crf,
+                compression_audio_bitrate=self.config.compression_audio_bitrate,
+                fps=self.config.video_fps,
+                scale=self.config.video_scale,
+                show_progress=self.config.video_show_progress,
+                max_workers=self.config.video_max_workers  # 设置并行下载数
+            )
+
+            self._video_service = GameVideoService(video_config=video_config)
+            self._update_service_status('video', ServiceStatus.AVAILABLE)
+        except Exception as e:
+            self.logger.error(f"视频服务初始化失败: {str(e)}")
+            self._update_service_status('video', ServiceStatus.UNAVAILABLE, str(e))
+
+    def _update_service_status(self, service_name: str,
+                               status: ServiceStatus, error: Optional[str] = None) -> None:
+        """更新服务状态"""
+        health = self._service_status.get(service_name)
+        if health:
+            health.status = status
+            health.last_check = time.time()
+            if error:
+                health.error_count += 1
+                health.last_error = error
+
+    def get_service_status(self) -> Dict[str, ServiceStatus]:
+        """获取所有服务状态"""
+        return {name: status.status for name, status in self._service_status.items()}
+
+    def get_game_summary(self,
+                          team: Optional[str] = None,
+                          date: Optional[str] = None) -> Dict[str, Any]:
+        """获取比赛概况"""
+        summary = {}
+
+        if not self._service_status['data'].is_available:
+            self.logger.error("数据服务不可用")
+            return summary
+
+        try:
+            game = self._data_service.get_game(team or self.config.team, date)
+            if not game:
+                return summary
+
+            # 基础信息
+            game_data = game.game
+            summary["basic_info"] = {
+                "game_id": game_data.gameId,
+                "gameTimeLocal": game_data.gameTimeLocal
             }
 
-            return {k: v for k, v in result.items() if v is not None}
+            # 格式化信息(如果显示服务可用)
+            if self._service_status['display'].is_available:
+                try:
+                    summary.update({
+                        "formatted_info": self._display_service.format_game_basic_info(game_data),
+                        "status": self._display_service.format_game_status(
+                            game_data.homeTeam,
+                            game_data.awayTeam
+                        )
+                    })
+                except Exception as e:
+                    self.logger.error(f"格式化比赛信息失败: {str(e)}")
+                    self._update_service_status('display', ServiceStatus.DEGRADED, str(e))
+
+            # 统计信息
+            try:
+                summary["statistics"] = self._data_service.get_game_stats(game)
+            except Exception as e:
+                self.logger.error(f"获取比赛统计失败: {str(e)}")
+
+            return summary
 
         except Exception as e:
-            logger.error(f"获取比赛信息时出错: {str(e)}", exc_info=True)
+            self.logger.error(f"获取比赛概况失败: {str(e)}")
+            self._update_service_status('data', ServiceStatus.DEGRADED, str(e))
+            return summary
+
+    def get_game_videos(self, context_measure: str = "FGM") -> Dict[str, Path]:
+        """获取比赛视频"""
+        if not self._service_status['video'].is_available:
+            self.logger.error("视频服务不可用")
             return {}
 
-    @handle_service_exceptions
-    async def process_game_data(self) -> Dict[str, Any]:
-        """处理完整的比赛数据流程"""
-        team = self.config.default_team
-        date = self.config.date_str
-
-        logger.info(f"正在查询 {team} 的比赛数据...")
-
-        # 获取比赛信息
-        game_data = self.get_game_info(
-            team=team,
-            date=date,
-            include_ai_analysis=self.config.enable_ai
-        )
-
-        return game_data
-
-    @handle_service_exceptions
-    async def process_game_videos(self) -> Dict[str, Path]:
-        """处理比赛视频数据流程"""
-        team = self.config.default_team
-        player = self.config.default_player
+        if not self._service_status['data'].is_available:
+            self.logger.error("数据服务不可用，无法获取比赛信息")
+            return {}
 
         try:
-            logger.info(f"正在获取{'球员' if player else '球队'}视频...")
+            game = self._data_service.get_game(self.config.team)
+            if not game:
+                return {}
 
-            # 获取视频数据
-            videos = await self.get_game_videos(
-                team=team,
-                player_name=player,
-                context_measure=ContextMeasure.FGM
+            player_id = self._get_player_id(game)
+            game_id = game.game.gameId  # 获取game_id
+
+            videos = self._video_service.get_game_videos(
+                game_id=game_id,
+                player_id=player_id,
+                context_measure=ContextMeasure[context_measure]
             )
 
             if not videos:
-                logger.warning("未找到视频数据")
                 return {}
 
-            logger.info(f"找到 {len(videos)} 个视频片段，开始下载...")
-
-            # 下载视频
-            video_paths = await self.download_game_videos(
+            return self._video_service.batch_process_videos(
                 videos=videos,
-                to_gif=False,
-                compress=True
+                game_id=game_id  # 传入game_id参数
             )
-
-            logger.info(f"视频下载完成，共 {len(video_paths)} 个文件")
-            return video_paths
 
         except Exception as e:
-            logger.error(f"处理视频数据时出错: {e}")
+            self.logger.error(f"获取视频失败: {str(e)}")
+            self._update_service_status('video', ServiceStatus.DEGRADED, str(e))
             return {}
 
-    @handle_service_exceptions
-    async def get_game_videos(self, team: Optional[str] = None,
-                              date: Optional[str] = None,
-                              player_name: Optional[str] = None,
-                              context_measure: ContextMeasure = ContextMeasure.FGM) -> Dict[str, Any]:
-        """获取比赛视频"""
-        game = self._data_service.get_game(team, date)
-        if not game:
-            return {}
+    def plot_player_scoring_impact(self,
+                                   team: Optional[str] = None,
+                                   player_id: Optional[int] = None,
+                                   title: Optional[str] = None) -> Optional[Path]:
+        """绘制球员得分影响力图"""
+        if not self._service_status['chart'].is_available:
+            self.logger.error("图表服务不可用")
+            return None
 
-        # 如果指定了球员，获取球员ID
-        player_id = None
-        if player_name:
-            player = next(
+        try:
+            game = self._data_service.get_game(team or self.config.team)
+            if not game:
+                return None
+
+            player_id = player_id or self._get_player_id(game)
+            if not player_id:
+                self.logger.error("无法获取球员ID")
+                return None
+
+            fig, _ = self._chart_service.plot_player_scoring_impact(
+                game=game,
+                player_id=player_id,
+                title=title,
+                output_path=f"scoring_impact_{game.game.gameId}.png"
+            )
+
+            return self.config.figure_path / f"scoring_impact_{game.game.gameId}.png" if fig else None
+
+        except Exception as e:
+            self.logger.error(f"绘制得分影响力图失败: {str(e)}")
+            self._update_service_status('chart', ServiceStatus.DEGRADED, str(e))
+            return None
+
+    def _get_player_id(self, game: Any) -> Optional[int]:
+        """获取球员ID"""
+        if not self.config.player:
+            return None
+
+        try:
+            player_obj = next(
                 (p for t in [game.game.homeTeam, game.game.awayTeam]
-                 for p in t.players if p.name.lower() == player_name.lower()),
+                 for p in t.players if p.name.lower() == self.config.player.lower()),
                 None
             )
-            if player:
-                player_id = player.personId
+            return player_obj.personId if player_obj else None
+        except Exception:
+            return None
 
-        videos = await self._video_service.get_game_videos(
-            game_id=game.game.gameId,
-            context_measure=context_measure,
-            player_id=player_id
-        )
-
-        return videos
-
-    @handle_service_exceptions
-    async def download_game_videos(self,
-                                   videos: Dict[str, Any],
-                                   output_dir: Optional[Path] = None,
-                                   to_gif: bool = False,
-                                   compress: bool = False) -> Dict[str, Path]:
-        """下载比赛视频"""
-        output_dir = output_dir or self.config.video_output_dir
-        return await self._video_service.batch_download(
-            videos=videos,
-            output_dir=output_dir,
-            quality=self.config.video_quality,
-            to_gif=to_gif,
-            compress=compress,
-            max_concurrent=self.config.max_concurrent_downloads
-        )
-
-    def refresh_data(self) -> None:
-        """刷新所有数据"""
-        self._data_service.refresh_all_data()
-
-    async def __aenter__(self):
-        """异步上下文管理器入口"""
+    def __enter__(self):
+        """同步上下文管理器入口"""
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """清理资源"""
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """同步上下文管理器出口"""
+        self.close()
+
+    def close(self):
+        """关闭并清理资源"""
         try:
             if hasattr(self, '_data_service'):
                 self._data_service.clear_cache()
             if hasattr(self, '_video_service'):
-                await self._video_service.__aexit__(exc_type, exc_val, exc_tb)
+                self._video_service.close()
         except Exception as e:
-            self.logger.error(f"清理资源时出错: {str(e)}")
+            self.logger.error(f"清理资源失败: {str(e)}")

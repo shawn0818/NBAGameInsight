@@ -84,6 +84,10 @@ class GameDataParser:
             else:
                 data = game_data
 
+            # 确保关键字段存在且有效
+            if 'period' not in data or not isinstance(data['period'], int) or data['period'] < 1:
+                data['period'] = 1
+
             # 处理比赛状态
             if 'gameStatus' in data:
                 status_value = data['gameStatus']
@@ -214,6 +218,14 @@ class GameDataParser:
                     'reboundOffensiveTotal': 1 if event_data['subType'] == 'offensive' else 0
                 })
                 return ReboundEvent(**event_data)
+
+            # 处理团队违例事件
+            elif event_type == 'violation' and 'team' in event_data.get('qualifiers', []):
+                event_data.update({
+                    'playerName': 'TEAM',
+                    'playerNameI': 'TEAM'
+                })
+                return ViolationEvent(**event_data)
 
             # 处理投篮事件
             elif event_type in ['2pt', '3pt']:

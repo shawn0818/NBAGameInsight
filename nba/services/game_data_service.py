@@ -230,6 +230,11 @@ class NBAGameDataProvider:
             List[BaseEvent]: 比赛事件列表
         """
         try:
+            # 修改这里：确保传入的是 Game 对象而不是 GameData
+            if not isinstance(game, Game):
+                self.logger.warning("传入的不是 Game 对象")
+                return []
+
             if not game.playByPlay:
                 self.logger.warning("没有找到比赛回放数据")
                 return []
