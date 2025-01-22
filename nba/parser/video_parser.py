@@ -66,12 +66,12 @@ class VideoParser:
         try:
             qualities = {
                 'sd': VideoQuality(
-                    duration=video_data['sdur'] / 1000,
+                    duration=round(video_data['sdur'] / 1000.0, 3),  # 转换为秒，保留3位小数
                     url=video_data['surl'],
                     thumbnail=video_data['sth']
                 ),
                 'hd': VideoQuality(
-                    duration=video_data['ldur'] / 1000,
+                    duration=round(video_data['ldur'] / 1000.0, 3),  # 转换为秒，保留3位小数
                     url=video_data['lurl'],
                     thumbnail=video_data['lth']
                 )

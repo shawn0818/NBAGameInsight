@@ -2,17 +2,6 @@ from typing import Optional, Dict, Any
 from pydantic import BaseModel
 from enum import Enum
 
-
-class VideoQuality(BaseModel):
-    """不同质量的视频信息"""
-    duration: int  # 视频时长
-    url: str       # 视频URL
-    thumbnail: str # 缩略图URL
-
-    class Config:
-        frozen = True
-
-
 class ContextMeasure(str, Enum):
     """视频查询的上下文度量类型"""
     FG3M = "FG3M"  # 三分命中
@@ -27,6 +16,15 @@ class ContextMeasure(str, Enum):
     BLK = "BLK"    # 盖帽
     TOV = "TOV"    # 失误
 
+class VideoQuality(BaseModel):
+    """不同质量的视频信息"""
+    duration: float  # 视频时长
+    url: str       # 视频URL
+    thumbnail: str # 缩略图URL
+
+    class Config:
+        frozen = True
+
 
 class VideoAsset(BaseModel):
     """
@@ -40,10 +38,24 @@ class VideoAsset(BaseModel):
     uuid: str
     qualities: Dict[str, VideoQuality]
 
+    def get_preferred_quality(self, quality: str = 'hd') -> Optional[VideoQuality]:
+        """获取指定质量的视频信息，如果不存在则返回可用的最高质量"""
+        if quality in self.qualities:
+            return self.qualities[quality]
+
+        # 如果请求的质量不可用，按优先级尝试其他质量
+        quality_priority = ['hd', 'sd']
+        for q in quality_priority:
+            if q in self.qualities:
+                return self.qualities[q]
+
+        return None
+
     @property
-    def duration(self) -> int:
+    def duration(self) -> float:
         """获取视频时长（优先使用高清时长）"""
-        return self.qualities.get('hd', self.qualities.get('sd')).duration
+        quality = self.get_preferred_quality('hd')
+        return quality.duration if quality else 0.0
 
     @property
     def urls(self) -> Dict[str, str]:
