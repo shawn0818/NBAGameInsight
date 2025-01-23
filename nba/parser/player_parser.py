@@ -20,10 +20,10 @@ class PlayerParser:
             cache_dir: 缓存目录路径，默认为None不使用缓存
         """
         self.logger = logging.getLogger(self.__class__.__name__)
-        self.cache_dir = NBAConfig.PATHS.CACHE_DIR
+        self.cache_dir = NBAConfig.PATHS.PLAYER_CACHE_DIR
         if cache_dir:
             self.cache_file = cache_dir / 'players.json'
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
+
 
     def parse_players(self, raw_data: Dict[str, Any], use_cache: bool = True) -> List[PlayerProfile]:
         """

@@ -1,4 +1,3 @@
-from datetime import timedelta
 from enum import Enum
 from typing import Optional, Dict, Any
 from dataclasses import dataclass
@@ -13,7 +12,7 @@ class VideoRequestConfig(BaseRequestConfig):
 
     CACHE_PATH: str = NBAConfig.PATHS.VIDEOURL_CACHE_DIR
 
-    CACHE_DURATION: timedelta = timedelta(hours=1, minutes=30)  # 1小时30分钟
+    CACHE_DURATION: int = 3600  # 1小时缓存
 
     FALLBACK_URLS = {
         "https://cdn.nba.com/static/json": "https://nba-prod-us-east-1-mediaops-stats.s3.amazonaws.com/NBA",
@@ -82,7 +81,6 @@ class VideoRequestParams:
 
 class VideoFetcher(BaseNBAFetcher):
     """视频链接数据获取器"""
-    CACHE_DURATION = 3600  # 1小时缓存
     request_config = VideoRequestConfig()
 
     VIDEO_STATS_URL = "https://stats.nba.com/stats/videodetailsasset"

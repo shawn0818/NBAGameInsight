@@ -1,11 +1,11 @@
-from typing import Dict, Optional, Callable, Any, List
+from typing import Dict, Optional, Callable, Any
 import json
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlencode
 from dataclasses import dataclass, field
-from typing import List, Dict
+from typing import  Dict
 from utils.http_handler import HTTPRequestManager
 
 

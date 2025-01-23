@@ -1,5 +1,4 @@
 from typing import Dict, Optional
-import logging
 from datetime import timedelta
 from dataclasses import dataclass
 from config.nba_config import NBAConfig

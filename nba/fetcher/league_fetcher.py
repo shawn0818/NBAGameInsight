@@ -1,5 +1,4 @@
 from typing import Dict, Optional
-import logging
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 from .base_fetcher import BaseNBAFetcher, BaseRequestConfig

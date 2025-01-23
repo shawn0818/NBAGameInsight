@@ -1,11 +1,8 @@
 import json
 from enum import IntEnum
-from typing import Dict, Optional, Tuple
-import logging
+from typing import Dict, Optional
 from datetime import timedelta, datetime
 from dataclasses import dataclass
-from pathlib import Path
-
 from config.nba_config import NBAConfig
 from .base_fetcher import BaseNBAFetcher
 

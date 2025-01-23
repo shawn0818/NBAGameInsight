@@ -54,9 +54,9 @@ class NBAConfig:
         TEAM_CACHE_DIR = CACHE_DIR / "teams"
         PLAYER_CACHE_DIR = CACHE_DIR / "players"
         SCHEDULE_CACHE_DIR = CACHE_DIR / "schedule"
-        VIDEOURL_CACHE_DIR = CACHE_DIR / "schedule"
+        VIDEOURL_CACHE_DIR = CACHE_DIR / "videourls"
         LEAGUE_CACHE_DIR = CACHE_DIR / "league"
-        
+
         # 媒体存储目录
         PICTURES_DIR = STORAGE_DIR / "images"
         VIDEO_DIR = STORAGE_DIR / "videos"
