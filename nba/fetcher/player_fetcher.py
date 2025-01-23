@@ -1,16 +1,15 @@
 from typing import Dict, Optional
 from dataclasses import dataclass
 from datetime import timedelta
-from pathlib import Path
-import logging
-from .base_fetcher import BaseNBAFetcher
+from .base_fetcher import BaseNBAFetcher, BaseRequestConfig
+from config.nba_config import NBAConfig
 
 
 @dataclass
-class PlayerConfig:
+class PlayerConfig(BaseRequestConfig):
     """球员数据配置"""
     BASE_URL: str = "https://cdn.nba.com/static/json"
-    CACHE_PATH: Path = Path("data/cache/players")
+    CACHE_PATH: str = NBAConfig.PATHS.PLAYER_CACHE_DIR
     CACHE_DURATION: timedelta = timedelta(days=7)  # 球员数据缓存7天
 
     # API端点
@@ -18,7 +17,7 @@ class PlayerConfig:
 
     # 缓存文件名
     CACHE_FILES = {
-        'info': 'player_info.json'
+        'profile': 'player_profile.json'
     }
 
 
@@ -31,7 +30,7 @@ class PlayerFetcher(BaseNBAFetcher):
     3. 可配置的更新策略
     """
 
-    config = PlayerConfig()
+    player_config = PlayerConfig()
 
     def __init__(self):
         super().__init__()
@@ -52,11 +51,11 @@ class PlayerFetcher(BaseNBAFetcher):
         """
         try:
             return self.fetch_data(
-                url=self.config.PROFILE_URL,
+                url=self.player_config.PROFILE_URL,
                 cache_config={
                     'key': "players_all",
-                    'file': self.config.CACHE_PATH / self.config.CACHE_FILES['info'],
-                    'interval': int(self.config.CACHE_DURATION.total_seconds()),
+                    'file': self.player_config.CACHE_PATH / self.player_config.CACHE_FILES['profile'],
+                    'interval': int(self.player_config.CACHE_DURATION.total_seconds()),
                     'force_update': force_update
                 }
             )

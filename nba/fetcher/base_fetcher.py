@@ -15,6 +15,9 @@ class BaseRequestConfig:
     #基础URL配置
     BASE_URL: str = ""  # 默认为空,子类可覆盖
 
+    # 缓存时间
+    CACHE_DURATION: timedelta = timedelta(days=7)  # 默认缓存7天
+
     # 故障转移URL规则
     FALLBACK_URLS: Dict[str, str] = field(
         default_factory=lambda: {

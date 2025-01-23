@@ -1,16 +1,16 @@
 from typing import Dict, Optional
 from dataclasses import dataclass
 from datetime import timedelta
-from pathlib import Path
-import logging
-from .base_fetcher import BaseNBAFetcher
+from .base_fetcher import BaseNBAFetcher, BaseRequestConfig
+from config.nba_config import NBAConfig
 
 
 @dataclass
-class TeamConfig:
+class TeamConfig(BaseRequestConfig):
     """球队数据配置"""
     BASE_URL: str = "https://stats.nba.com/stats"
-    CACHE_PATH: Path = Path("data/cache/teams")
+
+    CACHE_PATH: str = NBAConfig.PATHS.TEAM_CACHE_DIR
     CACHE_DURATION: timedelta = timedelta(days=7)  # 球队数据缓存7天
 
     # 缓存文件名
@@ -29,7 +29,7 @@ class TeamFetcher(BaseNBAFetcher):
     4. 支持强制更新
     """
 
-    config = TeamConfig()
+    team_config = TeamConfig()
 
     def __init__(self):
         """初始化球队数据获取器
@@ -37,7 +37,7 @@ class TeamFetcher(BaseNBAFetcher):
         设置基础URL和日志记录器，继承基类的HTTP请求和缓存功能。
         """
         super().__init__()
-        self.team_details_url = f"{self.config.BASE_URL}/teamdetails"
+        self.team_details_url = f"{self.team_config.BASE_URL}/teamdetails"
 
     def get_team_details(self,
                          team_id: int,
@@ -63,8 +63,8 @@ class TeamFetcher(BaseNBAFetcher):
                 params={"TeamID": team_id},
                 cache_config={
                     'key': f"team_{team_id}",
-                    'file': self.config.CACHE_PATH / self.config.CACHE_FILES['details'],
-                    'interval': int(self.config.CACHE_DURATION.total_seconds()),
+                    'file': self.team_config.CACHE_PATH / self.team_config.CACHE_FILES['details'],
+                    'interval': int(self.team_config.CACHE_DURATION.total_seconds()),
                     'force_update': force_update
                 }
             )

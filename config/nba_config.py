@@ -1,4 +1,4 @@
-# config/nba_config.py
+# game_config/nba_config.py
 
 from pathlib import Path
 
@@ -49,6 +49,14 @@ class NBAConfig:
         CACHE_DIR = DATA_DIR / "cache"
         TEMP_DIR = DATA_DIR / ".temp"
 
+        #缓存目录
+        GAME_CACHE_DIR = CACHE_DIR / "games"
+        TEAM_CACHE_DIR = CACHE_DIR / "teams"
+        PLAYER_CACHE_DIR = CACHE_DIR / "players"
+        SCHEDULE_CACHE_DIR = CACHE_DIR / "schedule"
+        VIDEOURL_CACHE_DIR = CACHE_DIR / "schedule"
+        LEAGUE_CACHE_DIR = CACHE_DIR / "league"
+        
         # 媒体存储目录
         PICTURES_DIR = STORAGE_DIR / "images"
         VIDEO_DIR = STORAGE_DIR / "videos"

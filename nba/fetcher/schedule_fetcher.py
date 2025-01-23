@@ -2,15 +2,16 @@ from typing import Dict, Optional
 import logging
 from datetime import timedelta
 from dataclasses import dataclass
-from pathlib import Path
-from .base_fetcher import BaseNBAFetcher
+from config.nba_config import NBAConfig
+from .base_fetcher import BaseNBAFetcher, BaseRequestConfig
 
 
 @dataclass
-class ScheduleConfig:
+class ScheduleConfig(BaseRequestConfig):
     """赛程数据配置"""
     BASE_URL: str = "https://cdn.nba.com/static/json"
-    CACHE_PATH: Path = Path("data/cache/schedule")
+    
+    CACHE_PATH: str = NBAConfig.PATHS.SCHEDULE_CACHE_DIR
     CACHE_DURATION: timedelta = timedelta(days=1)  # 赛程数据每天更新
 
     # API端点
@@ -31,7 +32,7 @@ class ScheduleFetcher(BaseNBAFetcher):
     3. 每日更新的缓存策略
     """
 
-    config = ScheduleConfig()
+    schedule_config = ScheduleConfig()
 
     def __init__(self):
         super().__init__()
@@ -52,11 +53,11 @@ class ScheduleFetcher(BaseNBAFetcher):
         """
         try:
             return self.fetch_data(
-                url=self.config.SCHEDULE_URL,
+                url=self.schedule_config.SCHEDULE_URL,
                 cache_config={
                     'key': "schedule",
-                    'file': self.config.CACHE_PATH / self.config.CACHE_FILES['schedule'],
-                    'interval': int(self.config.CACHE_DURATION.total_seconds()),
+                    'file': self.schedule_config.CACHE_PATH / self.schedule_config.CACHE_FILES['schedule'],
+                    'interval': int(self.schedule_config.CACHE_DURATION.total_seconds()),
                     'force_update': False
                 }
             )

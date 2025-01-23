@@ -1,6 +1,6 @@
+from datetime import timedelta
 from enum import Enum
 from typing import Optional, Dict, Any
-from urllib.parse import urlencode
 from dataclasses import dataclass
 from functools import lru_cache
 from config.nba_config import NBAConfig
@@ -10,6 +10,10 @@ from .base_fetcher import BaseNBAFetcher, BaseRequestConfig
 class VideoRequestConfig(BaseRequestConfig):
     """视频请求配置"""
     BASE_URL = "https://stats.nba.com/stats"
+
+    CACHE_PATH: str = NBAConfig.PATHS.VIDEOURL_CACHE_DIR
+
+    CACHE_DURATION: timedelta = timedelta(hours=1, minutes=30)  # 1小时30分钟
 
     FALLBACK_URLS = {
         "https://cdn.nba.com/static/json": "https://nba-prod-us-east-1-mediaops-stats.s3.amazonaws.com/NBA",
@@ -116,8 +120,8 @@ class VideoFetcher(BaseNBAFetcher):
             # 使用NBAConfig中定义的缓存路径
             cache_config = {
                 'key': f'video_{game_id}_{player_id}_{team_id}_{context_measure.value}',
-                'file': NBAConfig.PATHS.CACHE_DIR / 'videos.json',
-                'interval': self.CACHE_DURATION
+                'file': self.request_config.CACHE_PATH / 'videos.json',
+                'interval': self.request_config.CACHE_DURATION
             }
 
             # 使用完整的 URL 而不是 endpoint

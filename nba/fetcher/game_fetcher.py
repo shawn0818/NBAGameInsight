@@ -5,6 +5,8 @@ import logging
 from datetime import timedelta, datetime
 from dataclasses import dataclass
 from pathlib import Path
+
+from config.nba_config import NBAConfig
 from .base_fetcher import BaseNBAFetcher
 
 
@@ -19,7 +21,7 @@ class GameStatusEnum(IntEnum):
 class GameConfig:
     """比赛数据配置"""
     BASE_URL: str = "https://cdn.nba.com/static/json/liveData"
-    CACHE_PATH: Path = Path("data/cache/games")
+    CACHE_PATH: str = NBAConfig.PATHS.GAME_CACHE_DIR
 
     # 不同状态的缓存时间
     CACHE_DURATION = {
@@ -36,7 +38,7 @@ class GameConfig:
 
 
 class GameFetcher(BaseNBAFetcher):
-    config = GameConfig()
+    game_config = GameConfig()
 
     def __init__(self):
         super().__init__()  # 这里也会初始化 self.logger
@@ -46,7 +48,7 @@ class GameFetcher(BaseNBAFetcher):
         """获取比赛统计数据"""
         try:
             # 1. 构建缓存路径
-            cache_file = self.config.CACHE_PATH / self.config.CACHE_FILES['boxscore'].format(game_id=game_id)
+            cache_file = self.game_config.CACHE_PATH / self.game_config.CACHE_FILES['boxscore'].format(game_id=game_id)
 
             # 2. 如果不是强制更新,先检查缓存
             if not force_update and cache_file.exists():
@@ -56,7 +58,7 @@ class GameFetcher(BaseNBAFetcher):
                         # 检查缓存时间和比赛状态
                         timestamp = datetime.fromtimestamp(cache_data.get('timestamp', 0))
                         game_status = GameStatusEnum(cache_data.get('game_status', 1))
-                        cache_duration = self.config.CACHE_DURATION[game_status]
+                        cache_duration = self.game_config.CACHE_DURATION[game_status]
 
                         # 如果缓存未过期,直接返回
                         if datetime.now() - timestamp < cache_duration:
@@ -67,14 +69,14 @@ class GameFetcher(BaseNBAFetcher):
                     self.logger.error(f"读取缓存出错: {e}")
 
             # 3. 如果没有有效缓存,发送API请求
-            url = f"{self.config.BASE_URL}/boxscore/boxscore_{game_id}.json"
+            url = f"{self.game_config.BASE_URL}/boxscore/boxscore_{game_id}.json"
             data = self.fetch_data(url=url)
             if not data:
                 return None
 
             # 4. 写入新的缓存
             self._game_status = self._get_game_status(data)  # 保存状态
-            if self.config.CACHE_DURATION[self._game_status].total_seconds() > 0:
+            if self.game_config.CACHE_DURATION[self._game_status].total_seconds() > 0:
                 cache_data = {
                     'timestamp': datetime.now().timestamp(),
                     'game_status': self._game_status.value,
@@ -103,7 +105,7 @@ class GameFetcher(BaseNBAFetcher):
         """获取比赛回放数据"""
         try:
             # 1. 优先使用缓存
-            cache_file = self.config.CACHE_PATH / self.config.CACHE_FILES['playbyplay'].format(game_id=game_id)
+            cache_file = self.game_config.CACHE_PATH / self.game_config.CACHE_FILES['playbyplay'].format(game_id=game_id)
 
             if not force_update and cache_file.exists():
                 try:
@@ -115,7 +117,7 @@ class GameFetcher(BaseNBAFetcher):
                     self.logger.error(f"读取缓存出错: {e}")
 
             # 2. 如果没有缓存或强制更新，发送API请求
-            url = f"{self.config.BASE_URL}/playbyplay/playbyplay_{game_id}.json"
+            url = f"{self.game_config.BASE_URL}/playbyplay/playbyplay_{game_id}.json"
             data = self.fetch_data(url=url)
 
             # 3. 即使数据获取失败也继续运行
@@ -124,7 +126,7 @@ class GameFetcher(BaseNBAFetcher):
                 return None
 
             # 4. 写入缓存
-            if self._game_status and self.config.CACHE_DURATION[self._game_status].total_seconds() > 0:
+            if self._game_status and self.game_config.CACHE_DURATION[self._game_status].total_seconds() > 0:
                 cache_data = {
                     'timestamp': datetime.now().timestamp(),
                     'game_status': self._game_status.value,
@@ -173,21 +175,21 @@ class GameFetcher(BaseNBAFetcher):
         """清理缓存"""
         try:
             if game_id:
-                for data_type in self.config.CACHE_FILES:
-                    cache_file = self.config.CACHE_PATH / self.config.CACHE_FILES[data_type].format(game_id=game_id)
+                for data_type in self.game_config.CACHE_FILES:
+                    cache_file = self.game_config.CACHE_PATH / self.game_config.CACHE_FILES[data_type].format(game_id=game_id)
                     if cache_file.exists():
                         cache_file.unlink()
                 self.logger.info(f"已清理比赛 {game_id} 的缓存")
             else:
                 # 清理过期缓存
                 now = datetime.now()
-                for cache_file in self.config.CACHE_PATH.glob('*.json'):
+                for cache_file in self.game_config.CACHE_PATH.glob('*.json'):
                     try:
                         with cache_file.open('r') as f:
                             cache_data = json.load(f)
                         timestamp = datetime.fromtimestamp(cache_data.get('timestamp', 0))
                         game_status = GameStatusEnum(cache_data.get('game_status', 1))
-                        if now - timestamp > self.config.CACHE_DURATION[game_status]:
+                        if now - timestamp > self.game_config.CACHE_DURATION[game_status]:
                             cache_file.unlink()
                     except Exception as e:
                         self.logger.error(f"清理缓存文件失败 {cache_file}: {e}")
