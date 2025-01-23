@@ -1,7 +1,6 @@
 # config/nba_config.py
+
 from pathlib import Path
-import logging
-from logging.handlers import RotatingFileHandler
 
 def get_project_root() -> Path:
     """获取项目根目录"""
@@ -63,21 +62,15 @@ class NBAConfig:
         @classmethod
         def ensure_directories(cls):
             """确保所有必要的目录存在"""
-            # 静态资源目录
-            cls.STATIC_DIR.mkdir(parents=True, exist_ok=True)
-            cls.IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-
-            # 动态数据目录
-            cls.DATA_DIR.mkdir(parents=True, exist_ok=True)
-            cls.LOGS_DIR.mkdir(parents=True, exist_ok=True)
-            cls.STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-            cls.CACHE_DIR.mkdir(parents=True, exist_ok=True)
-            cls.TEMP_DIR.mkdir(parents=True, exist_ok=True)
-
-            # 媒体目录
-            cls.PICTURES_DIR.mkdir(parents=True, exist_ok=True)
-            cls.VIDEO_DIR.mkdir(parents=True, exist_ok=True)
-            cls.GIF_DIR.mkdir(parents=True, exist_ok=True)
+            # 获取所有目录属性
+            dir_paths = [
+                value for name, value in vars(cls).items()
+                if isinstance(value, Path) and name.endswith('_DIR')
+            ]
+            
+            # 创建所有目录
+            for path in dir_paths:
+                path.mkdir(parents=True, exist_ok=True)
 
     class APP:
         """应用程序配置"""
@@ -85,61 +78,3 @@ class NBAConfig:
         TESTING = False
         MAX_WORKERS = 4  # 最大工作线程数
 
-    @classmethod
-    def initialize(cls):
-        """初始化应用配置"""
-        # 创建必要的目录
-        cls.PATHS.ensure_directories()
-        # 设置日志配置
-        cls.setup_logging()
-
-    @classmethod
-    def setup_logging(cls):
-        """配置日志"""
-        # 获取根日志记录器
-        logger = logging.getLogger()
-        logger.setLevel(logging.DEBUG if cls.APP.DEBUG else logging.INFO)
-
-        # 日志格式
-        formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        )
-
-        # 文件处理器
-        file_handler = RotatingFileHandler(
-            cls.PATHS.APP_LOG,
-            maxBytes=10**6,  # 1MB
-            backupCount=5
-        )
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-
-        # 错误日志处理器
-        error_handler = RotatingFileHandler(
-            cls.PATHS.ERROR_LOG,
-            maxBytes=10**6,
-            backupCount=5
-        )
-        error_handler.setLevel(logging.ERROR)
-        error_handler.setFormatter(formatter)
-        logger.addHandler(error_handler)
-
-        # 调试日志处理器（仅在DEBUG模式下启用）
-        if cls.APP.DEBUG:
-            debug_handler = RotatingFileHandler(
-                cls.PATHS.DEBUG_LOG,
-                maxBytes=10**6,
-                backupCount=3
-            )
-            debug_handler.setLevel(logging.DEBUG)
-            debug_handler.setFormatter(formatter)
-            logger.addHandler(debug_handler)
-
-        # 控制台处理器
-        console_handler = logging.StreamHandler()
-        console_handler.setFormatter(formatter)
-        logger.addHandler(console_handler)
-
-
-# 初始化配置
-NBAConfig.initialize()
