@@ -1,4 +1,4 @@
-# nba/services/ai_service.py
+# nba/services/game_ai_service.py
 
 from openai import OpenAI
 from dataclasses import dataclass

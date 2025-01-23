@@ -1,9 +1,9 @@
 # 忽略所有 .log 文件
 *.log
 *.json
+.env
 
 # 忽略目录 build/
-.env
 .vscode/
 pictures/
 video_gif/
@@ -14,4 +14,5 @@ __pycache__/
 
 # 忽略特定文件 foo.txt
 test.py
+
 

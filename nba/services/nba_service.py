@@ -2,7 +2,7 @@
 
 from typing import Optional, Dict, Any, List
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 import logging
 import time
@@ -10,8 +10,8 @@ import time
 from nba.services.game_data_service import NBAGameDataProvider, ServiceConfig
 from nba.services.game_video_service import GameVideoService, VideoOutputConfig
 from nba.services.game_display_service import DisplayService, DisplayConfig
-from nba.services.game_charts_service import GameChartsService
-from nba.services.ai_service import AIService, AIConfig
+from nba.services.game_charts_service import GameChartsService, ChartStyleConfig
+from nba.services.game_ai_service import AIService, AIConfig
 from nba.models.video_model import ContextMeasure
 from config.nba_config import NBAConfig
 
@@ -37,6 +37,8 @@ class NBAServiceConfig:
     # **DisplayService 配置 **
     format_type: str = "translate"  # 新增 format_type 参数
 
+    # **ChartService 配置**
+    chart_style: ChartStyleConfig = field(default_factory=ChartStyleConfig) # 使用 default_factory
 
     # 视频videoservice配置
     video_quality: str = "hd"
@@ -190,7 +192,8 @@ class NBAService:
         try:
             self._chart_service = GameChartsService(
                 game_data_service=self._data_service,
-                figure_path=self.config.figure_path
+                figure_path=self.config.figure_path,
+                style_config=self.config.chart_style  # 传递 ChartStyleConfig
             )
             self._update_service_status('chart', ServiceStatus.AVAILABLE)
         except Exception as e:

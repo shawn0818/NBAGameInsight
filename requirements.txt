@@ -1,12 +1,9 @@
 pydantic>=2.10.4
 pandas>=2.2.3
-numpy>=2.2.1
 requests>=2.32.3
-urllib3>=2.3.0
 pytz>=2024.2
 matplotlib>=3.10.0
-squarify>=0.4.4
-seaborn>=0.13.2
-networkx>=3.4.2
 openai>=1.59.7
 pytest>=8.3.4
+tqdm>=4.67.1
+python-dotenv>=1.0.1

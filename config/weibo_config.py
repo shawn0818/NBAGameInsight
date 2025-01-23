@@ -1,9 +1,13 @@
 # weibo_config.py
-
+import os
 from pathlib import Path
 import logging
 import requests
 from typing import List
+from dotenv import load_dotenv
+
+# 加载环境变量
+load_dotenv()
 
 
 def get_project_root() -> Path:
@@ -82,17 +86,8 @@ class WeiboConfig:
         }
 
         # Cookies 配置
-        COOKIES = {
-            'WEIBOCN_FROM': '1110006030',
-            'SCF': 'ArmloP7TlRpMxBXauEw2X3bIcmDjftAmeOtJALxgDrTlF92osTkoMhY5-1_FbdyZZq6vaopxajRSEAH14Ux6W8E.',
-            'SUB': '_2A25KeyZyDeRhGeBO61QQ9ynEzjqIHXVp-Se6rDV6PUJbktANLVjikW1NSl6v_DqDUsxpJW1sFXj3DXvS-sJDIwwo',
-            'SUBP': '0033WrSXqPxfM725Ws9jqgMF55529P9D9WF3rnY5-0hhUnTHYZWyvRiZ5JpX5KMhUgL.Foq7ehqpS0MRSKq2dJLoIpRLxK-L12zL1KzLxK-LBonL1heLxKqL1-eL1KUbdNBt',
-            'SSOLoginState': '1736398370',
-            'ALF': '1738990370',
-            '*T*WM': '65519253721',
-            'MLOGIN': '1',
-            'M_WEIBOCN_PARAMS': 'uicode%3D20000174'
-        }
+        WB_COOKIES = os.getenv('WB_COOKIES') # 从环境变量中获取微博 cookies
+
         # 图片上传参数
         UPLOAD_PARAMS = {
             'type': 'json',

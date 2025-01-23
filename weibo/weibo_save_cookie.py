@@ -37,8 +37,8 @@ class WeiboTokenManager:
             
             # 2. 设置必要的 cookies
             cookies = {
-                'SUB': self.config.MOBILE_API.COOKIES['SUB'],
-                'SUBP': self.config.MOBILE_API.COOKIES['SUBP'],
+                'SUB': self.config.MOBILE_API.WB_COOKIES['SUB'],
+                'SUBP': self.config.MOBILE_API.WB_COOKIES['SUBP'],
                 'MLOGIN': '1'
             }
             

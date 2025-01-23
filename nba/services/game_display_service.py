@@ -4,7 +4,7 @@ import logging
 from datetime import datetime
 from utils.time_handler import TimeParser, BasketballGameTime
 from nba.models.game_model import GameData, BaseEvent, TeamStats, Player, PlayerStatistics
-from nba.services.ai_service import AIService
+from nba.services.game_ai_service import AIService
 
 
 @dataclass

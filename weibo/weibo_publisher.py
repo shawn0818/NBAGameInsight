@@ -44,7 +44,7 @@ class WeiboPublisher:
     def _setup_session(self):
         """配置请求会话"""
         self.session.headers.update(self.config.MOBILE_API.BASE_HEADERS)
-        for cookie_name, cookie_value in self.config.MOBILE_API.COOKIES.items():
+        for cookie_name, cookie_value in self.config.MOBILE_API.WB_COOKIES.items():
             self.session.cookies.set(cookie_name, cookie_value, domain='m.weibo.cn', path='/')
 
     def _get_token(self) -> Optional[str]:
