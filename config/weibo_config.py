@@ -1,13 +1,18 @@
 # weibo_config.py
 import os
 from pathlib import Path
-import logging
 import requests
 from typing import List
 from dotenv import load_dotenv
 
 # 加载环境变量
 load_dotenv()
+
+def parse_cookies_string(cookies_str: str) -> dict:
+    """解析cookies字符串为字典"""
+    if not cookies_str:
+        return {}
+    return dict(item.split("=", 1) for item in cookies_str.strip('"').split("; "))
 
 
 def get_project_root() -> Path:
@@ -17,20 +22,6 @@ def get_project_root() -> Path:
 
 class WeiboConfig:
     """微博配置类"""
-
-    class PATHS:
-        """文件路径配置"""
-        _ROOT = get_project_root()
-        DATA_DIR = _ROOT / "data"
-        LOGS_DIR = DATA_DIR / "logs"
-        STORAGE_DIR = _ROOT / "storage"
-        IMAGES_DIR = STORAGE_DIR / "images"
-
-        @classmethod
-        def ensure_directories(cls) -> None:
-            """确保所有必要的目录存在"""
-            for directory in [cls.LOGS_DIR, cls.IMAGES_DIR]:
-                directory.mkdir(parents=True, exist_ok=True)
 
     class MOBILE_API:
         """移动端 API 配置"""
@@ -86,7 +77,7 @@ class WeiboConfig:
         }
 
         # Cookies 配置
-        WB_COOKIES = os.getenv('WB_COOKIES') # 从环境变量中获取微博 cookies
+        WB_COOKIES = parse_cookies_string(os.getenv('WB_COOKIES', '')) # 从环境变量中获取微博 cookies
 
         # 图片上传参数
         UPLOAD_PARAMS = {
@@ -110,30 +101,5 @@ class WeiboConfig:
         MAX_RETRIES = 3
         RETRY_DELAY = 5  # 发布失败后的重试间隔（秒）
         MIN_PUBLISH_INTERVAL = 10  # 两次成功发布之间的最小间隔（秒）
+  
 
-    class LOGGING:
-        """日志配置"""
-        LEVEL = logging.INFO
-        FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        ENCODING = 'utf-8'
-
-        @classmethod
-        def setup(cls) -> None:
-            """配置日志"""
-            logging.basicConfig(
-                level=cls.LEVEL,
-                format=cls.FORMAT,
-                handlers=[
-                    logging.StreamHandler(),
-                    logging.FileHandler(
-                        WeiboConfig.PATHS.LOGS_DIR / 'weibo.log',
-                        encoding=cls.ENCODING
-                    )
-                ]
-            )
-
-    @classmethod
-    def initialize(cls) -> None:
-        """初始化配置"""
-        cls.PATHS.ensure_directories()
-        cls.LOGGING.setup()
