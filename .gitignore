@@ -1,12 +1,18 @@
 # 忽略所有 .log 文件
 *.log
 *.json
+.env
 
 # 忽略目录 build/
 .vscode/
 pictures/
 video_gif/
+data/
+storage/
+test/
+__pycache__/
 
 # 忽略特定文件 foo.txt
-nba_schedule.json
+test.py
+
 
