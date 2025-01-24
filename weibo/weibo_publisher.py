@@ -1,225 +1,233 @@
-# weibo_publisher.py
+# weibo/weibo_publisher.py
 
 import logging
-import time
+import os
 from pathlib import Path
 from typing import List, Optional
-from dataclasses import dataclass
 import requests
 import random
-from config.weibo_config import WeiboConfig
-
-
-@dataclass
-class WeiboPost:
-    """微博帖子数据类"""
-    text: str
-    images: Optional[List[str]] = None
-
-    def __post_init__(self):
-        """验证图片路径和文本长度"""
-        if self.images:
-            if len(self.images) > WeiboConfig.PUBLISH.MAX_IMAGES:
-                raise ValueError(f"图片数量超过限制: {len(self.images)} > {WeiboConfig.PUBLISH.MAX_IMAGES}")
-            for path in self.images:
-                if not Path(path).exists():
-                    raise FileNotFoundError(f"图片不存在: {path}")
-                if Path(path).suffix.lower() not in WeiboConfig.PUBLISH.ALLOWED_IMAGE_TYPES:
-                    raise ValueError(f"不支持的图片类型: {path}")
-
-        if len(self.text) > WeiboConfig.PUBLISH.MAX_TEXT_LENGTH:
-            raise ValueError(f"文本长度超过限制: {len(self.text)} > {WeiboConfig.PUBLISH.MAX_TEXT_LENGTH}")
+from dotenv import load_dotenv
+from config.weibo_config import WeiboConfig, parse_cookies_string
+from weibo.weibo_model import WeiboPost
 
 
 class WeiboPublisher:
-    """微博发布器"""
+   """微博发布器"""
 
-    def __init__(self):
-        self.logger = logging.getLogger(self.__class__.__name__)
-        self.config = WeiboConfig
-        self.session = requests.Session()
-        self._setup_session()
-        self.xsrf_token = self._get_token()
+   def __init__(self):
+       self.logger = logging.getLogger(self.__class__.__name__)
 
-    def _setup_session(self):
-        """配置请求会话"""
-        self.session.headers.update(self.config.MOBILE_API.BASE_HEADERS)
-        for cookie_name, cookie_value in self.config.MOBILE_API.WB_COOKIES.items():
-            self.session.cookies.set(cookie_name, cookie_value, domain='m.weibo.cn', path='/')
+       # 加载环境变量
+       load_dotenv()
+       cookies_str = os.getenv('WB_COOKIES')
+       self.logger.info("原始cookies字符串: %s", cookies_str)  # 新增：输出原始cookie字符串
+       if not cookies_str:
+           raise ValueError("未找到 WB_COOKIES 环境变量")
 
-    def _get_token(self) -> Optional[str]:
-        """获取新的 XSRF-TOKEN"""
-        try:
-            response = self.session.get(
-                self.config.MOBILE_API.ENDPOINTS['CONFIG'],
-                headers=self.config.MOBILE_API.BASE_HEADERS,
-                timeout=self.config.MOBILE_API.TIMEOUT
-            )
-            response.raise_for_status()
+       # 解析 cookies
+       cookies = parse_cookies_string(cookies_str)
+       self.logger.info("解析后的cookies: %s", cookies)  # 新增：输出解析后的cookies
+       if not cookies:
+           raise ValueError("无法解析有效的 cookies")
 
-            # 从响应中获取 token
-            token = response.cookies.get('XSRF-TOKEN')
-            if not token:
-                self.logger.error("未能获取到 XSRF-TOKEN")
-                return None
+       # 设置并验证是否正确配置cookies
+       WeiboConfig.MOBILE_API.WB_COOKIES = cookies
+       WeiboConfig.validate_cookies()  # 新增：验证配置
+       self.config = WeiboConfig
+       self.logger.info("最终配置中的cookies: %s", self.config.MOBILE_API.WB_COOKIES)  # 新增：输出配置中的cookies
 
-            self.logger.info(f"获取到 XSRF-TOKEN: {token}")
-            return token
+       self.session = requests.Session()
+       self._xsrf_token = None
+       self._setup_session()
 
-        except Exception as e:
-            self.logger.error(f"获取 XSRF-TOKEN 时出错: {e}")
-            return None
+   def _setup_session(self):
+       """配置请求会话"""
+       self.session.headers.update(self.config.MOBILE_API.BASE_HEADERS)
+       self.logger.info("基础请求头: %s", self.session.headers)  # 新增：输出基础请求头
+       for cookie_name, cookie_value in self.config.MOBILE_API.WB_COOKIES.items():
+           self.session.cookies.set(cookie_name, cookie_value, domain='m.weibo.cn', path='/')
+           # 新增：输出设置后的所有cookies
+       self.logger.info("会话中的所有cookies:")
+       self._xsrf_token = self._get_token()
+       if not self._xsrf_token:
+           raise Exception("无法获取 XSRF-TOKEN")
 
-    def _prepare_headers(self, api_type: str, pic_ids: List[str] = None) -> dict:
-        """准备请求头"""
-        if api_type == 'upload':
-            headers = self.config.MOBILE_API.UPLOAD_HEADERS_TEMPLATE.copy()
-            boundary = "----WebKitFormBoundaryavNDqfpHAAO9KW4Y"
-            headers['content-type'] = headers['content-type'].format(boundary=boundary)
-        else:  # update
-            headers = self.config.MOBILE_API.UPDATE_HEADERS.copy()
-            if pic_ids:
-                headers['referer'] = f'https://m.weibo.cn/compose/?pids={",".join(pic_ids)}'
+   def _get_token(self) -> Optional[str]:
+       """获取新的 XSRF-TOKEN"""
+       try:
+           # 新增：记录请求详情
+           self.logger.info("正在请求 XSRF-TOKEN...")
+           self.logger.info("请求URL: %s", self.config.MOBILE_API.ENDPOINTS['CONFIG'])
+           self.logger.info("请求头: %s", self.session.headers)
 
-        if self.xsrf_token:
-            headers['x-xsrf-token'] = self.xsrf_token
-        return headers
+           response = self.session.get(
+               self.config.MOBILE_API.ENDPOINTS['CONFIG'],
+               headers=self.config.MOBILE_API.BASE_HEADERS,
+               timeout=self.config.MOBILE_API.TIMEOUT
+           )
+           response.raise_for_status()
 
-    def _upload_image_mobile(self, image_path: str) -> Optional[str]:
-        """通过移动端API上传图片"""
-        try:
-            # 生成随机的 boundary
-            boundary = f"----WebKitFormBoundary{''.join([random.choice('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789') for _ in range(24)])}"
-            headers = self._prepare_headers('upload')
-            headers['content-type'] = f'multipart/form-data; boundary={boundary}'
+           token = response.cookies.get('XSRF-TOKEN')
+           if not token:
+               self.logger.error("未能获取到 XSRF-TOKEN")
+               return None
 
-            url = self.config.MOBILE_API.ENDPOINTS['UPLOAD']
+           self.logger.info(f"获取到 XSRF-TOKEN: {token}")
+           return token
 
-            # 构造 multipart form-data
-            data = []
+       except Exception as e:
+           self.logger.error(f"获取 XSRF-TOKEN 时出错: {e}")
+           return None
 
-            # 添加 type 字段
-            data.append(f'--{boundary}')
-            data.append('Content-Disposition: form-data; name="type"')
-            data.append('')
-            data.append('json')
+   def _prepare_headers(self, api_type: str, pic_ids: List[str] = None, xsrf_token: str = None) -> dict:
+       """准备请求头"""
+       if api_type == 'upload':
+           headers = self.config.MOBILE_API.UPLOAD_HEADERS_TEMPLATE.copy()
+           boundary = "----WebKitFormBoundaryavNDqfpHAAO9KW4Y"
+           headers['content-type'] = headers['content-type'].format(boundary=boundary)
+       else:  # update
+           headers = self.config.MOBILE_API.UPDATE_HEADERS.copy()
+           if pic_ids:
+               headers['referer'] = f'https://m.weibo.cn/compose/?pids={",".join(pic_ids)}'
 
-            # 添加 pic 字段
-            data.append(f'--{boundary}')
-            filename = Path(image_path).name
-            data.append(f'Content-Disposition: form-data; name="pic"; filename="{filename}"')
-            data.append('Content-Type: image/jpeg')  # 或根据实际文件类型设置
-            data.append('')
-            with open(image_path, 'rb') as f:
-                file_content = f.read()
-            data.append(file_content)
+       if xsrf_token:
+           headers['x-xsrf-token'] = xsrf_token
+       return headers
 
-            # 添加 st 字段 (XSRF token)
-            data.append(f'--{boundary}')
-            data.append('Content-Disposition: form-data; name="st"')
-            data.append('')
-            data.append(self.xsrf_token)
+   def _upload_image_mobile(self, image_path: str, xsrf_token: str) -> Optional[str]:
+       """通过移动端API上传图片"""
+       try:
+           boundary = f"----WebKitFormBoundary{''.join([random.choice('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789') for _ in range(24)])}"
+           headers = self._prepare_headers('upload', xsrf_token=xsrf_token)
+           headers['content-type'] = f'multipart/form-data; boundary={boundary}'
 
-            # 添加 _spr 字段
-            data.append(f'--{boundary}')
-            data.append('Content-Disposition: form-data; name="_spr"')
-            data.append('')
-            data.append('screen:1280x720')
+           url = self.config.MOBILE_API.ENDPOINTS['UPLOAD']
+           self.logger.info(f"上传图片使用的 XSRF-TOKEN: {xsrf_token}")
 
-            # 结束标记
-            data.append(f'--{boundary}--')
+           data = []
+           data.append(f'--{boundary}')
+           data.append('Content-Disposition: form-data; name="type"')
+           data.append('')
+           data.append('json')
 
-            # 将所有内容合并成一个请求体
-            body = b'\r\n'.join([
-                part.encode() if isinstance(part, str) else part
-                for part in data
-            ])
+           data.append(f'--{boundary}')
+           filename = Path(image_path).name
+           data.append(f'Content-Disposition: form-data; name="pic"; filename="{filename}"')
+           data.append('Content-Type: image/jpeg')
+           data.append('')
+           with open(image_path, 'rb') as f:
+               file_content = f.read()
+           data.append(file_content)
 
-            response = self.session.post(
-                url,
-                headers=headers,
-                data=body,
-                timeout=self.config.MOBILE_API.TIMEOUT
-            )
-            response.raise_for_status()
-            result = response.json()
+           data.append(f'--{boundary}')
+           data.append('Content-Disposition: form-data; name="st"')
+           data.append('')
+           data.append(xsrf_token)
 
-            if pic_id := result.get('pic_id'):
-                self.logger.info(f"图片上传成功: {image_path}，pic_id: {pic_id}")
-                return pic_id
+           data.append(f'--{boundary}')
+           data.append('Content-Disposition: form-data; name="_spr"')
+           data.append('')
+           data.append('screen:1280x720')
 
-            self.logger.error(f"图片上传失败: {result}")
-            return None
+           data.append(f'--{boundary}--')
 
-        except Exception as e:
-            self.logger.error(f"图片上传出错: {e}")
-            return None
+           body = b'\r\n'.join([
+               part.encode() if isinstance(part, str) else part
+               for part in data
+           ])
 
-    def publish(self, post: WeiboPost) -> bool:
-        """发布微博，带重试机制"""
-        self.logger.info("开始发布微博工作流")
+           response = self.session.post(
+               url,
+               headers=headers,
+               data=body,
+               timeout=self.config.MOBILE_API.TIMEOUT
+           )
+           response.raise_for_status()
+           result = response.json()
 
-        if not self.xsrf_token:
-            self.logger.error("无有效的 XSRF-TOKEN，无法发布")
-            return False
+           if pic_id := result.get('pic_id'):
+               self.logger.info(f"图片上传成功: {image_path}，pic_id: {pic_id}")
+               return pic_id
 
-        try:
-            # 1. 上传图片（如果有）
-            pic_ids = []
-            if post.images:
-                for image_path in post.images:
-                    if pic_id := self._upload_image_mobile(image_path):
-                        pic_ids.append(pic_id)
-                    else:
-                        self.logger.error(f"图片上传失败，取消发布: {image_path}")
-                        return False
+           self.logger.error(f"图片上传失败: {result}")
+           return None
 
-            # 2. 准备发布数据和请求头
-            url = self.config.MOBILE_API.ENDPOINTS['UPDATE']
-            headers = self._prepare_headers('update', pic_ids)
+       except Exception as e:
+           self.logger.error(f"图片上传出错: {e}")
+           return None
 
-            content = post.text if post.text else "分享图片"
-            data = {
-                'content': content,
-                'st': self.xsrf_token,
-                '_spr': 'screen:1280x720'
-            }
+   def publish(self, post: WeiboPost) -> bool:
+       """发布微博"""
+       try:
+           self.logger.info("开始发布微博工作流")
+           self._xsrf_token = self._get_token()  # 每次发布前获取新token
+           self.logger.info(f"即将发送请求的 XSRF-TOKEN: {self._xsrf_token}")
+           # 新增：记录发布前的认证状态
+           self.logger.info("当前会话中的cookies:")
 
-            if pic_ids:
-                data['picId'] = ','.join(pic_ids)
+           if not self._xsrf_token:
+               self.logger.error("无法获取 XSRF-TOKEN")
+               return False
 
-            self.logger.debug(f"发布微博数据: {data}")
+           pic_ids = []
+           if post.images:
+               self.logger.info(f"开始处理 {len(post.images)} 张图片")
+               for image_path in post.images:
+                   self.logger.info(f"处理图片: {image_path}")
+                   path = Path(image_path)
+                   self.logger.info(f"图片类型: {path.suffix}")
+                   if not path.exists():
+                       self.logger.error(f"图片不存在: {image_path}")
+                       return False
+                   if pic_id := self._upload_image_mobile(image_path, self._xsrf_token):
+                       self.logger.info(f"上传成功,pic_id:{pic_id}")
+                       pic_ids.append(pic_id)
+                   else:
+                       self.logger.error(f"图片上传失败: {image_path}")
+                       return False
 
-            # 3. 发送发布请求
-            for attempt in range(1, self.config.MOBILE_API.MAX_RETRIES + 1):
-                try:
-                    response = self.session.post(
-                        url,
-                        headers=headers,
-                        data=data,
-                        timeout=self.config.MOBILE_API.TIMEOUT
-                    )
-                    response.raise_for_status()
-                    result = response.json()
+           url = self.config.MOBILE_API.ENDPOINTS['UPDATE']
+           headers = self._prepare_headers('update', pic_ids, self._xsrf_token)
+           self.logger.info(f"请求头包含的 XSRF-TOKEN: {headers.get('x-xsrf-token')}")
 
-                    if result.get('ok') == 1:
-                        self.logger.info(f"发布成功，内容: '{content}', 图片数量: {len(pic_ids)}")
-                        return True
+           # 新增：详细记录请求信息
+           self.logger.info("发布请求详情:")
+           self.logger.info("URL: %s", url)
+           self.logger.info("Headers: %s", headers)
+           self.logger.info("Cookies: %s", dict(self.session.cookies))
 
-                    self.logger.error(f"发布失败: {result}")
-                    if attempt < self.config.MOBILE_API.MAX_RETRIES:
-                        self.logger.info(f"等待 {self.config.MOBILE_API.RETRY_DELAY} 秒后重试")
-                        time.sleep(self.config.MOBILE_API.RETRY_DELAY)
+           content = post.text if post.text else "分享图片"
+           data = {
+               'content': content,
+               'st': self._xsrf_token,
+               '_spr': 'screen:1280x720'
+           }
 
-                except requests.exceptions.RequestException as e:
-                    self.logger.error(f"发布请求出错: {e}")
-                    if attempt < self.config.MOBILE_API.MAX_RETRIES:
-                        self.logger.info(f"等待 {self.config.MOBILE_API.RETRY_DELAY} 秒后重试")
-                        time.sleep(self.config.MOBILE_API.RETRY_DELAY)
+           if pic_ids:
+               data['picId'] = ','.join(pic_ids)
+               self.logger.info(f"添加图片ID到请求: {data['picId']}")
 
-            self.logger.error("所有发布尝试均失败")
-            return False
+           self.logger.info(f"发送发布请求: {url}")
+           self.logger.debug(f"请求头: {headers}")
+           self.logger.debug(f"请求数据: {data}")
 
-        except Exception as e:
-            self.logger.error(f"发布过程出错: {e}")
-            return False
+           response = self.session.post(
+               url,
+               headers=headers,
+               data=data,
+               timeout=self.config.MOBILE_API.TIMEOUT
+           )
+           response.raise_for_status()
+           result = response.json()
+           self.logger.info(f"发布响应: {result}")
+
+           if result.get('ok') == 1:
+               self.logger.info(f"发布成功,内容:'{content}',图片数量:{len(pic_ids)}")
+               return True
+
+           self.logger.error(f"发布失败: {result}")
+           return False
+
+       except Exception as e:
+           self.logger.error(f"发布过程出错: {e}", exc_info=True)
+           return False
