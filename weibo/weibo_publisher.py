@@ -129,13 +129,13 @@ class WeiboPublisher:
         # 加载环境变量
         load_dotenv()
         cookies_str = os.getenv('WB_COOKIES')
-        self.logger.info("原始cookies字符串: %s", cookies_str)
+        #self.logger.info("原始cookies字符串: %s", cookies_str)
         if not cookies_str:
             raise ValueError("未找到 WB_COOKIES 环境变量")
 
         # 解析 cookies
         cookies = WeiboRequestConfig.parse_cookies_string(cookies_str)
-        self.logger.info("解析后的cookies: %s", cookies)
+        #self.logger.info("解析后的cookies: %s", cookies)
         if not cookies:
             raise ValueError("无法解析有效的 cookies")
 
@@ -143,7 +143,7 @@ class WeiboPublisher:
         WeiboRequestConfig.MOBILE_API.WB_COOKIES = cookies
         WeiboRequestConfig.validate_cookies()
         self.config = WeiboRequestConfig
-        self.logger.info("最终配置中的cookies: %s", self.config.MOBILE_API.WB_COOKIES)
+        #self.logger.info("最终配置中的cookies: %s", self.config.MOBILE_API.WB_COOKIES)
 
         self.session = requests.Session()
         self._xsrf_token = None
@@ -164,9 +164,6 @@ class WeiboPublisher:
         """获取新的 XSRF-TOKEN"""
         try:
             self.logger.info("正在请求 XSRF-TOKEN...")
-            self.logger.info("请求URL: %s", self.config.MOBILE_API.ENDPOINTS['CONFIG'])
-            self.logger.info("请求头: %s", self.session.headers)
-
             response = self.session.get(
                 self.config.MOBILE_API.ENDPOINTS['CONFIG'],
                 headers=self.config.MOBILE_API.BASE_HEADERS,
@@ -269,7 +266,7 @@ class WeiboPublisher:
             self.logger.info("开始发布微博工作流")
             self._xsrf_token = self._get_token()  # 每次发布前获取新token
             self.logger.info(f"即将发送请求的 XSRF-TOKEN: {self._xsrf_token}")
-            self.logger.info("当前会话中的cookies:")
+
 
             if not self._xsrf_token:
                 self.logger.error("无法获取 XSRF-TOKEN")
@@ -296,11 +293,6 @@ class WeiboPublisher:
             headers = self._prepare_headers('update', pic_ids, self._xsrf_token)
             self.logger.info(f"请求头包含的 XSRF-TOKEN: {headers.get('x-xsrf-token')}")
 
-            self.logger.info("发布请求详情:")
-            self.logger.info("URL: %s", url)
-            self.logger.info("Headers: %s", headers)
-            self.logger.info("Cookies: %s", dict(self.session.cookies))
-
             content = post.text if post.text else "分享图片"
             data = {
                 'content': content,
@@ -311,10 +303,6 @@ class WeiboPublisher:
             if pic_ids:
                 data['picId'] = ','.join(pic_ids)
                 self.logger.info(f"添加图片ID到请求: {data['picId']}")
-
-            self.logger.info(f"发送发布请求: {url}")
-            self.logger.debug(f"请求头: {headers}")
-            self.logger.debug(f"请求数据: {data}")
 
             response = self.session.post(
                 url,
