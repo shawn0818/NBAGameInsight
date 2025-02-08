@@ -1,97 +1,80 @@
-from typing import Optional
+from typing import Optional, List
 from pydantic import BaseModel, Field, ConfigDict
 
 
-class PlayerRegistry:
-    """管理球员ID和姓名的映射关系"""
-    _instance = None
-
-    def __init__(self):
-        self._id_to_name = {}  # id -> full_name
-        self._name_to_id = {}  # normalized name -> id
-
-    @classmethod
-    def get_instance(cls) -> 'PlayerRegistry':
-        """获取单例实例"""
-        if cls._instance is None:
-            cls._instance = PlayerRegistry()
-        return cls._instance
-
-    def register(self, player_id: int, first_name: str, last_name: str) -> None:
-        """注册球员信息"""
-        full_name = f"{first_name} {last_name}"
-        self._id_to_name[player_id] = full_name
-        self._name_to_id[full_name.lower()] = player_id
-
-        # 处理姓氏映射
-        last_name_lower = last_name.lower()
-        if last_name_lower in self._name_to_id and self._name_to_id[last_name_lower] != player_id:
-            del self._name_to_id[last_name_lower]
-        else:
-            self._name_to_id[last_name_lower] = player_id
-
-    def get_id(self, name: str) -> Optional[int]:
-        """通过姓名获取球员ID"""
-        if not isinstance(name, str):
-            return None
-        return self._name_to_id.get(name.lower())
-
-    def get_name(self, player_id: int) -> Optional[str]:
-        """通过ID获取球员姓名"""
-        return self._id_to_name.get(player_id)
-
-    def clear(self) -> None:
-        """清空注册信息"""
-        self._id_to_name.clear()
-        self._name_to_id.clear()
+class CommonPlayerInfo(BaseModel):
+    """CommonPlayerInfo result set model"""
+    person_id: int = Field(alias="PERSON_ID")
+    first_name: str = Field(alias="FIRST_NAME")
+    last_name: str = Field(alias="LAST_NAME")
+    display_first_last: str = Field(alias="DISPLAY_FIRST_LAST")
+    display_last_comma_first: str = Field(alias="DISPLAY_LAST_COMMA_FIRST")
+    display_fi_last: str = Field(alias="DISPLAY_FI_LAST")
+    player_slug: str = Field(alias="PLAYER_SLUG")
+    birthdate: str = Field(alias="BIRTHDATE")
+    school: Optional[str] = Field(alias="SCHOOL")
+    country: str = Field(alias="COUNTRY")
+    last_affiliation: str = Field(alias="LAST_AFFILIATION")
+    height: str = Field(alias="HEIGHT")
+    weight: str = Field(alias="WEIGHT")
+    season_exp: int = Field(alias="SEASON_EXP")
+    jersey: str = Field(alias="JERSEY")
+    position: str = Field(alias="POSITION")
+    rosterstatus: str = Field(alias="ROSTERSTATUS")
+    games_played_current_season_flag: str = Field(alias="GAMES_PLAYED_CURRENT_SEASON_FLAG")
+    team_id: int = Field(alias="TEAM_ID")
+    team_name: str = Field(alias="TEAM_NAME")
+    team_abbreviation: str = Field(alias="TEAM_ABBREVIATION")
+    team_code: str = Field(alias="TEAM_CODE")
+    team_city: str = Field(alias="TEAM_CITY")
+    playercode: str = Field(alias="PLAYERCODE")
+    from_year: int = Field(alias="FROM_YEAR")
+    to_year: int = Field(alias="TO_YEAR")
+    dleague_flag: str = Field(alias="DLEAGUE_FLAG")
+    nba_flag: str = Field(alias="NBA_FLAG")
+    games_played_flag: str = Field(alias="GAMES_PLAYED_FLAG")
+    draft_year: str = Field(alias="DRAFT_YEAR")
+    draft_round: str = Field(alias="DRAFT_ROUND")
+    draft_number: str = Field(alias="DRAFT_NUMBER")
+    greatest_75_flag: str = Field(alias="GREATEST_75_FLAG")
 
 
-class PlayerProfile(BaseModel):
-    """球员基本信息"""
-    person_id: int
-    first_name: str
-    last_name: str
-    player_slug: str
-    team_id: Optional[int] = None
-    team_slug: Optional[str] = None
-    team_city: Optional[str] = None
-    team_name: Optional[str] = None
-    team_abbreviation: Optional[str] = None
-    jersey_number: Optional[str] = None
-    position: Optional[str] = None
-    height: Optional[str] = None
-    weight: Optional[str] = None
-    college: Optional[str] = None
-    country: Optional[str] = None
-    roster_status: float = Field(default=1.0)
+class PlayerHeadlineStats(BaseModel):
+    """PlayerHeadlineStats result set model"""
+    player_id: int = Field(alias="PLAYER_ID")
+    player_name: str = Field(alias="PLAYER_NAME")
+    time_frame: str = Field(alias="TimeFrame") # 注意 TimeFrame 字段的大小写
+    pts: float = Field(alias="PTS")
+    ast: float = Field(alias="AST")
+    reb: float = Field(alias="REB")
+    pie: float = Field(alias="PIE")
+
+
+class AvailableSeason(BaseModel):
+    """AvailableSeasons result set model"""
+    season_id: str = Field(alias="SEASON_ID")
+
+
+class PlayerInfo(BaseModel):
+    """球员详细信息，包含多个 result set"""
+    common_player_info: List[CommonPlayerInfo] = Field(alias="CommonPlayerInfo")
+    player_headline_stats: List[PlayerHeadlineStats] = Field(alias="PlayerHeadlineStats")
+    available_seasons: List[AvailableSeason] = Field(alias="AvailableSeasons")
 
     model_config = ConfigDict(populate_by_name=True)
-
-    def __init__(self, **data):
-        super().__init__(**data)
-        if self.person_id and self.first_name and self.last_name:
-            PlayerRegistry.get_instance().register(
-                self.person_id,
-                self.first_name,
-                self.last_name
-            )
 
     @property
     def full_name(self) -> str:
         """获取球员标准全名"""
-        return f"{self.first_name} {self.last_name}"
+        if self.common_player_info and self.common_player_info[0].first_name and self.common_player_info[0].last_name:
+            player_info = self.common_player_info[0]
+            return f"{player_info.first_name} {player_info.last_name}"
+        return "Unknown Player"
 
     @property
     def headshot_url(self) -> str:
         """获取球员头像URL"""
-        return f"https://cdn.nba.com/headshots/nba/latest/1040x760/{self.person_id}.png"
-
-    @classmethod
-    def find_by_name(cls, name: str) -> Optional[int]:
-        """通过姓名查找球员ID"""
-        return PlayerRegistry.get_instance().get_id(name)
-
-    @classmethod
-    def find_by_id(cls, player_id: int) -> Optional[str]:
-        """通过ID查找球员姓名"""
-        return PlayerRegistry.get_instance().get_name(player_id)
+        if self.common_player_info and self.common_player_info[0].person_id:
+            player_info = self.common_player_info[0]
+            return f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_info.person_id}.png"
+        return "" # 或者返回默认头像URL
