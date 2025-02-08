@@ -1,203 +1,286 @@
-from typing import Dict, Optional, Callable, Any
 import json
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Dict, Optional, Any, Union
 from urllib.parse import urlencode
-from dataclasses import dataclass, field
-from typing import  Dict
-from utils.http_handler import HTTPRequestManager
+
+from utils.http_handler import HTTPRequestManager, RetryConfig
 
 
-@dataclass
-class BaseRequestConfig:
+class BaseCacheConfig:
+    """基础缓存配置"""
 
-    #基础URL配置
-    BASE_URL: str = ""  # 默认为空,子类可覆盖
+    def __init__(
+            self,
+            duration: timedelta,
+            root_path: Union[str, Path],
+            file_pattern: str = "{prefix}_{identifier}.json",
+            dynamic_duration: Optional[Dict[Any, timedelta]] = None
+    ):
+        self.duration = duration
+        self.root_path = Path(root_path)
+        self.file_pattern = file_pattern
+        self.dynamic_duration = dynamic_duration or {}
 
-    # 缓存时间
-    CACHE_DURATION: timedelta = timedelta(days=7)  # 默认缓存7天
+        try:
+            self.root_path.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            raise RuntimeError(f"Failed to create cache directory: {e}")
 
-    # 故障转移URL规则
-    FALLBACK_URLS: Dict[str, str] = field(
-        default_factory=lambda: {
-            "https://cdn.nba.com/static/json": "https://nba-prod-us-east-1-mediaops-stats.s3.amazonaws.com/NBA",
+    def get_cache_path(self, prefix: str, identifier: str) -> Path:
+        """获取缓存文件路径"""
+        if not prefix or not identifier:
+            raise ValueError("prefix and identifier cannot be empty")
+        filename = self.file_pattern.format(prefix=prefix, identifier=identifier)
+        return self.root_path / filename
+
+    def get_duration(self, key: Any = None) -> timedelta:
+        """获取缓存时长,支持动态缓存时间"""
+        if key is not None and key in self.dynamic_duration:
+            return self.dynamic_duration[key]
+        return self.duration
+
+
+class CacheManager:
+    """缓存管理器"""
+
+    def __init__(self, config: BaseCacheConfig):
+        if not isinstance(config, BaseCacheConfig):
+            raise TypeError("config must be an instance of BaseCacheConfig")
+        self.config = config
+        self.logger = logging.getLogger(self.__class__.__name__)
+
+    def get(self, prefix: str, identifier: str, cache_key: Any = None) -> Optional[Dict]:
+        """获取缓存数据
+
+        Args:
+            prefix: 缓存前缀
+            identifier: 缓存标识符
+            cache_key: 用于动态确定缓存时长的key
+        """
+        if not prefix or not identifier:
+            raise ValueError("prefix and identifier cannot be empty")
+
+        cache_path = self.config.get_cache_path(prefix, identifier)
+        if not cache_path.exists():
+            return None
+
+        try:
+            with cache_path.open('r', encoding='utf-8') as f:
+                cache_data = json.load(f)
+
+            timestamp = datetime.fromtimestamp(cache_data.get('timestamp', 0))
+            duration = self.config.get_duration(cache_key)
+
+            if datetime.now() - timestamp < duration:
+                return cache_data.get('data')
+
+        except json.JSONDecodeError as e:
+            self.logger.error(f"缓存文件JSON解析失败: {e}")
+        except Exception as e:
+            self.logger.error(f"读取缓存失败: {e}")
+
+        return None
+
+    def set(self, prefix: str, identifier: str, data: Dict, metadata: Optional[Dict] = None) -> None:
+        """设置缓存数据
+
+        Args:
+            prefix: 缓存前缀
+            identifier: 缓存标识符
+            data: 要缓存的数据
+            metadata: 额外的元数据
+        """
+        if not prefix or not identifier:
+            raise ValueError("prefix and identifier cannot be empty")
+        if not isinstance(data, dict):
+            raise TypeError("data must be a dictionary")
+
+        cache_path = self.config.get_cache_path(prefix, identifier)
+        cache_data = {
+            'timestamp': datetime.now().timestamp(),
+            'last_updated': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'data': data
         }
-    )
+
+        if metadata:
+            cache_data['metadata'] = metadata
+
+        temp_path = cache_path.with_suffix('.tmp')
+        try:
+            with open(temp_path, 'w', encoding='utf-8') as f:
+                json.dump(cache_data, f, indent=2, ensure_ascii=False) # type: ignore
+            temp_path.replace(cache_path)
+        except Exception as e:
+            self.logger.error(f"写入缓存失败: {e}")
+            raise
+        finally:
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except Exception as e:
+                    self.logger.error(f"删除临时文件失败: {e}")
+
+    def clear(self, prefix: str, identifier: Optional[str] = None,
+              age: Optional[timedelta] = None) -> None:
+        """清理缓存
+
+        Args:
+            prefix: 缓存前缀
+            identifier: 缓存标识符，如果指定则只清理该标识符的缓存
+            age: 清理早于指定时间的缓存
+        """
+        if not prefix:
+            raise ValueError("prefix cannot be empty")
+
+        now = datetime.now()
+        if identifier:
+            cache_file = self.config.get_cache_path(prefix, identifier)
+            if cache_file.exists():
+                try:
+                    cache_file.unlink()
+                except Exception as e:
+                    self.logger.error(f"删除缓存文件失败 {cache_file}: {e}")
+            return
+
+        for cache_file in self.config.root_path.glob(f"{prefix}_*.json"):
+            try:
+                if not cache_file.exists():
+                    continue
+
+                with cache_file.open('r', encoding='utf-8') as f:
+                    cache_data = json.load(f)
+                timestamp = datetime.fromtimestamp(cache_data.get('timestamp', 0))
+
+                if age is None or (now - timestamp) > age:
+                    cache_file.unlink()
+
+            except Exception as e:
+                self.logger.error(f"清理缓存文件失败 {cache_file}: {e}")
+
+
+class BaseRequestConfig:
+    """基础请求配置"""
+
+    def __init__(self, base_url: str, cache_config: BaseCacheConfig,
+                 retry_config: Optional[RetryConfig] = None,
+                 request_timeout: int = 30):
+        if not base_url:
+            raise ValueError("base_url cannot be empty")
+        if not isinstance(cache_config, BaseCacheConfig):
+            raise TypeError("cache_config must be an instance of BaseCacheConfig")
+
+        self.base_url = base_url
+        self.cache_config = cache_config
+        self.retry_config = retry_config or RetryConfig()
+        self.request_timeout = request_timeout
 
 
 class BaseNBAFetcher:
     """NBA数据获取基类"""
-    request_config = BaseRequestConfig()
 
-    def __init__(self):
-        """初始化HTTP请求管理器和日志"""
-        self.http_manager = HTTPRequestManager(
-            headers={
-                'accept': '*/*',
-                'accept-language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
-                'cache-control': 'no-cache',
-                'dnt': '1',
-                'origin': 'https://www.nba.com',
-                'pragma': 'no-cache',
-                'referer': 'https://www.nba.com/',
-                'sec-ch-ua': '"Not A(Brand";v="8", "Chromium";v="132", "Google Chrome";v="132"',
-                'sec-ch-ua-mobile': '?0',
-                'sec-ch-ua-platform': '"Windows"',
-                'sec-fetch-dest': 'empty',
-                'sec-fetch-mode': 'cors',
-                'sec-fetch-site': 'same-site',
-                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36'
-            },
-            fallback_urls=self.request_config.FALLBACK_URLS
-        )
+    @staticmethod
+    def _get_default_headers() -> Dict[str, str]:
+        """获取默认请求头"""
+        return {
+            'accept': '*/*',
+            'accept-language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+            'cache-control': 'no-cache',
+            'dnt': '1',
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36'
+        }
+
+    def __init__(self, config: BaseRequestConfig):
+        """初始化"""
+        if not isinstance(config, BaseRequestConfig):
+            raise TypeError("config must be an instance of BaseRequestConfig")
+
+        self.config = config
+        self.cache_manager = CacheManager(config.cache_config)
         self.logger = logging.getLogger(self.__class__.__name__)
 
-    def build_url(self, endpoint: str, params: Dict[str, Any]) -> str:
-        """构建URL"""
-        filtered_params = {k: v for k, v in params.items() if v is not None}
-        query_string = urlencode(filtered_params)
-        return f"{self.request_config.BASE_URL}/{endpoint}?{query_string}"
+        self.http_manager = HTTPRequestManager(
+            headers=self._get_default_headers(),
+            timeout=config.request_timeout
+        )
+        if config.retry_config:
+            self.http_manager.retry_strategy.config = config.retry_config
 
-    def fetch_data(self,
-                   url: Optional[str] = None,
-                   endpoint: Optional[str] = None,
-                   params: Optional[Dict] = None,
-                   method: str = 'GET',
-                   cache_config: Optional[Dict] = None) -> Optional[Dict]:
-        """
-        获取数据，支持缓存机制
+    def fetch_data(self, url: Optional[str] = None, endpoint: Optional[str] = None,
+                   params: Optional[Dict] = None, method: str = 'GET',
+                   data: Optional[Dict] = None, cache_key: Optional[str] = None,
+                   cache_status_key: Any = None,
+                   force_update: bool = False,
+                   metadata: Optional[Dict] = None) -> Optional[Dict]:
+        """获取数据
 
         Args:
             url: 完整的请求URL
             endpoint: API端点
-            params: 请求参数
+            params: URL参数
             method: 请求方法
-            cache_config: 缓存配置，包含以下字段:
-                - key: 缓存键名
-                - file: 缓存文件路径
-                - interval: 缓存有效期(秒)
-                - force_update: 是否强制更新
+            data: POST数据
+            cache_key: 缓存键
+            cache_status_key: 用于确定缓存时长的状态键
+            force_update: 是否强制更新
+            metadata: 额外的缓存元数据
         """
         if url is None and endpoint is None:
             raise ValueError("Must provide either url or endpoint")
 
         if endpoint is not None:
-            params = params or {}
             url = self.build_url(endpoint, params)
             params = None
 
-        # 如果有缓存配置，使用缓存机制
-        if cache_config and isinstance(cache_config, dict):
-            required_fields = {'key', 'file', 'interval'}
-            if not all(field in cache_config for field in required_fields):
-                self.logger.warning(f"Invalid cache config, missing required fields: {required_fields}")
-                return self.http_manager.make_request(url, method=method, params=params)
+        # 如果有缓存key且不强制更新，尝试获取缓存数据
+        if cache_key and not force_update:
+            cached_data = self.cache_manager.get(
+                prefix=self.__class__.__name__.lower(),
+                identifier=cache_key,
+                cache_key=cache_status_key
+            )
+            if cached_data is not None:
+                return cached_data
 
-            return self._fetch_with_cache(
-                fetch_func=lambda: self.http_manager.make_request(url, method=method, params=params),
-                key=cache_config['key'],
-                file=cache_config['file'],
-                interval=cache_config['interval'],
-                force_update=cache_config.get('force_update', False)
+        # 获取新数据
+        try:
+            data = self.http_manager.make_request(
+                url=url,
+                method=method,
+                params=params,
+                data=data
             )
 
-        # 无缓存配置，直接请求
-        return self.http_manager.make_request(url, method=method, params=params)
-
-    def _fetch_with_cache(self,
-                          fetch_func: Callable[[], Optional[Dict]],
-                          key: str,
-                          file: Path,
-                          interval: int,
-                          force_update: bool = False,
-                          data: Optional[Dict] = None) -> Optional[Dict]:
-        """使用缓存机制获取数据"""
-        try:
-            # 如果interval为0，表示不使用缓存
-            if interval == 0:
-                return data if data is not None else fetch_func()
-
-            if force_update:
-                return self._update_cache(fetch_func, key, file, data)
-
-            if not file.exists():
-                return self._update_cache(fetch_func, key, file, data)
-
-            try:
-                with file.open('r', encoding='utf-8') as f:
-                    cache_data = json.load(f)
-            except (json.JSONDecodeError, FileNotFoundError):
-                self.logger.warning(f"Invalid cache file {file}, creating new one")
-                return self._update_cache(fetch_func, key, file, data)
-
-            if key in cache_data:
-                entry = cache_data[key]
-                cache_time = datetime.fromtimestamp(entry['timestamp'])
-                if datetime.now() - cache_time < timedelta(seconds=interval):
-                    self.logger.debug(f"Using cached data for {key}")
-                    return entry['data']
-
-            return self._update_cache(fetch_func, key, file, data)
-
-        except Exception as e:
-            self.logger.error(f"Cache error for {key}: {e}")
-            return data if data is not None else fetch_func()
-
-    def _update_cache(self,
-                      fetch_func: Callable[[], Optional[Dict]],
-                      key: str,
-                      file: Path,
-                      data: Optional[Dict] = None) -> Optional[Dict]:
-        """更新缓存数据"""
-        try:
-            new_data = data if data is not None else fetch_func()
-            if not new_data:
-                return None
-
-            file.parent.mkdir(parents=True, exist_ok=True)
-
-            cache_data = {}
-            if file.exists():
+            # 如果获取成功且需要缓存，则更新缓存
+            if data is not None and cache_key:
                 try:
-                    with file.open('r', encoding='utf-8') as f:
-                        cache_data = json.load(f)
-                except json.JSONDecodeError:
-                    self.logger.warning(f"Invalid cache file {file}, creating new one")
+                    self.cache_manager.set(
+                        prefix=self.__class__.__name__.lower(),
+                        identifier=cache_key,
+                        data=data,
+                        metadata=metadata
+                    )
+                except Exception as e:
+                    self.logger.error(f"更新缓存失败: {e}")
 
-            # 清理过期的缓存条目（超过400天的数据）
-            now = datetime.now()
-            cache_data = {
-                k: v for k, v in cache_data.items()
-                if now - datetime.fromtimestamp(v['timestamp']) < timedelta(days=400)
-            }
-
-            cache_data[key] = {
-                'timestamp': now.timestamp(),
-                'last_updated': now.strftime('%Y-%m-%d %H:%M:%S'),
-                'data': new_data
-            }
-
-            # 使用临时文件进行原子写入
-            temp_file = file.with_suffix('.tmp')
-            try:
-                with temp_file.open('w', encoding='utf-8') as f:
-                    json.dump(cache_data, f, indent=2, ensure_ascii=False)
-                if file.exists():
-                    file.unlink()
-                temp_file.replace(file)
-            finally:
-                if temp_file.exists():
-                    temp_file.unlink()
-
-            return new_data
+            return data
 
         except Exception as e:
-            self.logger.error(f"Error updating cache for {key}: {e}")
-            return data if data is not None else None
+            self.logger.error(f"请求失败: {str(e)}")
+            return None
 
-    def __enter__(self):
-        return self
+    def build_url(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> str:
+        """构建请求URL"""
+        if not endpoint:
+            raise ValueError("endpoint cannot be empty")
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.http_manager.close()
+        # 处理 base_url，确保结尾没有 '/'
+        base = self.config.base_url.rstrip('/')
+        # 处理 endpoint，确保开头没有 '/'
+        clean_endpoint = endpoint.lstrip('/')
+
+        if params:
+            query_string = urlencode({k: v for k, v in params.items() if v is not None})
+            return f"{base}/{clean_endpoint}?{query_string}"
+        return f"{base}/{clean_endpoint}"

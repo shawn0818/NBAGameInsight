@@ -1,194 +1,202 @@
-import json
-from enum import IntEnum
-from typing import Dict, Optional
-from datetime import timedelta, datetime
-from dataclasses import dataclass
-from config.nba_config import NBAConfig
-from .base_fetcher import BaseNBAFetcher
+from typing import Dict, Optional, Any, Tuple, TypedDict
+from datetime import timedelta
+from pathlib import Path
+from enum import Enum
+from .base_fetcher import BaseNBAFetcher, BaseRequestConfig, BaseCacheConfig
 
 
-class GameStatusEnum(IntEnum):
-    """比赛状态"""
+class GameStatusEnum(Enum):
+    """比赛状态枚举"""
     NOT_STARTED = 1
     IN_PROGRESS = 2
     FINISHED = 3
 
+    @classmethod
+    def from_api_status(cls, status: Optional[int]) -> 'GameStatusEnum':
+        """从API状态码转换为枚举值"""
+        try:
+            return cls(status)
+        except (ValueError, TypeError):
+            return cls.NOT_STARTED
 
-@dataclass
+
 class GameConfig:
     """比赛数据配置"""
     BASE_URL: str = "https://cdn.nba.com/static/json/liveData"
-    CACHE_PATH: str = NBAConfig.PATHS.GAME_CACHE_DIR
-
-    # 不同状态的缓存时间
-    CACHE_DURATION = {
-        GameStatusEnum.NOT_STARTED: timedelta(minutes=1),  # 未开始缓存1分钟
-        GameStatusEnum.IN_PROGRESS: timedelta(seconds=0),  # 进行中不缓存
-        GameStatusEnum.FINISHED: timedelta(days=365)  # 已结束缓存一年
+    CACHE_PATH: Path = Path("./cache/game")
+    # 根据比赛状态配置不同的缓存时间
+    CACHE_DURATION: Dict[GameStatusEnum, timedelta] = {
+        GameStatusEnum.NOT_STARTED: timedelta(minutes=1),
+        GameStatusEnum.IN_PROGRESS: timedelta(seconds=0),
+        GameStatusEnum.FINISHED: timedelta(days=365)
     }
 
-    # 缓存文件名
-    CACHE_FILES = {
-        'boxscore': 'boxscores_{game_id}.json',
-        'playbyplay': 'playbyplay_{game_id}.json'
-    }
+
+class GameResponse(TypedDict):
+    """比赛数据响应类型"""
+    game: Dict[str, Any]
+    stats: Dict[str, Any]
+    meta: Dict[str, Any]
 
 
 class GameFetcher(BaseNBAFetcher):
-    game_config = GameConfig()
+    """NBA比赛数据获取器"""
 
-    def __init__(self):
-        super().__init__()  # 这里也会初始化 self.logger
-        self._game_status = None  # 添加状态缓存
-
-    def get_boxscore(self, game_id: str, force_update: bool = False) -> Optional[Dict]:
-        """获取比赛统计数据"""
-        try:
-            # 1. 构建缓存路径
-            cache_file = self.game_config.CACHE_PATH / self.game_config.CACHE_FILES['boxscore'].format(game_id=game_id)
-
-            # 2. 如果不是强制更新,先检查缓存
-            if not force_update and cache_file.exists():
-                try:
-                    with cache_file.open('r', encoding='utf-8') as f:
-                        cache_data = json.load(f)
-                        # 检查缓存时间和比赛状态
-                        timestamp = datetime.fromtimestamp(cache_data.get('timestamp', 0))
-                        game_status = GameStatusEnum(cache_data.get('game_status', 1))
-                        cache_duration = self.game_config.CACHE_DURATION[game_status]
-
-                        # 如果缓存未过期,直接返回
-                        if datetime.now() - timestamp < cache_duration:
-                            self._game_status = game_status  # 保存状态
-                            self.logger.debug(f"使用缓存的 boxscore 数据: {game_id}")
-                            return cache_data.get('data')
-                except Exception as e:
-                    self.logger.error(f"读取缓存出错: {e}")
-
-            # 3. 如果没有有效缓存,发送API请求
-            url = f"{self.game_config.BASE_URL}/boxscore/boxscore_{game_id}.json"
-            data = self.fetch_data(url=url)
-            if not data:
-                return None
-
-            # 4. 写入新的缓存
-            self._game_status = self._get_game_status(data)  # 保存状态
-            if self.game_config.CACHE_DURATION[self._game_status].total_seconds() > 0:
-                cache_data = {
-                    'timestamp': datetime.now().timestamp(),
-                    'game_status': self._game_status.value,
-                    'data': data
-                }
-                # 使用临时文件进行原子写入
-                temp_file = cache_file.with_suffix('.tmp')
-                try:
-                    cache_file.parent.mkdir(parents=True, exist_ok=True)
-                    with temp_file.open('w', encoding='utf-8') as f:
-                        json.dump(cache_data, f, indent=2)
-                    temp_file.replace(cache_file)
-                    self.logger.debug(f"已缓存 boxscore 数据: {game_id}")
-                except Exception as e:
-                    self.logger.error(f"写入缓存失败: {e}")
-                    if temp_file.exists():
-                        temp_file.unlink()
-
-            return data
-
-        except Exception as e:
-            self.logger.error(f"获取 boxscore 数据出错: {e}")
-            return None
-
-    def get_playbyplay(self, game_id: str, force_update: bool = False) -> Optional[Dict]:
-        """获取比赛回放数据"""
-        try:
-            # 1. 优先使用缓存
-            cache_file = self.game_config.CACHE_PATH / self.game_config.CACHE_FILES['playbyplay'].format(game_id=game_id)
-
-            if not force_update and cache_file.exists():
-                try:
-                    with cache_file.open('r', encoding='utf-8') as f:
-                        cache_data = json.load(f)
-                        self.logger.info(f"使用缓存的 playbyplay 数据: {game_id}")
-                        return cache_data.get('data')
-                except Exception as e:
-                    self.logger.error(f"读取缓存出错: {e}")
-
-            # 2. 如果没有缓存或强制更新，发送API请求
-            url = f"{self.game_config.BASE_URL}/playbyplay/playbyplay_{game_id}.json"
-            data = self.fetch_data(url=url)
-
-            # 3. 即使数据获取失败也继续运行
-            if not data:
-                self.logger.warning(f"无法获取 playbyplay 数据: {game_id}")
-                return None
-
-            # 4. 写入缓存
-            if self._game_status and self.game_config.CACHE_DURATION[self._game_status].total_seconds() > 0:
-                cache_data = {
-                    'timestamp': datetime.now().timestamp(),
-                    'game_status': self._game_status.value,
-                    'data': data
-                }
-                cache_file.parent.mkdir(parents=True, exist_ok=True)
-                with cache_file.open('w', encoding='utf-8') as f:
-                    json.dump(cache_data, f, indent=2)
-
-            return data
-
-        except Exception as e:
-            self.logger.error(f"获取 playbyplay 数据出错: {e}")
-            return None
-
-
-    def _get_game_status(self, data: Dict) -> GameStatusEnum:
-        """
-        从比赛数据中获取比赛状态
+    def __init__(self, custom_config: Optional[GameConfig] = None):
+        """初始化
 
         Args:
-            data (Dict): 比赛数据(boxscore)
+            custom_config: 自定义配置，如果为None则使用默认配置
+        """
+        game_config = custom_config or GameConfig()
+
+        # 配置缓存
+        cache_config = BaseCacheConfig(
+            duration=timedelta(days=1),  # 默认缓存时间
+            root_path=game_config.CACHE_PATH,
+            dynamic_duration=game_config.CACHE_DURATION  # 使用动态缓存时间
+        )
+
+        # 创建基础请求配置
+        base_config = BaseRequestConfig(
+            base_url=game_config.BASE_URL,
+            cache_config=cache_config
+        )
+
+        # 初始化基类
+        super().__init__(base_config)
+        self.game_config = game_config
+
+    def get_game_data(self, game_id: str, data_type: str = 'boxscore', force_update: bool = False) -> Optional[
+        GameResponse]:
+        """获取比赛数据(基础方法)
+
+        Args:
+            game_id: 比赛ID
+            data_type: 数据类型，可选值：boxscore, playbyplay
+            force_update: 是否强制更新缓存
+
+        Returns:
+            比赛数据字典，获取失败时返回None
+
+        Raises:
+            ValueError: 当game_id为空或data_type不合法时抛出
+        """
+        if not game_id:
+            raise ValueError("game_id cannot be empty")
+        if data_type not in ['boxscore', 'playbyplay']:
+            raise ValueError("data_type must be either 'boxscore' or 'playbyplay'")
+
+        cache_key = f"{data_type}_{game_id}"
+
+        # 构建请求URL
+        url = f"{data_type}/{data_type}_{game_id}.json"
+
+        try:
+            response_data = self.fetch_data(
+                endpoint=url,
+                cache_key=cache_key,
+                force_update=force_update
+            )
+
+            if response_data is not None:
+                game_status = self._get_game_status(response_data)
+                # 使用fetch_data的cache_status_key参数来处理动态缓存时间
+                return self.fetch_data(
+                    endpoint=url,
+                    cache_key=cache_key,
+                    force_update=force_update,
+                    cache_status_key=game_status
+                )
+
+            return response_data
+
+        except Exception as e:
+            self.logger.error(f"获取比赛数据失败: {e}")
+            return None
+
+    def get_boxscore(self, game_id: str, force_update: bool = False) -> Tuple[Optional[GameResponse], GameStatusEnum]:
+        """获取比赛数据统计(boxscore)
+
+        Args:
+            game_id: 比赛ID
+            force_update: 是否强制更新缓存
+
+        Returns:
+            Tuple[Optional[GameResponse], GameStatusEnum]:
+            - 第一个元素是比赛数据，当获取失败时为None
+            - 第二个元素是比赛状态枚举值
+        """
+        try:
+            data = self.get_game_data(game_id, 'boxscore', force_update)
+            if data is None:
+                return None, GameStatusEnum.NOT_STARTED
+
+            game_status = self._get_game_status(data)
+            return data, game_status
+
+        except Exception as e:
+            self.logger.error(f"获取比赛统计数据失败: {e}")
+            return None, GameStatusEnum.NOT_STARTED
+
+    def get_playbyplay(self, game_id: str, force_update: bool = False) -> Tuple[
+        Optional[GameResponse], GameStatusEnum]:
+        """获取比赛回放数据(play-by-play)
+
+        Args:
+            game_id: 比赛ID
+            force_update: 是否强制更新缓存
+
+        Returns:
+            Tuple[Optional[GameResponse], GameStatusEnum]:
+            - 第一个元素是比赛回放数据，当获取失败时为None
+            - 第二个元素是比赛状态枚举值
+        """
+        try:
+            data = self.get_game_data(game_id, 'playbyplay', force_update)
+            if data is None:
+                return None, GameStatusEnum.NOT_STARTED
+
+            game_status = self._get_game_status(data)
+            return data, game_status
+
+        except Exception as e:
+            self.logger.error(f"获取比赛回放数据失败: {e}")
+            return None, GameStatusEnum.NOT_STARTED
+
+    def _get_game_status(self, data: Dict[str, Any]) -> GameStatusEnum:
+        """从数据中获取比赛状态
+
+        Args:
+            data: 比赛数据字典
 
         Returns:
             GameStatusEnum: 比赛状态枚举值
         """
+        if not isinstance(data, dict):
+            raise TypeError("data must be a dictionary")
+
         try:
-            # 从数据中获取比赛状态
-            game = data.get('game', {})
-            status_text = game.get('gameStatus', 1)  # 默认为未开始
-
-            # NBA API 返回的状态转换为我们的枚举
-            status_mapping = {
-                1: GameStatusEnum.NOT_STARTED,  # 未开始
-                2: GameStatusEnum.IN_PROGRESS,  # 进行中
-                3: GameStatusEnum.FINISHED  # 已结束
-            }
-
-            return status_mapping.get(status_text, GameStatusEnum.NOT_STARTED)
-
+            status = data.get('game', {}).get('gameStatus', 1)
+            return GameStatusEnum.from_api_status(status)
         except Exception as e:
-            self.logger.error(f"获取比赛状态时出错: {e}")
-            return GameStatusEnum.NOT_STARTED  # 出错时默认返回未开始状态
+            self.logger.error(f"获取比赛状态失败: {e}")
+            return GameStatusEnum.NOT_STARTED
 
-    def clear_cache(self, game_id: Optional[str] = None) -> None:
-        """清理缓存"""
+    def clear_cache(self, game_id: Optional[str] = None, older_than: Optional[timedelta] = None) -> None:
+        """清理缓存
+
+        Args:
+            game_id: 指定清理某场比赛的缓存，为None时清理所有缓存
+            older_than: 清理指定时间之前的缓存
+        """
         try:
+            prefix = self.__class__.__name__.lower()
             if game_id:
-                for data_type in self.game_config.CACHE_FILES:
-                    cache_file = self.game_config.CACHE_PATH / self.game_config.CACHE_FILES[data_type].format(game_id=game_id)
-                    if cache_file.exists():
-                        cache_file.unlink()
-                self.logger.info(f"已清理比赛 {game_id} 的缓存")
+                for data_type in ['boxscore', 'playbyplay']:
+                    cache_key = f"{data_type}_{game_id}"
+                    self.cache_manager.clear(prefix=prefix, identifier=cache_key)
             else:
-                # 清理过期缓存
-                now = datetime.now()
-                for cache_file in self.game_config.CACHE_PATH.glob('*.json'):
-                    try:
-                        with cache_file.open('r') as f:
-                            cache_data = json.load(f)
-                        timestamp = datetime.fromtimestamp(cache_data.get('timestamp', 0))
-                        game_status = GameStatusEnum(cache_data.get('game_status', 1))
-                        if now - timestamp > self.game_config.CACHE_DURATION[game_status]:
-                            cache_file.unlink()
-                    except Exception as e:
-                        self.logger.error(f"清理缓存文件失败 {cache_file}: {e}")
+                self.cache_manager.clear(prefix=prefix, age=older_than)
         except Exception as e:
-            self.logger.error(f"清理缓存出错: {e}")
+            self.logger.error(f"清理缓存失败: {e}")
