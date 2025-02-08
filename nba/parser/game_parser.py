@@ -199,6 +199,16 @@ class GameDataParser:
 
             event_type = event_data['actionType']
 
+            # 处理团队技术犯规
+            if (event_type == 'foul' and
+                    event_data.get('subType') == 'technical' and
+                    'TEAM' in event_data.get('description', '').upper()):
+                event_data.update({
+                    'playerName': 'TEAM',
+                    'playerNameI': 'TEAM'
+                })
+                return FoulEvent(**event_data)
+
             # 处理团队失误事件
             if event_type == 'turnover' and event_data.get('qualifiers', []) == ['team']:
                 event_data.update({

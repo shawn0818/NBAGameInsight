@@ -21,8 +21,7 @@ class PlayerParser:
         """
         self.logger = logging.getLogger(self.__class__.__name__)
         self.cache_dir = NBAConfig.PATHS.PLAYER_CACHE_DIR
-        if cache_dir:
-            self.cache_file = cache_dir / 'players.json'
+        self.cache_file = self.cache_dir / 'players.json'
 
 
     def parse_players(self, raw_data: Dict[str, Any], use_cache: bool = True) -> List[PlayerProfile]:

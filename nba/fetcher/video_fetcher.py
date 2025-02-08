@@ -1,36 +1,52 @@
+from datetime import timedelta
 from enum import Enum
+from pathlib import Path
 from typing import Optional, Dict, Any
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from config.nba_config import NBAConfig
 from .base_fetcher import BaseNBAFetcher, BaseRequestConfig
 
 
+@dataclass
 class VideoRequestConfig(BaseRequestConfig):
     """视频请求配置"""
-    BASE_URL = "https://stats.nba.com/stats"
+    BASE_URL: str = "https://stats.nba.com/stats"
+    CACHE_PATH: Path = field(default_factory=lambda: Path(str(NBAConfig.PATHS.VIDEOURL_CACHE_DIR)))
+    CACHE_DURATION: timedelta = field(default_factory=lambda: timedelta(seconds=3600))
+    FALLBACK_URLS: Dict[str, str] = field(
+        default_factory=lambda: {
+            "https://cdn.nba.com/static/json": "https://nba-prod-us-east-1-mediaops-stats.s3.amazonaws.com/NBA",
+        }
+    )
 
-    CACHE_PATH: str = NBAConfig.PATHS.VIDEOURL_CACHE_DIR
+    def __post_init__(self):
+        """配置后处理：验证并转换类型"""
+        # 确保 CACHE_PATH 是 Path 对象
+        if not isinstance(self.CACHE_PATH, Path):
+            self.CACHE_PATH = Path(str(self.CACHE_PATH))
 
-    CACHE_DURATION: int = 3600  # 1小时缓存
+        # 确保缓存目录存在
+        self.CACHE_PATH.mkdir(parents=True, exist_ok=True)
 
-    FALLBACK_URLS = {
-        "https://cdn.nba.com/static/json": "https://nba-prod-us-east-1-mediaops-stats.s3.amazonaws.com/NBA",
-    }
+        if not isinstance(self.CACHE_DURATION, timedelta):
+            raise ValueError("CACHE_DURATION must be a timedelta instance")
+
 
 class ContextMeasure(str, Enum):
     """视频查询的上下文度量类型"""
     FG3M = "FG3M"  # 三分命中
     FG3A = "FG3A"  # 三分出手
-    FGM = "FGM"    # 投篮命中
-    FGA = "FGA"    # 投篮出手
+    FGM = "FGM"  # 投篮命中
+    FGA = "FGA"  # 投篮出手
     OREB = "OREB"  # 进攻篮板
     DREB = "DREB"  # 防守篮板
-    REB = "REB"    # 总篮板
-    AST = "AST"    # 助攻
-    STL = "STL"    # 抢断
-    BLK = "BLK"    # 盖帽
-    TOV = "TOV"    # 失误
+    REB = "REB"  # 总篮板
+    AST = "AST"  # 助攻
+    STL = "STL"  # 抢断
+    BLK = "BLK"  # 盖帽
+    TOV = "TOV"  # 失误
+
 
 @dataclass
 class VideoRequestParams:
@@ -82,12 +98,10 @@ class VideoRequestParams:
 class VideoFetcher(BaseNBAFetcher):
     """视频链接数据获取器"""
     request_config = VideoRequestConfig()
-
     VIDEO_STATS_URL = "https://stats.nba.com/stats/videodetailsasset"
 
     def __init__(self):
         super().__init__()
-        # 更新请求头
         self.http_manager.headers.update({
             'accept': '*/*',
             'accept-language': 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2',
@@ -108,6 +122,7 @@ class VideoFetcher(BaseNBAFetcher):
                             player_id: Optional[int] = None, team_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
         """获取比赛视频数据"""
         try:
+            # 构建和验证请求参数
             params = VideoRequestParams(
                 game_id=game_id,
                 player_id=str(player_id) if player_id else None,
@@ -115,14 +130,28 @@ class VideoFetcher(BaseNBAFetcher):
                 context_measure=context_measure
             ).build()
 
-            # 使用NBAConfig中定义的缓存路径
+            # 构建缓存键
+            cache_key_parts = list(filter(None, [
+                'video',
+                game_id,
+                str(player_id) if player_id else None,
+                str(team_id) if team_id else None,
+                context_measure.value
+            ]))
+
+            # 确保缓存文件路径存在
+            cache_file = self.request_config.CACHE_PATH / 'videos_url.json'
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+
+            # 缓存配置
             cache_config = {
-                'key': f'video_{game_id}_{player_id}_{team_id}_{context_measure.value}',
-                'file': self.request_config.CACHE_PATH / 'videos.json',
-                'interval': self.request_config.CACHE_DURATION
+                'key': '_'.join(cache_key_parts),
+                'file': cache_file,  # 转换为字符串以确保兼容性
+                'interval': int(self.request_config.CACHE_DURATION.total_seconds()),
+                'force_update': False
             }
 
-            # 使用完整的 URL 而不是 endpoint
+            # 发起请求并处理响应
             return self.fetch_data(
                 url=self.VIDEO_STATS_URL,
                 params=params,

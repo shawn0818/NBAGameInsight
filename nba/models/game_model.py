@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import IntEnum, Enum
-from typing import Optional, List, Dict, Any, Union, Literal
-from pydantic import BaseModel, Field, model_validator, ValidationError, conint, confloat, ConfigDict
+from typing import Optional, List, Dict, Any, Literal
+from pydantic import BaseModel, Field, model_validator, conint, confloat, ConfigDict
 from nba.models.player_model import PlayerProfile
 from nba.models.team_model import TeamProfile
 
