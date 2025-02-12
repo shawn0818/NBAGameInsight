@@ -1,4 +1,3 @@
-import logging
 from pathlib import Path
 from typing import Optional, Dict, List, Any
 from dataclasses import dataclass
@@ -10,6 +9,7 @@ from nba.models.video_model import VideoAsset, ContextMeasure
 from nba.parser.video_parser import VideoParser
 from utils.gif_converter import GIFConverter, GIFConfig
 from config.nba_config import NBAConfig
+from utils.logger_handler import AppLogger
 
 
 @dataclass
@@ -47,7 +47,7 @@ class AsyncVideoProcessor:
 
     def __init__(self, config: VideoOutputConfig):
         self.config = config
-        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger = AppLogger.get_logger(__name__, app_name='nba')
         self.session_context = aiohttp.ClientSession
         self.gif_converter = GIFConverter(config.gif_config) if config.format == 'gif' else None
 
@@ -140,7 +140,7 @@ class GameVideoService:
 
     def __init__(self, video_config: Optional[VideoOutputConfig] = None):
         self.config = video_config or VideoOutputConfig()
-        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger = AppLogger.get_logger(__name__, app_name='nba')
         # 初始化视频获取器和解析器作为实例属性
         self.video_fetcher = VideoFetcher()
         self.video_parser = VideoParser()

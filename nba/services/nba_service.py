@@ -1,34 +1,26 @@
 # nba/services/nba_service.py
-"""NBA服务统一接口模块
-
-这个模块提供了NBA数据服务的统一接口，整合了以下功能：
+"""NBA服务统一接口模块，这个模块提供了NBA数据服务的统一接口，整合了以下功能：
 1. 数据获取和处理 (game_data_service)
 2. 视频下载和转换 (game_video_service)
 3. 数据展示和格式化 (game_display_service)
 4. 图表生成 (game_charts_service)
 5. AI辅助处理 (ai_processor)
-
-主要类:
-- NBAServiceConfig: 统一的服务配置
-- ServiceStatus: 服务状态枚举
-- ServiceHealth: 服务健康状态记录
-- NBAService: 主服务类
 """
 from typing import Optional, Dict, Any, List, Union
 from pathlib import Path
 from dataclasses import dataclass, field
 from enum import Enum
-import logging
 import time
 
-from nba.services.game_data_service import NBAGameDataProvider, ServiceConfig
+from nba.services.game_data_service import GameDataProvider, GameDataServiceConfig
 from nba.services.game_video_service import GameVideoService, VideoOutputConfig
 from nba.services.game_display_service import DisplayService, DisplayConfig
 from nba.services.game_charts_service import GameChartsService, ChartStyleConfig
 from utils.ai_processor import AIProcessor, AIConfig
-from nba.models.video_model import ContextMeasure, VideoAsset  # [新增] 导入VideoAsset
+from nba.models.video_model import ContextMeasure
 from config.nba_config import NBAConfig
 from utils.gif_converter import GIFConfig
+from utils.logger_handler import AppLogger
 
 
 # ===========================
@@ -215,7 +207,7 @@ class NBAService:
 
     属性:
         config (NBAServiceConfig): 服务配置
-        logger (logging.Logger): 日志记录器
+        logger (AppLogger): 日志记录器
         _service_status (Dict[str, ServiceHealth]): 各服务的健康状态
     """
 
@@ -225,7 +217,7 @@ class NBAService:
 
     def __init__(self, config: Optional[NBAServiceConfig] = None):
         self.config = config or NBAServiceConfig()
-        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger = AppLogger.get_logger(__name__, app_name='nba')
 
         # 确保所需目录存在
         NBAConfig.PATHS.ensure_directories()
@@ -283,7 +275,7 @@ class NBAService:
     def _init_data_service(self) -> None:
         """初始化数据服务"""
         try:
-            service_config = ServiceConfig(
+            service_config = GameDataServiceConfig(
                 default_team=self.config.team,
                 default_player=self.config.player,
                 date_str=self.config.date_str,
@@ -293,7 +285,7 @@ class NBAService:
                 use_pydantic_v2=self.config.use_pydantic_v2
             )
 
-            self._data_service = NBAGameDataProvider(service_config)
+            self._data_service = GameDataProvider(service_config)
             self._update_service_status('data', ServiceStatus.AVAILABLE)
         except Exception as e:
             self.logger.error(f"数据服务初始化失败: {str(e)}")
@@ -348,20 +340,13 @@ class NBAService:
             self.logger.error(f"视频服务初始化失败: {str(e)}")
             self._update_service_status('video', ServiceStatus.UNAVAILABLE, str(e))
 
-
     def _update_service_status(
             self,
             service_name: str,
             status: ServiceStatus,
             error: Optional[str] = None
     ) -> None:
-        """更新服务健康状态
-
-        Args:
-            service_name: 服务名称
-            status: 新状态
-            error: 错误信息（可选）
-        """
+        """更新服务健康状态"""
         health = self._service_status.get(service_name)
         if health:
             health.status = status
@@ -371,11 +356,7 @@ class NBAService:
                 health.last_error = error
 
     def get_service_status(self) -> Dict[str, ServiceStatus]:
-        """获取所有服务的当前状态
-
-        Returns:
-            Dict[str, ServiceStatus]: 服务名称到状态的映射
-        """
+        """获取所有服务的当前状态"""
         return {name: status.status for name, status in self._service_status.items()}
 
 
@@ -499,20 +480,39 @@ class NBAService:
 
     ### =============3.2.2调用gamevideo子模块==============
 
-    def get_game_videos(self, context_measure: str = "FGM") -> Dict[str, Path]:
-        """获取比赛视频"""
-        if not self._service_status['video'].is_available:
-            self.logger.error("视频服务不可用")
-            return {}
+    def get_game_videos(self, context_measure: Union[str, ContextMeasure] = ContextMeasure.FGM) -> Dict[str, Path]:
+        """获取比赛视频
 
-        if not self._service_status['data'].is_available:
-            self.logger.error("数据服务不可用")
+        Args:
+            context_measure: 视频类型，可以是字符串或 ContextMeasure 枚举值，默认为 FGM (投篮命中)
+
+        Returns:
+            Dict[str, Path]: 处理后的视频文件路径字典
+        """
+        if not self._service_status['video'].is_available or not self._service_status['data'].is_available:
+            self.logger.error("视频服务或数据服务不可用")
             return {}
 
         try:
-            # 验证视频类型
-            if not hasattr(ContextMeasure, context_measure):
-                raise ValueError(f"无效的视频类型: {context_measure}")
+            # 转换 context_measure 为枚举类型
+            if isinstance(context_measure, str):
+                try:
+                    context_measure = ContextMeasure(context_measure)
+                except ValueError:
+                    self.logger.error(f"无效的视频类型: {context_measure}")
+                    return {}
+
+            # 先获取球队ID
+            team_id = self.get_team_id_by_name(self.config.team)
+            if not team_id:
+                self.logger.error(f"未找到球队: {self.config.team}")
+                return {}
+
+            # 获取球员ID
+            player_id = self.get_player_id_by_name(self.config.player)
+            if not player_id:
+                self.logger.error(f"未找到球员: {self.config.player}")
+                return {}
 
             # 获取比赛信息
             game = self._data_service.get_game(self.config.team)
@@ -521,28 +521,24 @@ class NBAService:
                 return {}
 
             game_id = game.game.gameId
-            player_id = self._get_player_id(game)
 
             self.logger.info(
                 f"准备获取视频 - 比赛ID: {game_id}, "
+                f"球队ID: {team_id}, "
                 f"球员: {self.config.player}, "
                 f"球员ID: {player_id}, "
-                f"类型: {context_measure}"
+                f"类型: {context_measure.value}"
             )
-
-            if not player_id:
-                self.logger.error(f"无法获取球员 {self.config.player} 的ID")
-                return {}
 
             # 获取视频资源
             video_assets = self._video_service.get_game_videos(
                 game_id=game_id,
                 player_id=player_id,
-                context_measure=ContextMeasure[context_measure]
+                context_measure=context_measure
             )
 
             if not video_assets:
-                self.logger.warning(f"未找到 {context_measure} 类型的视频资产")
+                self.logger.warning(f"未找到 {context_measure.value} 类型的视频资产")
                 return {}
 
             self.logger.info(f"成功获取 {len(video_assets)} 个视频资产，开始处理...")
@@ -569,13 +565,13 @@ class NBAService:
 
     def plot_player_scoring_impact(self,
                                    team: Optional[str] = None,
-                                   player_id: Optional[int] = None,
+                                   player_name: Optional[str] = None,
                                    title: Optional[str] = None) -> Optional[Path]:
         """绘制球员得分影响力图
 
         Args:
             team: 球队名称（可选）
-            player_id: 球员ID（可选）
+            player_name: 球员ID（可选）
             title: 图表标题（可选）
 
         Returns:
@@ -591,9 +587,10 @@ class NBAService:
                 self.logger.error("未找到比赛数据")
                 return None
 
-            player_id = player_id or self._get_player_id(game)
+            # 获取球员ID
+            player_id = self.get_player_id_by_name(player_name)
             if not player_id:
-                self.logger.error("无法获取球员ID")
+                self.logger.error(f"未找到球员: {player_name}")
                 return None
 
             # 生成输出文件名
@@ -619,30 +616,46 @@ class NBAService:
             self._update_service_status('chart', ServiceStatus.DEGRADED, str(e))
             return None
 
-    ### =============3.2.4辅助方法==============
+    ### =============3.2.4 辅助方法 ==============
 
-    def _get_player_id(self, game: Any) -> Optional[int]:
-        """获取球员ID
+    def get_team_id_by_name(self, team_name: str) -> Optional[int]:
+        """获取球队ID
 
         Args:
-            game: 比赛数据对象
+            team_name: 球队名称
 
         Returns:
-            Optional[int]: 球员ID
+            Optional[int]: 球队ID，如果未找到则返回None
         """
-        if not self.config.player:
+        if not self._service_status['data'].is_available:
+            self.logger.error("数据服务不可用")
             return None
 
         try:
-            player_name = self.config.player.lower()
-            for team in [game.game.homeTeam, game.game.awayTeam]:
-                for player in team.players:
-                    if player.name.lower() == player_name:
-                        return player.personId
+            return self._data_service.league_provider.get_team_id_by_name(team_name)
+        except Exception as e:
+            self.logger.error(f"获取球队ID失败: {str(e)}")
             return None
+
+    def get_player_id_by_name(self, player_name: str) -> Optional[Union[int, List[int]]]:
+        """获取球员ID
+
+        Args:
+            player_name: 球员名称
+
+        Returns:
+            Optional[Union[int, List[int]]]: 球员ID或ID列表，如果未找到则返回None
+        """
+        if not self._service_status['data'].is_available:
+            self.logger.error("数据服务不可用")
+            return None
+
+        try:
+            return self._data_service.league_provider.get_player_id_by_name(player_name)
         except Exception as e:
             self.logger.error(f"获取球员ID失败: {str(e)}")
             return None
+
 
     ### =============3.2.5 资源管理 ==============
 
