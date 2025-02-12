@@ -2,6 +2,8 @@ from typing import Dict, Optional, Union
 from datetime import datetime
 import pandas as pd
 import logging
+
+from utils.logger_handler import AppLogger
 from utils.time_handler import NBATimeHandler
 
 class ScheduleParser:
@@ -10,27 +12,46 @@ class ScheduleParser:
     DATE_KEYWORDS = {'today', 'next', 'last'}
 
     def __init__(self):
-        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger = AppLogger.get_logger(__name__, app_name='nba')
 
     def parse_raw_schedule(self, schedule_data: Dict) -> pd.DataFrame:
         """解析原始赛程数据为DataFrame"""
         try:
+            # 添加数据验证
+            if not isinstance(schedule_data, dict):
+                self.logger.error("输入数据不是字典类型")
+                return pd.DataFrame()
+
+            if 'leagueSchedule' not in schedule_data:
+                self.logger.error("数据中没有leagueSchedule字段")
+                return pd.DataFrame()
+
+            league_schedule = schedule_data['leagueSchedule']
+            if 'gameDates' not in league_schedule:
+                self.logger.error("leagueSchedule中没有gameDates字段")
+                return pd.DataFrame()
+
+            # 添加调试日志
+            self.logger.debug(f"Game dates count: {len(league_schedule['gameDates'])}")
+
             df = pd.json_normalize(
                 schedule_data,
                 record_path=["leagueSchedule", "gameDates", "games"],
                 errors="ignore",
                 sep='_'
             )
-            
+
             if df.empty:
                 self.logger.warning("解析后的赛程数据为空")
+                # 添加更多调试信息
+                self.logger.debug(f"Raw data structure: {schedule_data.keys()}")
                 return df
 
             # 处理时区
             df = self._process_timezone(df)
             self.logger.info(f"解析赛程数据成功，共 {len(df)} 场比赛")
             return df
-            
+
         except Exception as e:
             self.logger.error(f"Error parsing raw schedule: {e}")
             return pd.DataFrame()
