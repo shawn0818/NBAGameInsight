@@ -3,17 +3,17 @@
 from dataclasses import dataclass
 from typing import Optional, Dict, List, Any
 from functools import lru_cache
-import logging
 import json
 import time
 from enum import Enum
 from openai import OpenAI, APITimeoutError, APIError
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-
+from utils.logger_handler import AppLogger
 
 class PromptRole(Enum):
     NBA_ANALYST = "nba_analyst"
-    SOCIAL_EDITOR = "social_editor"
+    NBA_SOCIAL_ANALYST = "nba_social_analyst"
+    ZH_TRANSLATOR = "zh_translator"
 
 
 class PromptTask(Enum):
@@ -25,51 +25,84 @@ class PromptTask(Enum):
 
 @dataclass
 class AIConfig:
-    api_key: str
-    base_url: str
-    model_name: str = "deepseek-chat"
+    providers: Dict[str, Dict[str, Any]]
+    default_provider: str = "deepseek"
     max_retries: int = 3
     retry_delay: int = 1
     cache_size: int = 100
-    timeout: int = 60  # 增加默认超时时间
+    timeout: int = 60
+
+    def __post_init__(self):
+        """后初始化验证和设置"""
+        if self.default_provider not in self.providers:
+            raise ValueError(f"默认 AI 提供商 '{self.default_provider}' 未在配置中定义")
+        default_config = self.providers[self.default_provider]
+        if 'model_name' not in default_config:
+            default_config['model_name'] = "default-model"
 
 
 class AIProcessor:
     PROMPTS = {
+        "zh_translator": {
+            "translation": """你是一位专业的 NBA 数据翻译员，精通中英文篮球术语。请将以下英文 NBA 数据或描述翻译成流畅、准确的中文，务必保持术语的专业性和一致性。"""
+        },
         "nba_analyst": {
             "summary": """你是专业的 NBA 比赛分析师，精通中文篮球术语。
                请分析以下内容的关键点：
                1. 比赛转折点
-               2. 球员表现 
+               2. 球员表现
                3. 战术特点
                4. 胜负关键因素""",
-            "translation": """你是专业的 NBA 翻译，精通篮球术语。
-               请准确翻译以下内容，保持专业性和术语准确性。"""
         },
-        "social_editor": {
-            "weibo": """你是NBA社交媒体运营编辑，需要制作吸引球迷的微博内容：
-               1. 使用简洁生动的语言
-               2. 添加适当的emoji
-               3. 突出比赛亮点
-               4. 加入#话题标签#
-               5. 控制在140字以内""",
-            "highlight": """你是NBA集锦解说员，需要为比赛精彩瞬间创作生动描述：
-               1. 描述动作特点
-               2. 点明比赛形势
-               3. 突出球员表现
-               4. 使用专业术语"""
+        "nba_social_analyst": {
+            "weibo": """你是资深的NBA比赛分析师，同时也是NBA社交媒体运营编辑，需要制作吸引球迷的微博内容：
+               1. 结合专业的比赛分析
+               2. 使用简洁生动的语言
+               3. 添加适当的emoji
+               4. 突出比赛亮点
+               5. 加入#话题标签#
+               6. 控制在140字以内""",
+            "highlight": """你是NBA集锦解说员，同时也是资深NBA分析师，需要为比赛精彩瞬间创作生动描述：
+               1. 结合专业的比赛分析
+               2. 描述动作特点
+               3. 点明比赛形势
+               4. 突出球员表现
+               5. 使用专业术语"""
         }
     }
 
-    def __init__(self, config: AIConfig):
+    PROVIDER_FACTORIES = {
+        "deepseek": lambda config: OpenAI(
+            api_key=config['api_key'],
+            base_url=config['base_url'],
+            timeout=config.get('timeout', 60.0),
+            max_retries=config.get('max_retries', 3)
+        ),
+        "openai": lambda config: None,
+        "gemini": lambda config: None,
+    }
+
+    def __init__(self, config: AIConfig, provider_name: Optional[str] = None):
         self.config = config
-        self.logger = logging.getLogger(self.__class__.__name__)
-        self.client = OpenAI(
-            api_key=config.api_key,
-            base_url=config.base_url,
-            timeout=60.0,  # 增加全局超时时间
-            max_retries=3  # 设置重试次数
-        )
+        self.logger = AppLogger.get_logger(__name__,app_name="ai")
+        self.provider_name = provider_name or config.default_provider
+        if self.provider_name not in config.providers:
+            raise ValueError(f"指定的 AI 提供商 '{self.provider_name}' 未在配置中定义")
+
+        provider_config = config.providers[self.provider_name]
+
+        factory = self.PROVIDER_FACTORIES.get(self.provider_name.lower())
+        if not factory:
+            raise ValueError(f"不支持的 AI 提供商: '{self.provider_name}'")
+
+        client = factory(provider_config)
+        if client is None and self.provider_name.lower() != "deepseek":
+            self.logger.warning(f"AI Provider '{self.provider_name}' is a placeholder and not fully implemented.")
+            self.client = self.PROVIDER_FACTORIES["deepseek"](config.providers["deepseek"])
+            self.provider_name = "deepseek"
+        else:
+            self.client = client
+
         self._request_count = 0
         self._last_request_time = 0
 
@@ -79,7 +112,7 @@ class AIProcessor:
             if not text:
                 return text
 
-            system_prompt = self.PROMPTS["nba_analyst"]["translation"]
+            system_prompt = self.PROMPTS["zh_translator"]["translation"]
             user_prompt = f"请翻译成{target_language}:\n\n{text}"
 
             self.logger.debug(f"开始翻译文本: {text[:100]}...")
@@ -99,7 +132,6 @@ class AIProcessor:
             if not content:
                 return "生成失败"
 
-            # 预处理输入数据
             if isinstance(content, (dict, list)):
                 content = json.dumps(content, ensure_ascii=False, indent=2)
 
@@ -121,7 +153,7 @@ class AIProcessor:
             if isinstance(content, (dict, list)):
                 content = json.dumps(content, ensure_ascii=False, indent=2)
 
-            system_prompt = self.PROMPTS["social_editor"]["weibo"]
+            system_prompt = self.PROMPTS["nba_social_analyst"]["weibo"]
             user_prompt = f"请生成微博:\n\n{content}"
 
             self.logger.debug(f"开始生成微博, 类型: {post_type}")
@@ -136,7 +168,7 @@ class AIProcessor:
             if not shots:
                 return "生成失败"
 
-            system_prompt = self.PROMPTS["social_editor"]["highlight"]
+            system_prompt = self.PROMPTS["nba_social_analyst"]["highlight"]
             user_prompt = f"请总结这些投篮集锦(限140字):\n\n" + "\n".join(shots)
 
             self.logger.debug(f"开始生成投篮总结, 数量: {len(shots)}")
@@ -177,25 +209,30 @@ class AIProcessor:
             self.logger.debug(f"发送AI请求: {json.dumps(messages, ensure_ascii=False)[:200]}...")
 
             # 使用流式响应
-            response = self.client.chat.completions.create(
-                model=self.config.model_name,
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                stream=True,  # 启用流式响应
-                timeout=60.0  # 设置单次请求超时时间
-            )
+            if self.provider_name.lower() == "deepseek":
+                response = self.client.chat.completions.create(
+                    model=self.config.providers[self.provider_name]['model_name'],
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    stream=True,
+                    timeout=self.config.timeout
+                )
+                result_chunks = []
+                for chunk in response:
+                    if chunk.choices[0].delta.content:
+                        result_chunks.append(chunk.choices[0].delta.content)
 
-            # 收集流式响应内容
-            result_chunks = []
-            for chunk in response:
-                if chunk.choices[0].delta.content:
-                    result_chunks.append(chunk.choices[0].delta.content)
+                final_result = "".join(result_chunks).strip()
+                self.logger.debug(f"收到AI响应: {final_result[:200]}...")
+                return final_result
 
-            final_result = "".join(result_chunks).strip()
-            self.logger.debug(f"收到AI响应: {final_result[:200]}...")
+            elif self.provider_name.lower() in ["openai", "gemini"]:
+                self.logger.warning(f"AI Provider '{self.provider_name}' is a placeholder, returning '生成失败'.")
+                return "生成失败"
+            else:
+                raise ValueError(f"Unknown AI Provider: '{self.provider_name}'")
 
-            return final_result
 
         except Exception as e:
             self.logger.error(f"AI请求失败: {str(e)}", exc_info=True)
