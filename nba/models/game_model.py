@@ -2,8 +2,6 @@ from datetime import datetime
 from enum import IntEnum, Enum
 from typing import Optional, List, Dict, Any, Literal
 from pydantic import BaseModel, Field, model_validator, conint, confloat, ConfigDict
-from nba.models.player_model import PlayerProfile
-from nba.models.team_model import TeamProfile
 
 
 # ===========================
@@ -144,6 +142,11 @@ class PlayerStatistics(BaseModel):
     reboundsDefensive: conint(ge=0) = Field(0, description="防守篮板")
     reboundsTotal: conint(ge=0) = Field(0, description="总篮板")
 
+    #正负值数据
+    plusMinusPoints: Optional[float] = Field(None, description="正负值")  # 添加
+    plus: Optional[float] = Field(None, description="正值")  # 添加
+    minus: Optional[float] = Field(None, description="负值")  # 添加
+
     # 犯规数据
     foulsPersonal: conint(ge=0) = Field(0, description="个人犯规")
     foulsTechnical: conint(ge=0) = Field(0, description="技术犯规")
@@ -245,11 +248,6 @@ class Player(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     @property
-    def profile(self) -> Optional[PlayerProfile]:
-        """获取球员完整信息"""
-        return PlayerProfile.find_by_id(self.personId)
-
-    @property
     def is_active(self) -> bool:
         """判断球员是否处于活跃状态"""
         return self.status == "ACTIVE" and self.notPlayingReason is None
@@ -289,10 +287,6 @@ class TeamStats(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-    @property
-    def profile(self) -> Optional[TeamProfile]:
-        """获取球队完整信息"""
-        return TeamProfile.get_team_by_id(self.teamId)
 
     @property
     def fieldGoalsMade(self) -> int:
@@ -306,7 +300,6 @@ class TeamStats(BaseModel):
     def fieldGoalsPercentage(self) -> float:
         return self.statistics.get('fieldGoalsPercentage', 0.0)
 
-        # ... 其他属性类似
 
 
 # ===========================

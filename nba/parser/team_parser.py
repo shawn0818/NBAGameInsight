@@ -3,7 +3,7 @@ from nba.models.team_model import (
     TeamProfile, TeamHofPlayer, TeamRetiredPlayer,
     TeamAward
 )
-import logging
+from utils.logger_handler import AppLogger
 
 
 class TeamParser:
@@ -17,7 +17,7 @@ class TeamParser:
     4. 退役球衣
     """
 
-    logger = logging.getLogger(__name__) # 在类中获取 logger，避免重复获取
+    logger = AppLogger.get_logger(__name__, app_name='nba')
 
     @classmethod
     def parse_team_details(cls, api_response: Dict) -> Optional[TeamProfile]: # 返回类型改为 Optional[TeamProfile] 以处理解析错误

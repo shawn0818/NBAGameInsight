@@ -1,9 +1,9 @@
 from typing import Dict, List, Optional, Any
-import logging
 
-from pydantic import ValidationError
+from pydantic import ValidationError, BaseModel
 
 from nba.models.player_model import PlayerInfo, CommonPlayerInfo, PlayerHeadlineStats, AvailableSeason
+from utils.logger_handler import AppLogger
 
 
 class PlayerParser:
@@ -11,7 +11,7 @@ class PlayerParser:
 
     def __init__(self):
         """初始化解析器"""
-        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger = AppLogger.get_logger(__name__, app_name='nba')
 
 
     def parse_player_info(self, raw_data: Dict[str, Any]) -> Optional[PlayerInfo]:

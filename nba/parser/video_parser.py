@@ -1,15 +1,13 @@
-import logging
 from typing import Optional, Dict, Any
-
-
 from nba.models.video_model import VideoAsset, VideoQuality, VideoResponse
+from utils.logger_handler import AppLogger
 
 
 class VideoParser:
     """NBA视频资源解析器"""
 
     def __init__(self):
-        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger = AppLogger.get_logger(__name__, app_name='nba')
 
     def parse_videos(self, response_data: Dict[str, Any]) -> Optional[VideoResponse]:
         """解析视频响应数据"""

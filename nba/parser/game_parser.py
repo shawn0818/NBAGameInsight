@@ -1,8 +1,9 @@
 import logging
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union
 from pydantic import ValidationError
 
+from nba.fetcher.game_fetcher import GameDataResponse
 from nba.models.game_model import (
     Game, GameData, GameStatusEnum, Arena, Official, PeriodScore,
     Player, TeamStats, BaseEvent, PlayByPlay,
@@ -12,6 +13,7 @@ from nba.models.game_model import (
     ShotEvent, GameEvent
 )
 from utils.time_handler import TimeParser, NBATimeHandler, BasketballGameTime
+from utils.logger_handler import AppLogger
 
 
 class GameDataParser:
@@ -36,43 +38,66 @@ class GameDataParser:
     }
 
     def __init__(self):
-        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger = AppLogger.get_logger(__name__, app_name='nba')
 
-    def parse_game_data(self, data: Dict[str, Any]) -> Optional[Game]:
-        """解析完整比赛数据"""
+    def parse_game_data(self, data: Union[Dict[str, Any], GameDataResponse]) -> Optional[Game]:
+        """解析完整比赛数据
+
+        Args:
+            data: 可以是原始的字典数据，也可以是 GameDataResponse 对象
+
+        Returns:
+            Optional[Game]: 解析后的 Game 对象，解析失败则返回 None
+        """
         try:
-            if not isinstance(data, dict):
-                raise ValueError("Invalid game data format")
+            # 1. 处理 GameDataResponse 类型
+            if isinstance(data, GameDataResponse):
+                processed_data = {
+                    'meta': {},  # 元数据，可以为空字典
+                    'game': data.boxscore,  # boxscore 作为 game 数据
+                }
+            else:
+                # 2. 处理字典类型数据
+                if not isinstance(data, dict):
+                    self.logger.error(f"数据类型错误: {type(data)}")
+                    raise ValueError("Invalid game data format")
 
-            # 如果是缓存数据，提取实际数据
-            if 'timestamp' in data and 'data' in data:
-                data = data['data']
+                processed_data = data
 
-            # 处理比赛基本信息
-            game_data = self._process_game_data(data)
-            self.logger.debug("成功处理比赛基本信息")
+                # 3. 处理缓存数据
+                if 'timestamp' in processed_data and 'data' in processed_data:
+                    processed_data = processed_data['data']
 
-            # 创建Game实例
+            # 4. 处理比赛基本信息
+            game_data = self._process_game_data(processed_data)
+
+            # 5. 创建 Game 实例（保证符合 model 要求）
             game = Game(
-                meta=data.get('meta', {}),
+                meta=processed_data.get('meta', {}),
                 game=game_data,
-                playByPlay=None  # 初始化为None，后续处理
+                playByPlay=None  # 初始设置为 None
             )
 
-            # 解析回放数据（如果存在）
-            if 'playByPlay' in data:
-                self.logger.debug("开始解析回放数据")
-                play_by_play = self._parse_playbyplay(data['playByPlay'])
-                if play_by_play:
-                    self.logger.debug(f"成功解析回放数据，共 {len(play_by_play.actions)} 个事件")
-                    game.playByPlay = play_by_play
-                else:
-                    self.logger.warning("回放数据解析失败")
+            # 6. 处理回放数据
+            if isinstance(data, GameDataResponse):
+                # 如果是 GameDataResponse，直接使用 playbyplay 属性
+                if data.playbyplay:
+                    play_by_play = self._parse_playbyplay({'game': data.playbyplay})
+                    if play_by_play:
+                        game.playByPlay = play_by_play
+                        self.logger.debug("成功解析回放数据")
+            else:
+                # 如果是字典类型，检查 playByPlay 字段
+                if 'playByPlay' in processed_data:
+                    play_by_play = self._parse_playbyplay(processed_data)
+                    if play_by_play:
+                        game.playByPlay = play_by_play
+                        self.logger.debug("成功解析回放数据")
 
             return game
 
         except Exception as e:
-            self.logger.error(f"解析比赛数据时出错: {e}")
+            self.logger.error(f"解析比赛数据时出错: {str(e)}", exc_info=True)
             return None
 
     def _process_game_data(self, game_data: Dict[str, Any]) -> GameData:
@@ -348,7 +373,7 @@ class GameDataParser:
             game_data = data.get('game', {})
             actions_data = game_data.get('actions', [])
 
-            if not actions_data:
+            if not actions_data and not game_data.get('gameStatus') == GameStatusEnum.NOT_STARTED:
                 self.logger.warning("未找到有效的actions数据")
                 return None
 
@@ -362,10 +387,6 @@ class GameDataParser:
                 except Exception as e:
                     self.logger.error(f"处理事件时出错: {e}, 事件数据: {action_data}")
                     continue
-
-            if not actions:
-                self.logger.warning("没有解析到任何有效事件")
-                return None
 
             self.logger.info(f"成功解析 {len(actions)} 个事件")
 
