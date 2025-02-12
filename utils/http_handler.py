@@ -129,13 +129,12 @@ class HTTPRequestManager:
         self.logger = logging.getLogger(__name__)
         self.session = self._create_session()
         self.last_request_time = 0
-        self.min_request_interval = 1.0
+        self.min_request_interval = 3.0
 
     @staticmethod
     def _prepare_headers(headers: Optional[Dict[str, str]]) -> Dict[str, str]:
         """准备请求头"""
         default_headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36',
             'Accept': 'application/json',
             'Accept-Encoding': 'gzip, deflate'
         }
@@ -165,7 +164,13 @@ class HTTPRequestManager:
                     self._wait_for_rate_limit()
 
                     response = self.session.request(method=method.upper(), url=url, params=params, json=data,
-                                                 timeout=self.timeout)
+                                                 timeout=self.timeout,headers=self.headers)
+
+                    self.logger.debug(f"请求URL: {response.request.url}")  # 打印最终请求的 URL (可能经过重定向)
+                    self.logger.debug(f"请求方法: {method}")
+                    self.logger.debug(f"请求头: {self.headers}")
+                    self.logger.debug(f"响应状态码: {response.status_code}")
+                    self.logger.debug(f"响应头: {response.headers}")
 
                     if not response.ok:
                         self.logger.warning(f"请求失败: {response.status_code}, URL: {url}")

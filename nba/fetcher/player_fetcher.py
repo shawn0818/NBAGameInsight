@@ -1,6 +1,5 @@
 from typing import Dict, Optional, Any
 from datetime import timedelta
-from pathlib import Path
 from .base_fetcher import BaseNBAFetcher, BaseRequestConfig, BaseCacheConfig
 from config.nba_config import NBAConfig
 
@@ -9,7 +8,7 @@ class PlayerConfig:
     """球员数据配置 (仅单个球员)"""
     BASE_URL: str = "https://stats.nba.com/stats"
     PLAYER_INFO_ENDPOINT: str = "commonplayerinfo"
-    CACHE_PATH: Path = Path(NBAConfig.PATHS.PLAYER_CACHE_DIR)
+    CACHE_PATH = NBAConfig.PATHS.PLAYER_CACHE_DIR
     CACHE_DURATION: timedelta = timedelta(days=1) # 单个球员信息缓存1天
 
 

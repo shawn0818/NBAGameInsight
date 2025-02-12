@@ -1,6 +1,5 @@
 from typing import Dict, Optional, Any
 from datetime import timedelta
-from pathlib import Path
 import requests
 from .base_fetcher import BaseNBAFetcher, BaseRequestConfig, BaseCacheConfig
 from config.nba_config import NBAConfig
@@ -9,20 +8,9 @@ from config.nba_config import NBAConfig
 class TeamConfig:
     """球队数据配置"""
     BASE_URL: str = "https://stats.nba.com/stats"
-    CACHE_PATH: Path = Path(NBAConfig.PATHS.TEAM_CACHE_DIR)
+    CACHE_PATH = NBAConfig.PATHS.TEAM_CACHE_DIR
     CACHE_DURATION: timedelta = timedelta(days=7)  # 球队数据缓存7天
 
-    # 请求头配置
-    DEFAULT_HEADERS: Dict[str, str] = {
-        'Accept': '*/*',
-        'Accept-Language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
-        'Connection': 'keep-alive',
-        'Origin': 'https://www.nba.com',
-        'Referer': 'https://www.nba.com/',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'same-site'
-    }
 
 
 class TeamFetcher(BaseNBAFetcher):
@@ -47,8 +35,6 @@ class TeamFetcher(BaseNBAFetcher):
         # 初始化基类
         super().__init__(base_config)
 
-        # 更新请求头
-        self.http_manager.headers.update(self.team_config.DEFAULT_HEADERS)
 
     @staticmethod
     def _get_cache_key(endpoint: str, team_id: int) -> str:

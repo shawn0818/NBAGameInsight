@@ -6,6 +6,7 @@ from typing import Dict, Optional, Any, Union
 from urllib.parse import urlencode
 
 from utils.http_handler import HTTPRequestManager, RetryConfig
+from utils.logger_handler import AppLogger
 
 
 class BaseCacheConfig:
@@ -163,14 +164,14 @@ class CacheManager:
 class BaseRequestConfig:
     """基础请求配置"""
 
-    def __init__(self, base_url: str, cache_config: BaseCacheConfig,
-                 retry_config: Optional[RetryConfig] = None,
-                 request_timeout: int = 30):
-        if not base_url:
-            raise ValueError("base_url cannot be empty")
-        if not isinstance(cache_config, BaseCacheConfig):
-            raise TypeError("cache_config must be an instance of BaseCacheConfig")
-
+    def __init__(
+        self,
+        cache_config: BaseCacheConfig,
+        base_url: Optional[str] = None,  # 改为可选参数
+        retry_config: Optional[RetryConfig] = None,
+        request_timeout: int = 30
+    ):
+        # base_url 现在是可选的
         self.base_url = base_url
         self.cache_config = cache_config
         self.retry_config = retry_config or RetryConfig()
@@ -184,12 +185,14 @@ class BaseNBAFetcher:
     def _get_default_headers() -> Dict[str, str]:
         """获取默认请求头"""
         return {
-            'accept': '*/*',
-            'accept-language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
-            'cache-control': 'no-cache',
-            'dnt': '1',
-            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36'
-        }
+        'accept': 'application/json',
+        'accept-language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+        'accept-encoding': 'gzip, deflate, br, zstd',
+        'connection': 'keep-alive',
+        'dnt': '1',
+        'referer': 'https://www.nba.com/',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36',
+    }
 
     def __init__(self, config: BaseRequestConfig):
         """初始化"""
@@ -198,7 +201,7 @@ class BaseNBAFetcher:
 
         self.config = config
         self.cache_manager = CacheManager(config.cache_config)
-        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger = AppLogger.get_logger(__name__, app_name='nba')
 
         self.http_manager = HTTPRequestManager(
             headers=self._get_default_headers(),
@@ -208,7 +211,7 @@ class BaseNBAFetcher:
             self.http_manager.retry_strategy.config = config.retry_config
 
     def fetch_data(self, url: Optional[str] = None, endpoint: Optional[str] = None,
-                   params: Optional[Dict] = None, method: str = 'GET',
+                   params: Optional[Dict] = None,
                    data: Optional[Dict] = None, cache_key: Optional[str] = None,
                    cache_status_key: Any = None,
                    force_update: bool = False,
@@ -219,7 +222,6 @@ class BaseNBAFetcher:
             url: 完整的请求URL
             endpoint: API端点
             params: URL参数
-            method: 请求方法
             data: POST数据
             cache_key: 缓存键
             cache_status_key: 用于确定缓存时长的状态键
@@ -241,16 +243,18 @@ class BaseNBAFetcher:
                 cache_key=cache_status_key
             )
             if cached_data is not None:
-                return cached_data
+                # 直接返回data字段内容
+                return cached_data.get('data') if isinstance(cached_data,dict) and 'data' in cached_data else cached_data
 
         # 获取新数据
         try:
+            self.logger.info(f"Request URL: {url}")
             data = self.http_manager.make_request(
                 url=url,
-                method=method,
                 params=params,
                 data=data
             )
+
 
             # 如果获取成功且需要缓存，则更新缓存
             if data is not None and cache_key:
@@ -275,11 +279,16 @@ class BaseNBAFetcher:
         if not endpoint:
             raise ValueError("endpoint cannot be empty")
 
-        # 处理 base_url，确保结尾没有 '/'
-        base = self.config.base_url.rstrip('/')
-        # 处理 endpoint，确保开头没有 '/'
-        clean_endpoint = endpoint.lstrip('/')
+        # 如果没有 base_url，直接使用 endpoint
+        if not self.config.base_url:
+            if params:
+                query_string = urlencode({k: v for k, v in params.items() if v is not None})
+                return f"{endpoint}?{query_string}"
+            return endpoint
 
+        # 原有的 base_url 处理逻辑
+        base = self.config.base_url.rstrip('/')
+        clean_endpoint = endpoint.lstrip('/')
         if params:
             query_string = urlencode({k: v for k, v in params.items() if v is not None})
             return f"{base}/{clean_endpoint}?{query_string}"
