@@ -180,17 +180,19 @@ class VideoFetcher(BaseNBAFetcher):
             )
 
             # 验证响应数据
-            if data:
-                self.logger.info(f"成功获取视频链接数据:{data}")
+            if data and self._validate_cached_data(data):  # 添加对新获取数据的验证
+                self.logger.info(f"成功获取包含视频链接数据")
                 return data
+            else:
+                self.logger.warning(f"获取的视频链接数据验证失败或为空")
+                return None
 
-            return None
 
         except ValueError as e:
             self.logger.error(f"参数验证失败: {e}")
             return None
         except Exception as e:
-            self.logger.error(f"获取视频数据失败: {e}")
+            self.logger.error(f"获取视频链接数据失败: {e}")
             return None
 
 
