@@ -2,8 +2,9 @@
 import logging
 from pathlib import Path
 from typing import  Dict
+from utils.logger_handler import AppLogger
 
-logger = logging.getLogger(__name__)
+logger =  AppLogger.get_logger(__name__, app_name='weibo')
 
 def get_project_root() -> Path:
     """获取项目根目录"""

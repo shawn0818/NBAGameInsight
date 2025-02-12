@@ -88,28 +88,24 @@ class GameFetcher(BaseNBAFetcher):
                 self.logger.error("无法获取boxscore数据")
                 return None
 
-            # 2. 只有当比赛进行中或已结束时才获取playbyplay数据
-            playbyplay_data = None
-            if game_status in [GameStatusEnum.IN_PROGRESS, GameStatusEnum.FINISHED]:
-                playbyplay_data, _ = self._get_data_with_status(
-                    game_id,
-                    'playbyplay',
-                    force_update,
-                    game_status
-                )
+            # 2. 获取playbyplay数据 (不再区分比赛状态)
+            playbyplay_data, _ = self._get_data_with_status(  # 统一获取 playbyplay 数据
+                game_id,
+                'playbyplay',
+                force_update,
+                game_status  # 状态仍然可以传递，即使比赛未开始
+            )
 
-                if not playbyplay_data or 'game' not in playbyplay_data:
-                    self.logger.error("无法获取playbyplay数据")
-                    return None
-            else:
-                # 比赛未开始，返回空的playbyplay数据
-                playbyplay_data = {'game': {}}
-                self.logger.info("比赛未开始，不获取playbyplay数据")
+            if not playbyplay_data or 'game' not in playbyplay_data:
+                self.logger.error("无法获取playbyplay数据 (即使比赛未开始，也尝试获取)")
+                playbyplay_data = {'game': {}}  # 即使获取失败，也提供一个空字典，确保后续代码可以执行
+            elif game_status == GameStatusEnum.NOT_STARTED:
+                self.logger.info("比赛未开始，但已尝试获取playbyplay数据")
 
-            # 3. 构建响应
+                # 3. 构建响应
             return GameDataResponse(
                 boxscore=boxscore_data['game'],
-                playbyplay=playbyplay_data['game']
+                playbyplay=playbyplay_data['game']  # 确保 playbyplay_data 被使用
             )
 
         except Exception as e:

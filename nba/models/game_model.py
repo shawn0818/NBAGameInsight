@@ -37,7 +37,7 @@ class EventCategory(str, Enum):
     SUBSTITUTION = "substitution"
     FOUL = "foul"
     VIOLATION = "violation"
-    GAME = "game"
+    GAME = "gamedata"
 
 
 class ShotQualifier(str, Enum):
@@ -169,7 +169,7 @@ class PlayerStatistics(BaseModel):
             minutes = float(minutes_str[2:-1].split('M')[0])
             seconds = float(minutes_str.split('M')[1][:-1])
             data['seconds_played'] = minutes * 60 + seconds
-        except Exception:
+        except (ValueError, TypeError):
             data['seconds_played'] = 0.0
         return data
 
@@ -287,18 +287,280 @@ class TeamStats(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+    @property
+    def assists(self) -> int:
+        """助攻数"""
+        return self.statistics.get('assists', 0)
 
     @property
-    def fieldGoalsMade(self) -> int:
-        return self.statistics.get('fieldGoalsMade', 0)
+    def blocks(self) -> int:
+        """盖帽数"""
+        return self.statistics.get('blocks', 0)
 
     @property
     def fieldGoalsAttempted(self) -> int:
+        """投篮出手数"""
         return self.statistics.get('fieldGoalsAttempted', 0)
 
     @property
+    def fieldGoalsMade(self) -> int:
+        """投篮命中数"""
+        return self.statistics.get('fieldGoalsMade', 0)
+
+    @property
     def fieldGoalsPercentage(self) -> float:
+        """投篮命中率"""
         return self.statistics.get('fieldGoalsPercentage', 0.0)
+
+    @property
+    def threePointersAttempted(self) -> int:
+        """三分出手数"""
+        return self.statistics.get('threePointersAttempted', 0)
+
+    @property
+    def threePointersMade(self) -> int:
+        """三分命中数"""
+        return self.statistics.get('threePointersMade', 0)
+
+    @property
+    def threePointersPercentage(self) -> float:
+        """三分命中率"""
+        return self.statistics.get('threePointersPercentage', 0.0)
+
+    @property
+    def freeThrowsAttempted(self) -> int:
+        """罚球出手数"""
+        return self.statistics.get('freeThrowsAttempted', 0)
+
+    @property
+    def freeThrowsMade(self) -> int:
+        """罚球命中数"""
+        return self.statistics.get('freeThrowsMade', 0)
+
+    @property
+    def freeThrowsPercentage(self) -> float:
+        """罚球命中率"""
+        return self.statistics.get('freeThrowsPercentage', 0.0)
+
+    @property
+    def reboundsOffensive(self) -> int:
+        """进攻篮板"""
+        return self.statistics.get('reboundsOffensive', 0)
+
+    @property
+    def reboundsDefensive(self) -> int:
+        """防守篮板"""
+        return self.statistics.get('reboundsDefensive', 0)
+
+    @property
+    def reboundsTotal(self) -> int:
+        """总篮板"""
+        return self.statistics.get('reboundsTotal', 0)
+
+    @property
+    def turnovers(self) -> int:
+        """失误数"""
+        return self.statistics.get('turnovers', 0)
+
+    @property
+    def steals(self) -> int:
+        """抢断数"""
+        return self.statistics.get('steals', 0)
+
+    @property
+    def foulsPersonal(self) -> int:
+        """个人犯规"""
+        return self.statistics.get('foulsPersonal', 0)
+
+    @property
+    def pointsFastBreak(self) -> int:
+        """快攻得分"""
+        return self.statistics.get('pointsFastBreak', 0)
+
+    @property
+    def pointsFromTurnovers(self) -> int:
+        """失误转换得分"""
+        return self.statistics.get('pointsFromTurnovers', 0)
+
+    @property
+    def pointsInThePaint(self) -> int:
+        """禁区得分"""
+        return self.statistics.get('pointsInThePaint', 0)
+
+    @property
+    def pointsSecondChance(self) -> int:
+        """二次进攻得分"""
+        return self.statistics.get('pointsSecondChance', 0)
+
+    @property
+    def assistsTurnoverRatio(self) -> float:
+        """助攻失误比"""
+        return self.statistics.get('assistsTurnoverRatio', 0.0)
+
+    @property
+    def benchPoints(self) -> int:
+        """替补得分"""
+        return self.statistics.get('benchPoints', 0)
+
+    @property
+    def biggestLead(self) -> int:
+        """最大领先"""
+        return self.statistics.get('biggestLead', 0)
+
+    @property
+    def biggestLeadScore(self) -> str:
+        """最大领先时的比分"""
+        return self.statistics.get('biggestLeadScore', '')
+
+    @property
+    def biggestScoringRun(self) -> int:
+        """最大得分高潮"""
+        return self.statistics.get('biggestScoringRun', 0)
+
+    @property
+    def biggestScoringRunScore(self) -> str:
+        """最大得分高潮时的比分"""
+        return self.statistics.get('biggestScoringRunScore', '')
+
+    @property
+    def foulsDrawn(self) -> int:
+        """造成犯规"""
+        return self.statistics.get('foulsDrawn', 0)
+
+    @property
+    def foulsOffensive(self) -> int:
+        """进攻犯规"""
+        return self.statistics.get('foulsOffensive', 0)
+
+    @property
+    def foulsTeam(self) -> int:
+        """团队犯规"""
+        return self.statistics.get('foulsTeam', 0)
+
+    @property
+    def foulsTechnical(self) -> int:
+        """技术犯规"""
+        return self.statistics.get('foulsTechnical', 0)
+
+    @property
+    def fastBreakPointsAttempted(self) -> int:
+        """快攻出手数"""
+        return self.statistics.get('fastBreakPointsAttempted', 0)
+
+    @property
+    def fastBreakPointsMade(self) -> int:
+        """快攻命中数"""
+        return self.statistics.get('fastBreakPointsMade', 0)
+
+    @property
+    def fastBreakPointsPercentage(self) -> float:
+        """快攻命中率"""
+        return self.statistics.get('fastBreakPointsPercentage', 0.0)
+
+    @property
+    def leadChanges(self) -> int:
+        """领先变换次数"""
+        return self.statistics.get('leadChanges', 0)
+
+    @property
+    def minutesCalculated(self) -> str:
+        """比赛时间(计算值)"""
+        return self.statistics.get('minutesCalculated', 'PT00M')
+
+    @property
+    def pointsAgainst(self) -> int:
+        """失分"""
+        return self.statistics.get('pointsAgainst', 0)
+
+    @property
+    def pointsInThePaintAttempted(self) -> int:
+        """禁区出手数"""
+        return self.statistics.get('pointsInThePaintAttempted', 0)
+
+    @property
+    def pointsInThePaintMade(self) -> int:
+        """禁区命中数"""
+        return self.statistics.get('pointsInThePaintMade', 0)
+
+    @property
+    def pointsInThePaintPercentage(self) -> float:
+        """禁区命中率"""
+        return self.statistics.get('pointsInThePaintPercentage', 0.0)
+
+    @property
+    def reboundsTeam(self) -> int:
+        """团队篮板"""
+        return self.statistics.get('reboundsTeam', 0)
+
+    @property
+    def reboundsTeamDefensive(self) -> int:
+        """团队防守篮板"""
+        return self.statistics.get('reboundsTeamDefensive', 0)
+
+    @property
+    def reboundsTeamOffensive(self) -> int:
+        """团队进攻篮板"""
+        return self.statistics.get('reboundsTeamOffensive', 0)
+
+    @property
+    def secondChancePointsAttempted(self) -> int:
+        """二次进攻出手数"""
+        return self.statistics.get('secondChancePointsAttempted', 0)
+
+    @property
+    def secondChancePointsMade(self) -> int:
+        """二次进攻命中数"""
+        return self.statistics.get('secondChancePointsMade', 0)
+
+    @property
+    def secondChancePointsPercentage(self) -> float:
+        """二次进攻命中率"""
+        return self.statistics.get('secondChancePointsPercentage', 0.0)
+
+    @property
+    def timeLeading(self) -> str:
+        """领先时间"""
+        return self.statistics.get('timeLeading', 'PT00M00.00S')
+
+    @property
+    def timesTied(self) -> int:
+        """平局次数"""
+        return self.statistics.get('timesTied', 0)
+
+    @property
+    def trueShootingAttempts(self) -> float:
+        """真实命中率出手数"""
+        return self.statistics.get('trueShootingAttempts', 0.0)
+
+    @property
+    def trueShootingPercentage(self) -> float:
+        """真实命中率"""
+        return self.statistics.get('trueShootingPercentage', 0.0)
+
+    @property
+    def turnoversTeam(self) -> int:
+        """团队失误"""
+        return self.statistics.get('turnoversTeam', 0)
+
+    @property
+    def turnoversTotal(self) -> int:
+        """总失误"""
+        return self.statistics.get('turnoversTotal', 0)
+
+    @property
+    def twoPointersAttempted(self) -> int:
+        """两分出手数"""
+        return self.statistics.get('twoPointersAttempted', 0)
+
+    @property
+    def twoPointersMade(self) -> int:
+        """两分命中数"""
+        return self.statistics.get('twoPointersMade', 0)
+
+    @property
+    def twoPointersPercentage(self) -> float:
+        """两分命中率"""
+        return self.statistics.get('twoPointersPercentage', 0.0)
 
 
 
@@ -507,7 +769,7 @@ class GameData(BaseModel):
     """比赛详细数据模型"""
     gameId: str = Field(default="", description="比赛ID")
     gameTimeLocal: datetime = Field(default_factory=datetime.now, description="本地时间")
-    gameTimeUTC: datetime = Field(default_factory=datetime.utcnow, description="UTC时间")
+    gameTimeUTC: datetime = Field(default_factory= datetime.now, description="UTC时间")
     gameTimeHome: datetime = Field(default_factory=datetime.now, description="主队时间")
     gameTimeAway: datetime = Field(default_factory=datetime.now, description="客队时间")
     gameEt: datetime = Field(default_factory=datetime.now, description="东部时间")
@@ -532,7 +794,7 @@ class GameData(BaseModel):
 class Game(BaseModel):
     """完整比赛数据模型"""
     meta: Dict[str, Any] = Field(..., description="元数据")
-    game: GameData = Field(..., description="比赛数据")
+    gameData: GameData = Field(..., description="比赛数据")
     playByPlay: Optional[PlayByPlay] = Field(None, description="比赛回放数据")
 
     def get_shot_data(self, player_id: Optional[int] = None) -> List[Dict[str, Any]]:

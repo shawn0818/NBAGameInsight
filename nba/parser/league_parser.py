@@ -335,8 +335,8 @@ class LeagueMapper:
         normalized_name = NameNormalizer.normalize_name(name)
         best_match, score = process.extractOne(normalized_name, self._team_name_to_id.keys(), scorer=fuzz.partial_ratio)
 
-        FUZZY_MATCH_THRESHOLD = 70  # 设置模糊匹配阈值，例如 70 分
-        if best_match and score >= FUZZY_MATCH_THRESHOLD:
+        fuzzy_match_threshold = 70  # 设置模糊匹配阈值，例如 70 分
+        if best_match and score >= fuzzy_match_threshold:
             return self._team_name_to_id[best_match]
 
         return None
@@ -436,14 +436,14 @@ class LeagueDataProvider:
         从 LeagueMapper 中动态生成，并结合硬编码的 abbv。
         """
         teams_enum_list = []
-        for team_id in self.data_mapper._team_id_to_name: # 遍历球队 ID
-            team_name = self.data_mapper.get_team_name_by_id(team_id) # 获取球队名称
-            team_abbr = self.data_mapper.get_team_abbr_by_id(team_id) # 获取球队缩写
+        for team_id in HARDCODED_TEAM_ABBRS:  # 使用硬编码的team_id列表
+            team_name = self.data_mapper.get_team_name_by_id(team_id)  # 使用公共方法
+            team_abbr = self.data_mapper.get_team_abbr_by_id(team_id)
 
-            if team_name and team_abbr: # 确保名称和缩写都存在
+            if team_name and team_abbr:
                 team_enum_dict = {
                     "id": team_id,
-                    "name": team_name.split()[-1], #  只取球队名称，例如 "Lakers" 而不是 "Los Angeles Lakers"
+                    "name": team_name.split()[-1],
                     "abbv": team_abbr
                 }
                 teams_enum_list.append(team_enum_dict)

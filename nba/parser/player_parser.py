@@ -78,7 +78,7 @@ class PlayerParser:
 
         for row in rows:
             try:
-                item_data = self._map_row_to_dict(row, field_map)
+                item_data = PlayerParser._map_row_to_dict(row, field_map)
                 item = model_class.model_validate(item_data)
                 items.append(item)
             except ValidationError as ve:
@@ -87,9 +87,24 @@ class PlayerParser:
                 self.logger.error(f"Error parsing {model_class.__name__} row: {str(e)}")
         return items
 
+    @staticmethod
+    def _map_row_to_dict(row: List[Any], field_map: Dict[str, int]) -> Dict[str, Any]:
+        """
+        将行数据映射为字典格式
 
-    def _map_row_to_dict(self, row: List[Any], field_map: Dict[str, int]) -> Dict[str, Any]:
-        """将行数据映射为字典格式"""
+        Args:
+            row (List[Any]): 数据行
+            field_map (Dict[str, int]): 字段名到索引的映射
+
+        Returns:
+            Dict[str, Any]: 字段名到值的映射字典
+
+        Example:
+            row = [1, "John", 25]
+            field_map = {"id": 0, "name": 1, "age": 2}
+            PlayerParser._map_row_to_dict(row, field_map)
+            {'id': 1, 'name': 'John', 'age': 25}
+        """
         return {
             field: row[idx] if idx < len(row) else None
             for field, idx in field_map.items()

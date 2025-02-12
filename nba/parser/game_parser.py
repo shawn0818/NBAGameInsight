@@ -1,8 +1,5 @@
-import logging
-from datetime import datetime
 from typing import Optional, Dict, Any, Union
 from pydantic import ValidationError
-
 from nba.fetcher.game_fetcher import GameDataResponse
 from nba.models.game_model import (
     Game, GameData, GameStatusEnum, Arena, Official, PeriodScore,
@@ -12,7 +9,6 @@ from nba.models.game_model import (
     AssistEvent, TurnoverEvent, SubstitutionEvent, TimeoutEvent, ViolationEvent,
     ShotEvent, GameEvent
 )
-from utils.time_handler import TimeParser, NBATimeHandler, BasketballGameTime
 from utils.logger_handler import AppLogger
 
 
@@ -74,7 +70,7 @@ class GameDataParser:
             # 5. 创建 Game 实例（保证符合 model 要求）
             game = Game(
                 meta=processed_data.get('meta', {}),
-                game=game_data,
+                gameData=game_data,
                 playByPlay=None  # 初始设置为 None
             )
 
@@ -101,7 +97,6 @@ class GameDataParser:
             return None
 
     def _process_game_data(self, game_data: Dict[str, Any]) -> GameData:
-        """处理比赛基础信息"""
         try:
             # 处理嵌套的数据结构
             if 'meta' in game_data and 'game' in game_data:
@@ -131,10 +126,8 @@ class GameDataParser:
             home_team = self._process_team_stats(home_team_data)
             away_team = self._process_team_stats(away_team_data)
 
-            # 日期时间处理
-            for time_field in ['gameTimeLocal', 'gameTimeUTC', 'gameTimeHome', 'gameTimeAway', 'gameEt']:
-                if time_field in data and isinstance(data[time_field], str):
-                    data[time_field] = self._parse_datetime(data[time_field])
+            # 让pydantic自动处理时间字段转换,不需要手动解析
+            # 移除原来的时间处理代码
 
             # 处理场馆信息
             if 'arena' in data:
@@ -155,19 +148,22 @@ class GameDataParser:
 
         except Exception as e:
             self.logger.error(f"处理比赛数据时出错: {str(e)}", exc_info=True)
-            # 返回最小可用的游戏数据
             return GameData(
                 homeTeam=self._process_team_stats({}),
-                awayTeam=self._process_team_stats({})
+                awayTeam=self._process_team_stats({}),
+                statistics=None # 保证数据结构正确
             )
 
     def _process_team_stats(self, team_data: Dict[str, Any]) -> TeamStats:
         """处理球队统计数据"""
         try:
+            team_name = team_data.get('teamName', 'Unknown')
+
+            # 初始化空队伍数据
             if not team_data:
                 return TeamStats(
                     teamId=0,
-                    teamName="Unknown",
+                    teamName=team_name,
                     teamCity="Unknown",
                     teamTricode="UNK",
                     score=0,
@@ -196,14 +192,48 @@ class GameDataParser:
                 processed_players = []
                 for player in team_data['players']:
                     try:
-                        # 基础数据确认
+                        # 处理基础统计数据
                         if 'statistics' not in player:
                             player['statistics'] = {}
 
-                        # 处理球员状态相关字段
+                        stats = player['statistics']
+
+                        # 1. 添加球队信息
+                        player['team_name'] = team_name
+
+                        # 2. 处理比赛时间
+                        raw_minutes = stats.get('minutes', 'PT00M00.00S')
+                        if raw_minutes == 'PT00M00.00S':
+                            seconds_played = 0.0
+                        else:
+                            try:
+                                # 去掉PT和S
+                                time_str = raw_minutes.replace('PT', '').replace('S', '')
+                                if 'M' in time_str:
+                                    mins, secs = time_str.split('M')
+                                    seconds_played = float(mins) * 60 + float(secs)
+                                else:
+                                    seconds_played = float(time_str)
+                            except Exception:
+                                seconds_played = 0.0
+
+                        # 更新统计数据
+                        stats.update({
+                            'minutes': raw_minutes,
+                            'seconds_played': seconds_played
+                        })
+
+                        player['statistics'] = stats
+
+                        # 3. 处理状态字段
                         self._process_player_status(player)
 
-                        processed_players.append(Player(**player))
+                        try:
+                            processed_players.append(Player(**player))
+                        except ValidationError as e:
+                            self.logger.error(f"球员数据验证失败: {str(e)}")
+                            continue
+
                     except Exception as e:
                         self.logger.error(f"处理球员数据时出错: {str(e)}")
                         continue
@@ -403,41 +433,6 @@ class GameDataParser:
             self.logger.error(f"解析回放数据时出错: {e}")
             return None
 
-    def _parse_datetime(self, datetime_str: str) -> datetime:
-        """
-        解析ISO格式的时间字符串
-
-        Args:
-            datetime_str: ISO格式的时间字符串
-
-        Returns:
-            datetime: 解析后的datetime对象
-
-        Raises:
-            ValueError: 时间格式无效时抛出
-        """
-        try:
-            return TimeParser.parse_iso8601_datetime(datetime_str)
-        except Exception as e:
-            raise ValueError(f"Invalid datetime format: {datetime_str}") from e
-
-    def _parse_game_clock(self, clock_str: str) -> float:
-        """
-        解析比赛时钟时间为秒数
-
-        Args:
-            clock_str: 时钟时间字符串（格式：PT{minutes}M{seconds}S）
-
-        Returns:
-            float: 转换后的秒数
-
-        Raises:
-            ValueError: 时钟格式无效时抛出
-        """
-        try:
-            return TimeParser.parse_iso8601_duration(clock_str)
-        except Exception as e:
-            raise ValueError(f"Error parsing game clock: {clock_str}") from e
 
     def _get_event_class(self, event_type: str) -> Optional[type]:
         """

@@ -11,7 +11,7 @@ from nba.fetcher.schedule_fetcher import ScheduleFetcher
 from nba.parser.schedule_parser import ScheduleParser
 from nba.parser.league_parser import LeagueDataProvider
 
-from nba.models.game_model import Game, TeamStats, Player, GameData, PlayerStatistics, BaseEvent
+from nba.models.game_model import Game, Player, GameData, PlayerStatistics, BaseEvent
 from config.nba_config import NBAConfig
 from utils.logger_handler import AppLogger
 
@@ -257,7 +257,7 @@ class GameDataProvider:
 
     def get_basic_game_info(self, game: Game) -> GameData:
         """获取比赛基本信息"""
-        return game.game
+        return game.gameData
 
     def get_player_game_stats(self, player: Player) -> PlayerStatistics:
         """获取球员在比赛中的统计数据"""
@@ -266,11 +266,11 @@ class GameDataProvider:
     def get_team_game_stats(self, game: Game) -> Dict[str, Any]:
         """获取比赛中主客队的统计信息"""
         try:
-            if not game or not game.game:
+            if not game or not game.gameData:
                 return {}
             return {
-                "home_team": game.game.homeTeam if hasattr(game.game, 'homeTeam') else None,
-                "away_team": game.game.awayTeam if hasattr(game.game, 'awayTeam') else None
+                "home_team": game.gameData.homeTeam if hasattr(game.gameData, 'homeTeam') else None,
+                "away_team": game.gameData.awayTeam if hasattr(game.gameData, 'awayTeam') else None
             }
         except Exception as e:
             self.logger.error(f"获取比赛球队统计数据时出错: {e}")

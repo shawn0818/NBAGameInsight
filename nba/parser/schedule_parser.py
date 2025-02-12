@@ -1,7 +1,7 @@
 from typing import Dict, Optional, Union
 from datetime import datetime
 import pandas as pd
-import logging
+
 
 from utils.logger_handler import AppLogger
 from utils.time_handler import NBATimeHandler

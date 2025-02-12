@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List
 from dataclasses import dataclass
 import asyncio
 import aiohttp
@@ -98,7 +98,16 @@ class AsyncVideoProcessor:
             url: str,
             output_path: Path
     ) -> bool:
-        """异步下载视频"""
+        """
+        异步下载视频
+
+        Args:
+            url (str): 视频URL
+            output_path (Path): 输出路径
+
+        Returns:
+            bool: 下载是否成功
+        """
         try:
             for retry in range(self.config.max_retries):
                 try:
@@ -107,14 +116,10 @@ class AsyncVideoProcessor:
                             if not response.ok:
                                 raise aiohttp.ClientError(f"HTTP错误: {response.status}")
 
-                            total_size = int(response.headers.get('content-length', 0))
-                            downloaded = 0
-
                             with open(output_path, 'wb') as f:
                                 async for chunk in response.content.iter_chunked(self.config.chunk_size):
                                     if chunk:
                                         f.write(chunk)
-                                        downloaded += len(chunk)
 
                             return True
 

@@ -123,7 +123,8 @@ class VideoFetcher(BaseNBAFetcher):
         # 更新请求头
         self.http_manager.headers.update(self.video_config.DEFAULT_HEADERS)
 
-    def _validate_cached_data(self, data: Optional[Dict]) -> bool:
+    @staticmethod
+    def _validate_cached_data(data: Optional[Dict]) -> bool:
         """验证缓存数据是否有效"""
         if not data:
             return False
@@ -167,7 +168,7 @@ class VideoFetcher(BaseNBAFetcher):
             )
 
             # 验证缓存数据
-            if cached_data and self._validate_cached_data(cached_data):
+            if cached_data and VideoFetcher._validate_cached_data(cached_data):
                 self.logger.info(f"从缓存中获取比赛(ID:{game_id})的视频数据")
                 return cached_data
 
@@ -180,7 +181,7 @@ class VideoFetcher(BaseNBAFetcher):
             )
 
             # 验证响应数据
-            if data and self._validate_cached_data(data):  # 添加对新获取数据的验证
+            if data and VideoFetcher._validate_cached_data(data):  # 添加对新获取数据的验证
                 self.logger.info(f"成功获取包含视频链接数据")
                 return data
             else:
