@@ -3,11 +3,11 @@ from pydantic import ValidationError
 from nba.fetcher.game_fetcher import GameDataResponse
 from nba.models.game_model import (
     Game, GameData, GameStatusEnum, Arena, Official, PeriodScore,
-    Player, TeamStats, BaseEvent, PlayByPlay,
+    PlayerInGame, TeamInGame, BaseEvent, PlayByPlay,
     PeriodEvent, JumpBallEvent, TwoPointEvent, ThreePointEvent,
     FreeThrowEvent, ReboundEvent, StealEvent, BlockEvent, FoulEvent,
     AssistEvent, TurnoverEvent, SubstitutionEvent, TimeoutEvent, ViolationEvent,
-    ShotEvent, GameEvent
+    ShotEvent, GameEvent, TeamStatistics, PlayerStatistics
 )
 from utils.logger_handler import AppLogger
 
@@ -80,7 +80,7 @@ class GameDataParser:
                 if data.playbyplay:
                     play_by_play = self._parse_playbyplay({'game': data.playbyplay})
                     if play_by_play:
-                        game.playByPlay = play_by_play
+                        game.play_by_play = play_by_play
                         self.logger.debug("成功解析回放数据")
             else:
                 # 如果是字典类型，检查 playByPlay 字段
@@ -154,97 +154,55 @@ class GameDataParser:
                 statistics=None # 保证数据结构正确
             )
 
-    def _process_team_stats(self, team_data: Dict[str, Any]) -> TeamStats:
+    def _process_team_stats(self, team_data: Dict[str, Any]) -> TeamInGame:
         """处理球队统计数据"""
         try:
-            team_name = team_data.get('teamName', 'Unknown')
-
-            # 初始化空队伍数据
-            if not team_data:
-                return TeamStats(
-                    teamId=0,
-                    teamName=team_name,
-                    teamCity="Unknown",
-                    teamTricode="UNK",
-                    score=0,
-                    inBonus="0",
-                    timeoutsRemaining=0
-                )
-
             # 处理每节比分
             if 'periods' in team_data:
-                processed_periods = []
-                for period_data in team_data['periods']:
-                    try:
-                        period_score = PeriodScore(
-                            period=period_data['period'],
-                            periodType=period_data['periodType'],
-                            score=period_data['score']
-                        )
-                        processed_periods.append(period_score)
-                    except Exception as e:
-                        self.logger.error(f"处理节次数据时出错: {str(e)}")
-                        continue
-                team_data['periods'] = processed_periods
+                team_data['periods'] = [
+                    PeriodScore(**period_data)
+                    for period_data in team_data['periods']
+                ]
 
             # 处理球员数据
             if 'players' in team_data:
                 processed_players = []
                 for player in team_data['players']:
-                    try:
-                        # 处理基础统计数据
-                        if 'statistics' not in player:
-                            player['statistics'] = {}
-
-                        stats = player['statistics']
-
-                        # 1. 添加球队信息
-                        player['team_name'] = team_name
-
-                        # 2. 处理比赛时间
-                        raw_minutes = stats.get('minutes', 'PT00M00.00S')
-                        if raw_minutes == 'PT00M00.00S':
-                            seconds_played = 0.0
-                        else:
-                            try:
-                                # 去掉PT和S
-                                time_str = raw_minutes.replace('PT', '').replace('S', '')
-                                if 'M' in time_str:
-                                    mins, secs = time_str.split('M')
-                                    seconds_played = float(mins) * 60 + float(secs)
-                                else:
-                                    seconds_played = float(time_str)
-                            except Exception:
-                                seconds_played = 0.0
-
-                        # 更新统计数据
-                        stats.update({
-                            'minutes': raw_minutes,
-                            'seconds_played': seconds_played
-                        })
-
-                        player['statistics'] = stats
-
-                        # 3. 处理状态字段
-                        self._process_player_status(player)
-
-                        try:
-                            processed_players.append(Player(**player))
-                        except ValidationError as e:
-                            self.logger.error(f"球员数据验证失败: {str(e)}")
-                            continue
-
-                    except Exception as e:
-                        self.logger.error(f"处理球员数据时出错: {str(e)}")
-                        continue
-
+                    player['team_name'] = team_data.get('teamName')
+                    processed_player = self._process_player_stats(player)
+                    if processed_player:
+                        processed_players.append(processed_player)
                 team_data['players'] = processed_players
 
-            return TeamStats(**team_data)
+            # 处理团队统计
+            if 'statistics' in team_data:
+                team_data['statistics'] = TeamStatistics(**team_data['statistics'])
+
+            return TeamInGame(**team_data)
 
         except Exception as e:
-            self.logger.error(f"处理球队统计数据时出错: {str(e)}")
-            raise
+            self.logger.error(f"处理球队数据时出错: {str(e)}")
+            raise  # 让上层处理错误
+            
+    def _process_player_stats(self, player_data: Dict[str, Any]) -> Optional[PlayerInGame]:
+        """处理球员统计数据"""
+        try:
+            # 1. 处理基础统计数据
+            if 'statistics' not in player_data:
+                player_data['statistics'] = {}
+
+            # 2. 处理状态字段
+            self._process_player_status(player_data)
+
+            # 3. 处理统计数据
+            player_data['statistics'] = PlayerStatistics(**player_data['statistics'])
+            
+            return PlayerInGame(**player_data)
+
+        except Exception as e:
+            self.logger.error(f"处理球员数据时出错: {str(e)}")
+            return None
+
 
     def _process_event(self, event_data: Dict[str, Any]) -> Optional[BaseEvent]:
         """处理单个事件数据"""
