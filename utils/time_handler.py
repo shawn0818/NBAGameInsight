@@ -1,194 +1,171 @@
 from datetime import datetime
 from typing import Union
 from pytz import timezone
-import logging
 import re
 
 
-class TimeParser:
-    """基础的时间解析工具类，专门处理 ISO8601 格式"""
+class TimeHandler:
+    """NBA时间处理工具类"""
 
-    @staticmethod
-    def parse_iso8601_duration(duration_str: str) -> int:
+    # 1. 基础常量定义
+    # 时区定义
+    UTC_TZ = timezone('UTC')
+    BEIJING_TZ = timezone('Asia/Shanghai')
+
+    # 比赛时间常量
+    REGULAR_QUARTER_LENGTH = 12 * 60  # 常规节时长(秒)
+    OVERTIME_LENGTH = 5 * 60  # 加时赛时长(秒)
+    QUARTERS_IN_GAME = 4  # 常规比赛节数
+
+    # 2. 基础时间解析方法
+    @classmethod
+    def parse_duration(cls, duration_str: str) -> int:
         """
-        解析 ISO 8601 格式的时长字符串为秒数
+        解析ISO 8601时长字符串为秒数
+        例如: "PT12M00.00S" -> 720秒; "PT06M30.00S" -> 390秒
 
         Args:
-            duration_str: ISO 8601格式的时长字符串 (如 "PT12M00.00S")
+            duration_str: ISO 8601格式的时长字符串
 
         Returns:
             int: 转换后的总秒数
-
-        Examples:
-            >>> TimeParser.parse_iso8601_duration("PT12M00.00S")
-            720
         """
         pattern = r'^PT(\d+)M(\d+(\.\d+)?)S$'
         match = re.match(pattern, duration_str)
 
         if not match:
-            raise ValueError(f"Invalid ISO 8601 duration format: {duration_str}")
+            raise ValueError(f"Invalid duration format: {duration_str}")
 
         minutes = int(match.group(1))
         seconds = float(match.group(2))
         return int(minutes * 60 + round(seconds))
 
-    @staticmethod
-    def parse_iso8601_datetime(datetime_str: str) -> datetime:
+    @classmethod
+    def parse_datetime(cls, datetime_str: str) -> datetime:
         """
-        解析 ISO 8601 格式的时间字符串为 datetime 对象
+        解析ISO 8601格式的UTC时间字符串为datetime对象
 
         Args:
-            datetime_str: ISO 8601格式的时间字符串 (如 "2024-12-09T02:40:38Z")
+            datetime_str: ISO 8601格式的时间字符串
 
         Returns:
-            datetime: 解析后的 datetime 对象
+            datetime: 解析后的datetime对象
         """
         return datetime.fromisoformat(datetime_str.replace('Z', '+00:00'))
 
-
-class NBATimeHandler:
-    """NBA时间处理工具类"""
-
-    UTC_TZ = timezone('UTC')
-    BEIJING_TZ = timezone('Asia/Shanghai')
-
+    # 3. 时区转换相关方法
     @classmethod
-    def get_current_utc(cls) -> datetime:
-        """获取当前UTC时间"""
-        return datetime.now(cls.UTC_TZ)
-
-    @classmethod
-    def ensure_tz_datetime(cls, dt: Union[str, datetime], tz=None) -> datetime:
+    def ensure_utc(cls, dt: Union[str, datetime]) -> datetime:
         """
-        确保datetime对象带有时区信息
+        确保时间为UTC时间
 
         Args:
-            dt: 时间对象或字符串
-            tz: 指定时区（如果时间对象没有时区信息）
-        """
-        if isinstance(dt, str):
-            dt = TimeParser.parse_iso8601_datetime(dt)
-
-        if not dt.tzinfo:
-            tz = tz or cls.UTC_TZ
-            dt = tz.localize(dt)
-
-        return dt
-
-    @classmethod
-    def local_to_utc(cls, local_time: datetime, local_tz=BEIJING_TZ) -> datetime:
-        """
-        将本地时间转换为UTC时间
-
-        Args:
-            local_time: 本地时间
-            local_tz: 本地时区（默认为北京时区）
+            dt: 字符串或datetime对象
 
         Returns:
             datetime: UTC时间
         """
-        if not local_time.tzinfo:
-            local_time = local_tz.localize(local_time)
-        return local_time.astimezone(cls.UTC_TZ)
+        if isinstance(dt, str):
+            dt = cls.parse_datetime(dt)
+
+        if not dt.tzinfo:
+            dt = cls.UTC_TZ.localize(dt)
+        return dt.astimezone(cls.UTC_TZ)
 
     @classmethod
-    def utc_to_local(cls, utc_time: Union[str, datetime], target_tz=BEIJING_TZ) -> datetime:
+    def to_beijing(cls, dt: Union[str, datetime]) -> datetime:
         """
-        将UTC时间转换为目标时区时间
+        转换为北京时间
 
         Args:
-            utc_time: UTC时间，可以是ISO8601字符串或datetime对象
-            target_tz: 目标时区（默认为北京时区）
+            dt: UTC时间（字符串或datetime）
 
         Returns:
-            datetime: 目标时区的datetime对象
+            datetime: 北京时间
         """
-        dt = cls.ensure_tz_datetime(utc_time, cls.UTC_TZ)
-        return dt.astimezone(target_tz)
+        utc_time = cls.ensure_utc(dt)
+        return utc_time.astimezone(cls.BEIJING_TZ)
 
+    # 4. 时间格式化方法
     @classmethod
-    def get_utc_date(cls, date_str: str, local_tz=BEIJING_TZ) -> datetime:
+    def format_time(cls, dt: datetime, to_beijing: bool = True, format_str: str = '%Y-%m-%d %H:%M:%S') -> str:
         """
-        将日期字符串转换为UTC时间
+        格式化时间
 
         Args:
-            date_str: 日期字符串 (格式: YYYY-MM-DD)
-            local_tz: 输入日期的时区（默认为北京时区）
+            dt: datetime对象
+            to_beijing: 是否转换为北京时间
+            format_str: 格式化字符串
 
         Returns:
-            datetime: UTC时间的datetime对象
+            str: 格式化后的时间字符串
         """
-        local_dt = datetime.strptime(date_str, '%Y-%m-%d')
-        local_dt = local_tz.localize(local_dt)
-        return local_dt.astimezone(cls.UTC_TZ)
-
-    @classmethod
-    def format_time(cls, dt: datetime, format_str: str = '%Y-%m-%d %H:%M:%S') -> str:
-        """格式化datetime对象为字符串"""
+        if to_beijing:
+            dt = cls.to_beijing(dt)
         return dt.strftime(format_str)
 
+    # 5. 比赛时间处理方法
     @classmethod
-    def is_current_or_future(cls, dt: Union[str, datetime], reference_tz=None) -> bool:
+    def get_minutes_played(cls, duration_str: str) -> float:
         """
-        检查给定时间是否为当前或将来的时间
+        获取比赛时间（分钟）
 
         Args:
-            dt: UTC时间，可以是ISO8601字符串或datetime对象
-            reference_tz: 参考时区（默认为 UTC）
+            duration_str: ISO 8601时长字符串
 
         Returns:
-            bool: 是否为当前或将来的时间
+            float: 比赛时间（分钟）
         """
-        if not reference_tz:
-            reference_tz = cls.UTC_TZ
-
-        try:
-            dt = cls.ensure_tz_datetime(dt, reference_tz)
-            return dt >= datetime.now(reference_tz)
-
-        except Exception as e:
-            logging.error(f"Error checking time: {e}")
-            return False
-
-
-class BasketballGameTime:
-    """篮球比赛时间处理工具类"""
-
-    REGULAR_QUARTER_LENGTH = 12 * 60  # 常规节时长(秒)
-    OVERTIME_LENGTH = 5 * 60  # 加时赛时长(秒)
-    QUARTERS_IN_GAME = 4  # 常规比赛节数
+        seconds = cls.parse_duration(duration_str)
+        return round(seconds / 60.0, 2)
 
     @classmethod
-    def get_seconds_left(cls, period: int, time_str: str) -> int:
+    def get_game_time_status(cls, period: int, time_str: str) -> dict:
         """
-        计算比赛剩余时间（秒）
+        获取比赛时间状态信息
 
         Args:
-            period: 当前节数（1-4为常规时间，>4为加时赛）
-            time_str: ISO8601格式的时长字符串（如 "PT12M00.00S"）
+            period: 当前节数
+            time_str: 比赛时钟时间 (如 "PT06M30.00S")
 
         Returns:
-            int: 比赛剩余总时间（秒）
+            dict: 返回比赛时间相关信息，包括：
+                - total_seconds_left: 剩余总秒数
+                - current_period_seconds: 当前节剩余秒数
+                - is_overtime: 是否加时赛
+                - period_name: 节次名称
+                - period: 当前节次
         """
-        total_seconds = TimeParser.parse_iso8601_duration(time_str)
+        seconds = cls.parse_duration(time_str)
+        is_overtime = period > cls.QUARTERS_IN_GAME
 
         if period <= cls.QUARTERS_IN_GAME:
             remaining_periods = cls.QUARTERS_IN_GAME - period
-            total_seconds += remaining_periods * cls.REGULAR_QUARTER_LENGTH
-
-        return total_seconds
-
-    @classmethod
-    def is_overtime(cls, period: int) -> bool:
-        """判断是否为加时赛"""
-        return period > cls.QUARTERS_IN_GAME
-
-    @classmethod
-    def get_period_name(cls, period: int) -> str:
-        """获取节数的显示名称"""
-        if period <= cls.QUARTERS_IN_GAME:
-            return f"第{period}节"
+            total_seconds = seconds + remaining_periods * cls.REGULAR_QUARTER_LENGTH
         else:
-            ot_number = period - cls.QUARTERS_IN_GAME
-            return f"第{ot_number}个加时"
+            total_seconds = seconds
+
+        period_name = f"第{period}节" if period <= cls.QUARTERS_IN_GAME else f"第{period - cls.QUARTERS_IN_GAME}个加时"
+
+        return {
+            'total_seconds_left': total_seconds,
+            'current_period_seconds': seconds,
+            'is_overtime': is_overtime,
+            'period_name': period_name,
+            'period': period
+        }
+
+    @classmethod
+    def is_future_game(cls, game_time: Union[str, datetime]) -> bool:
+        """
+        判断是否为未来的比赛（基于UTC时间判断）
+
+        Args:
+            game_time: 比赛时间（字符串或datetime）
+
+        Returns:
+            bool: 是否为未来的比赛
+        """
+        game_dt = cls.ensure_utc(game_time)
+        current_dt = datetime.now(cls.UTC_TZ)
+        return game_dt > current_dt
