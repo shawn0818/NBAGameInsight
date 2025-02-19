@@ -1,9 +1,11 @@
+from dataclasses import dataclass, field
+
 from config.nba_config import NBAConfig
 from nba.models.game_model import Game
 from nba.services.game_data_service import GameDataProvider
 from utils.logger_handler import AppLogger
 
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, Union
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.patches import Rectangle, Circle, Arc
@@ -12,56 +14,70 @@ import requests
 from io import BytesIO
 from pathlib import Path
 
+@dataclass
+class ChartConfig:
+    """图表服务配置"""
+    dpi: int = 300  # 图表DPI
+    scale_factor: float = 2.0  # 图表缩放比例
+    figure_path: Optional[Path] = field(default_factory=lambda: NBAConfig.PATHS.PICTURES_DIR)   # 图表保存路径
+
+
+    def __post_init__(self):
+        """配置验证与初始化"""
+        if self.dpi < 72 or self.dpi > 600:
+            raise ValueError("DPI must be between 72 and 600")
+        if self.scale_factor < 0.5 or self.scale_factor > 5.0:
+            raise ValueError("Scale factor must be between 0.5 and 5.0")
+
+
 
 class CourtRenderer:
     """NBA半场球场渲染器"""
 
     @staticmethod
-    @staticmethod
-    def draw_court(scale_factor: float = 2.0, dpi: int = 300):
+    def draw_court(config: ChartConfig):
         """
         Draw an NBA halfcourt with basket at the bottom
         Args:
-            scale_factor: 放大倍数
-            dpi: 图像DPI
+            - config: 图表配置对象
         Returns:
             - fig: matplotlib figure object
             - axis: matplotlib axis object
         """
         base_width, base_height = 9, 9
-        scaled_width = base_width * scale_factor
-        scaled_height = base_height * scale_factor
+        scaled_width = base_width * config.scale_factor
+        scaled_height = base_height * config.scale_factor
 
-        fig = plt.figure(figsize=(scaled_width, scaled_height), dpi=dpi)
+        fig = plt.figure(figsize=(scaled_width, scaled_height), dpi=config.dpi)
         axis = fig.add_subplot(111)
 
-        line_width = 2 * scale_factor
+        line_width = 2 * config.scale_factor
 
         # 设置球场底色
         court_shape = Rectangle(xy=(-250, -47.5), width=500, height=470,
-                                linewidth=line_width, color='#F0F0F0', fill=True)
+                                linewidth=line_width, edgecolor='#F0F0F0', fill=True)
         court_shape.set_zorder(0)
         axis.add_patch(court_shape)
 
         # 绘制球场外框
         outer_lines = Rectangle(xy=(-250, -47.5), width=500, height=470,
-                                linewidth=line_width, color='k', fill=False)
+                                linewidth=line_width, edgecolor='k', fill=False)
         axis.add_patch(outer_lines)
 
         # 绘制禁区并填充颜色
         paint = Rectangle(xy=(-80, -47.5), width=160, height=190,
-                          linewidth=line_width, color='k', fill=True,
+                          linewidth=line_width, edgecolor='k', fill=True,
                           facecolor='#B0C4DE', alpha=0.3)  # 使用淡蓝色填充
         axis.add_patch(paint)
 
         # 绘制禁区内框
         inner_paint = Rectangle(xy=(-60, -47.5), width=120, height=190,
-                                linewidth=line_width, color='k', fill=False)
+                                linewidth=line_width, edgecolor='k', fill=False)
         axis.add_patch(inner_paint)
 
         # 绘制篮板
         backboard = Rectangle(xy=(-30, -7.5), width=60, height=1,
-                              linewidth=line_width, color='k', fill=False)
+                              linewidth=line_width, edgecolor='k', fill=False)
         axis.add_patch(backboard)
 
         # 绘制篮筐
@@ -88,9 +104,9 @@ class CourtRenderer:
 
         # 绘制三分线
         three_left = Rectangle(xy=(-220, -47.5), width=0, height=140,
-                               linewidth=line_width, color='k', fill=False)
+                               linewidth=line_width, edgecolor='k', fill=False)
         three_right = Rectangle(xy=(220, -47.5), width=0, height=140,
-                                linewidth=line_width, color='k', fill=False)
+                                linewidth=line_width, edgecolor='k', fill=False)
         axis.add_patch(three_left)
         axis.add_patch(three_right)
 
@@ -156,7 +172,7 @@ class CourtRenderer:
 
             # 创建子图，紧贴框线内侧
             portrait_ax = axis.inset_axes(
-                [position[0] - size, position[1], size, size],
+                (position[0] - size, position[1], size, size),
                 transform=axis.transAxes
             )
             portrait_ax.imshow(img)
@@ -170,18 +186,18 @@ class GameChartsService:
     """NBA比赛数据可视化服务"""
 
     def __init__(self, game_data_service: GameDataProvider,
-                 figure_path: Optional[Path] = None):
+                 config: Optional[ChartConfig] = None):
         """初始化服务"""
         self.logger = AppLogger.get_logger(__name__, app_name='nba')
-        self.figure_path = figure_path or NBAConfig.PATHS.PICTURES_DIR
         self.game_data_service = game_data_service
+        self.config = config or ChartConfig()
 
     def plot_player_scoring_impact(self,
                                    game: Game,
                                    player_id: Optional[int] = None,
                                    title: Optional[str] = None,
-                                   output_path: Optional[str] = None,
-                                   scale_factor: float = 2.0) -> Tuple[Optional[plt.Figure], Dict[str, Any]]:
+                                   output_path: Optional[Union[str, Path]] = None ,
+                                  ) -> Tuple[Optional[plt.Figure], Dict[str, Any]]:
         """绘制球员投篮图"""
         shot_stats = {'total': 0, 'made': 0, 'assisted': 0, 'unassisted': 0}
 
@@ -198,13 +214,13 @@ class GameChartsService:
 
 
             # 创建图表
-            fig, ax = CourtRenderer.draw_court(scale_factor=scale_factor)
+            fig, ax = CourtRenderer.draw_court(self.config)
 
             # 绘制投篮点
             for shot in shots:
-                x = shot.get('xLegacy')
-                y = shot.get('yLegacy')
-                made = shot.get('shotResult') == 'Made'
+                x = shot.get('x_legacy')
+                y = shot.get('y_legacy')
+                made = shot.get('shot_result') == 'Made'
 
                 if x is None or y is None:
                     self.logger.warning(f"Invalid shot coordinates: x={x}, y={y}")
@@ -219,25 +235,23 @@ class GameChartsService:
                                    marker='o',
                                    edgecolors='#3A7711',  # 深绿色边框
                                    facecolors='#F0F0F0',  # 浅灰色填充
-                                   s=30 * scale_factor,  # 点的大小随比例放大
-                                   linewidths=2 * scale_factor,
+                                   s=30 * self.config.scale_factor,  # 点的大小随比例放大
+                                   linewidths=2 * self.config.scale_factor,
                                    zorder=2)
                     else:
                         ax.scatter(x, y,
                                    marker='x',
                                    color='#A82B2B',  # 暗红色
-                                   s=30 * scale_factor,
-                                   linewidths=2 * scale_factor,
+                                   s=30 * self.config.scale_factor,
+                                   linewidths=2 * self.config.scale_factor,
                                    zorder=2)
 
             if title:
-                ax.set_title(title, pad=20, fontsize=12 * scale_factor)
+                ax.set_title(title, pad=20, fontsize=12 * self.config.scale_factor)
 
             # 添加球员头像
             if player_id:
                 CourtRenderer.add_player_portrait(ax, player_id)
-
-
 
             if output_path:
                 self._save_figure(fig, output_path)
@@ -248,18 +262,22 @@ class GameChartsService:
             self.logger.error(f"绘制投篮图时出错: {str(e)}", exc_info=True)
             return None, shot_stats
 
-    def _save_figure(self, fig: plt.Figure, output_path: str, dpi: int = 300) -> None:
+    def _save_figure(self, fig: plt.Figure, output_path: str) -> None:
         """保存图表到文件
 
         Args:
             fig: matplotlib图表对象
             output_path: 输出路径
-            dpi: 图像DPI
         """
         try:
-            output_path = self.figure_path / output_path
+            output_path = self.config.figure_path / output_path
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            fig.savefig(output_path, bbox_inches='tight', dpi=dpi, pad_inches=0.1)
+            fig.savefig(
+                output_path,
+                bbox_inches='tight',
+                dpi=self.config.dpi, #  从 self.config.dpi 获取 dpi
+                pad_inches=0.1
+            )
             plt.close(fig)
             self.logger.info(f"图表已保存至 {output_path}")
         except Exception as e:
@@ -271,25 +289,24 @@ class GameChartsService:
                         team_id: int,
                         title: Optional[str] = None,
                         output_path: Optional[str] = None,
-                        scale_factor: float = 2.0,
-                        dpi: int = 300) -> Optional[plt.Figure]:
+                        ) -> Optional[plt.Figure]:
         """绘制球队所有球员的投篮图"""
         try:
             self.logger.info(f"开始绘制球队 {team_id} 的投篮图")
 
-            fig, ax = CourtRenderer.draw_court(scale_factor=scale_factor, dpi=dpi)
+            fig, ax = CourtRenderer.draw_court(self.config)
 
             team_shots = game.get_team_shot_data(team_id)
             self.logger.info(f"获取到 {len(team_shots)} 个球员的投篮数据")
 
-            base_marker_size = 0.02 * scale_factor
+            base_marker_size = 0.02 * self.config.scale_factor
 
             for player_id, shots in team_shots.items():
                 self.logger.info(f"处理球员 {player_id} 的投篮数据，共 {len(shots)} 个投篮点")
                 for shot in shots:
-                    x = shot.get('xLegacy')
-                    y = shot.get('yLegacy')
-                    made = shot.get('shotResult') == 'Made'
+                    x = shot.get('x_legacy')
+                    y = shot.get('y_legacy')
+                    made = shot.get('shot_result') == 'Made'
 
                     # 只处理投进的球
                     if x is not None and y is not None and made:
@@ -301,10 +318,10 @@ class GameChartsService:
                         )
 
             if title:
-                ax.set_title(title, pad=20, fontsize=12 * scale_factor)
+                ax.set_title(title, pad=20, fontsize=12 * self.config.scale_factor)
 
             if output_path:
-                plt.savefig(output_path, dpi=dpi, bbox_inches='tight')
+                plt.savefig(output_path, dpi=self.config.dpi, bbox_inches='tight')
                 plt.close(fig)
                 self.logger.info(f"图表已保存到: {output_path}")
 
@@ -345,8 +362,8 @@ class GameChartsService:
             marker_data_size = marker_size * 500  # 使用球场宽度(500)作为参考
 
             marker_ax = axis.inset_axes(
-                [x - marker_data_size / 2, y - marker_data_size / 2,
-                 marker_data_size, marker_data_size],
+                (x - marker_data_size / 2, y - marker_data_size / 2,
+                 marker_data_size, marker_data_size),
                 transform=axis.transData
             )
             marker_ax.imshow(output, alpha=alpha)

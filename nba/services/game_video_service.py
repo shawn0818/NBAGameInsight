@@ -13,9 +13,9 @@ from utils.logger_handler import AppLogger
 
 
 @dataclass
-class VideoOutputConfig:
+class VideoConfig:
     """视频输出配置"""
-    format: str = 'mp4'  # mp4 or gif
+    format: str = 'gif'  # mp4 or gif
     quality: str = 'hd'  # sd or hd
     chunk_size: int = 8192
     max_retries: int = 3
@@ -45,8 +45,8 @@ class VideoOutputConfig:
 class AsyncVideoProcessor:
     """异步视频处理器"""
 
-    def __init__(self, config: VideoOutputConfig):
-        self.config = config
+    def __init__(self, config: Optional[VideoConfig] = None):
+        self.config = config or VideoConfig() # 使用传入的 config 或默认的 VideoConfig()
         self.logger = AppLogger.get_logger(__name__, app_name='nba')
         self.session_context = aiohttp.ClientSession
         self.gif_converter = GIFConverter(config.gif_config) if config.format == 'gif' else None
@@ -143,8 +143,8 @@ class AsyncVideoProcessor:
 class GameVideoService:
     """NBA比赛视频服务"""
 
-    def __init__(self, video_config: Optional[VideoOutputConfig] = None):
-        self.config = video_config or VideoOutputConfig()
+    def __init__(self, video_config: Optional[VideoConfig] = None):
+        self.config = video_config or VideoConfig()
         self.logger = AppLogger.get_logger(__name__, app_name='nba')
         # 初始化视频获取器和解析器作为实例属性
         self.video_fetcher = VideoFetcher()
