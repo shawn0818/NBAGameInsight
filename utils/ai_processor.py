@@ -1,251 +1,294 @@
-# utils/ai_processor.py
-
-from dataclasses import dataclass
-from typing import Optional, Dict, List, Any
-from functools import lru_cache
-import json
-import time
 from enum import Enum
-from openai import OpenAI, APITimeoutError, APIError
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from typing import Dict, Any, Optional, Protocol
+from dataclasses import dataclass
+import os
+from abc import ABC, abstractmethod
+import time
+
+from openai import OpenAI
+from google import genai
 from utils.logger_handler import AppLogger
 
-class PromptRole(Enum):
-    NBA_ANALYST = "nba_analyst"
-    NBA_SOCIAL_ANALYST = "nba_social_analyst"
-    ZH_TRANSLATOR = "zh_translator"
+
+class AIProvider(Enum):
+    """AI 服务提供商枚举"""
+    DEEPSEEK = "deepseek"
+    GEMINI = "gemini"
 
 
-class PromptTask(Enum):
-    SUMMARY = "summary"
-    TRANSLATION = "translation"
-    WEIBO = "weibo"
-    HIGHLIGHT = "highlight"
+class AICapability(Protocol):
+    """AI 核心能力接口"""
+
+    def translate(self, text: str) -> str:
+        """翻译能力: 英译中"""
+        ...
+
+    def create_game_analysis(self, game_data: Dict[str, Any]) -> str:
+        """创作能力: 专业比赛分析"""
+        ...
+
+    def create_social_content(self, game_data: Dict[str, Any]) -> str:
+        """创作能力: 社交媒体风格"""
+        ...
 
 
 @dataclass
 class AIConfig:
-    providers: Dict[str, Dict[str, Any]]
-    default_provider: str = "deepseek"
-    max_retries: int = 3
-    retry_delay: int = 1
-    cache_size: int = 100
-    timeout: int = 60
-
-    def __post_init__(self):
-        """后初始化验证和设置"""
-        if self.default_provider not in self.providers:
-            raise ValueError(f"默认 AI 提供商 '{self.default_provider}' 未在配置中定义")
-        default_config = self.providers[self.default_provider]
-        if 'model_name' not in default_config:
-            default_config['model_name'] = "default-model"
+    """AI 服务配置"""
+    provider: AIProvider
+    enable_translation: bool = False  # 是否启用翻译
+    enable_creation: bool = False  # 是否启用创作
 
 
-class AIProcessor:
-    PROMPTS = {
-        "zh_translator": {
-            "translation": """你是一位专业的 NBA 数据翻译员，精通中英文篮球术语。请将以下英文 NBA 数据或描述翻译成流畅、准确的中文，务必保持术语的专业性和一致性。"""
-        },
-        "nba_analyst": {
-            "summary": """你是专业的 NBA 比赛分析师，精通中文篮球术语。
-               请分析以下内容的关键点：
-               1. 比赛转折点
-               2. 球员表现
-               3. 战术特点
-               4. 胜负关键因素""",
-        },
-        "nba_social_analyst": {
-            "weibo": """你是资深的NBA比赛分析师，同时也是NBA社交媒体运营编辑，需要制作吸引球迷的微博内容：
-               1. 结合专业的比赛分析
-               2. 使用简洁生动的语言
-               3. 添加适当的emoji
-               4. 突出比赛亮点
-               5. 加入#话题标签#
-               6. 控制在140字以内""",
-            "highlight": """你是NBA集锦解说员，同时也是资深NBA分析师，需要为比赛精彩瞬间创作生动描述：
-               1. 结合专业的比赛分析
-               2. 描述动作特点
-               3. 点明比赛形势
-               4. 突出球员表现
-               5. 使用专业术语"""
-        }
-    }
+class PromptTemplate:
+    """Prompt 模板"""
 
-    PROVIDER_FACTORIES = {
-        "deepseek": lambda config: OpenAI(
-            api_key=config['api_key'],
-            base_url=config['base_url'],
-            timeout=config.get('timeout', 60.0),
-            max_retries=config.get('max_retries', 3)
-        ),
-        "openai": lambda config: None,
-        "gemini": lambda config: None,
-    }
+    def __init__(self, template: str, roles: Optional[Dict[str, str]] = None):
+        self.template = template
+        self.roles = roles or {}
 
-    def __init__(self, config: AIConfig, provider_name: Optional[str] = None):
+    def format(self, role: Optional[str] = None, **kwargs) -> str:
+        """格式化 prompt 模板"""
+        if role and role in self.roles:
+            kwargs['role_setting'] = self.roles[role]
+        return self.template.format(**kwargs)
+
+
+class PromptManager:
+    """Prompt 管理器"""
+
+    def __init__(self):
+        self._templates: Dict[str, PromptTemplate] = {}
+        self._init_templates()
+
+    def _init_templates(self):
+        """初始化内置的 prompt 模板"""
+        # 翻译模板
+        self._templates["translation"] = PromptTemplate(
+            template="{role_setting}\n\n请将以下英文翻译成中文:\n\n{text}",
+            roles={
+                "translator": "你是专业的 NBA 翻译，精通中英文篮球术语，请将文本翻译成地道的中文，保持专业性。",
+            }
+        )
+
+        # 专业分析模板
+        self._templates["professional_analysis"] = PromptTemplate(
+            template="{role_setting}\n\n请分析以下比赛数据:\n\n{game_data}",
+            roles={
+                "analyst": """你是专业的 NBA 比赛分析师，请从以下方面分析比赛：
+                1. 比赛整体走势和转折点
+                2. 关键球员表现分析
+                3. 双方战术特点对比
+                4. 胜负关键因素分析
+                5. 数据深度解读
+                请用专业的视角进行深入分析。"""
+            }
+        )
+
+        # 社交媒体模板
+        self._templates["social_content"] = PromptTemplate(
+            template="{role_setting}\n\n请基于以下比赛信息创作社交媒体内容:\n\n{game_data}",
+            roles={
+                "social_media": """你是 NBA 社交媒体运营专家，请创作吸引球迷的内容：
+                1. 使用生动简洁的语言
+                2. 突出比赛精彩瞬间
+                3. 增加适当的 emoji 表情
+                4. 适当使用网络用语
+                5. 添加 #话题标签#
+                6. 控制在 140 字以内
+                要让内容既专业又有趣。"""
+            }
+        )
+
+    def get_prompt(self, template_name: str) -> PromptTemplate:
+        """获取指定的 prompt 模板"""
+        if template_name not in self._templates:
+            raise ValueError(f"未找到模板: {template_name}")
+        return self._templates[template_name]
+
+    def add_template(self, name: str, template: PromptTemplate):
+        """添加新的 prompt 模板"""
+        self._templates[name] = template
+
+
+class AIClient(ABC):
+    """AI 客户端基类
+
+    定义了所有 AI 服务提供商需要实现的基本接口和共享功能
+    """
+
+    def __init__(self):
+        self.logger = AppLogger.get_logger(__name__)
+
+    @abstractmethod
+    def generate(self, prompt: str) -> str:
+        """生成内容的抽象方法，子类必须实现"""
+        pass
+
+    def generate_with_retry(self, prompt: str, max_retries: int = 3, retry_delay: float = 1.0) -> str:
+        """带重试机制的生成方法
+
+        统一的重试逻辑，所有子类都可以复用
+        """
+        last_error = None
+
+        for attempt in range(max_retries):
+            try:
+                return self.generate(prompt)
+            except Exception as e:
+                last_error = e
+                self.logger.warning(
+                    f"生成失败(尝试 {attempt + 1}/{max_retries}): {str(e)}"
+                )
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+
+        self.logger.error(f"所有重试都失败: {str(last_error)}")
+        raise last_error
+
+    def validate_response(self, response: str) -> bool:
+        """验证响应是否有效
+
+        子类可以继承并扩展这个方法来实现特定的验证逻辑
+        """
+        return bool(response and response.strip())
+
+
+class DeepseekClient(AIClient):
+    """Deepseek 客户端"""
+
+    def __init__(self, api_key: Optional[str] = None):
+        super().__init__()
+        self.api_key = api_key or os.getenv("DEEPSEEK_API_KEY")
+        if not self.api_key:
+            raise ValueError("未找到 DEEPSEEK_API_KEY")
+        self.client = OpenAI(
+            api_key=self.api_key,
+            base_url="https://api.deepseek.com/v1"
+        )
+
+    def generate(self, prompt: str) -> str:
+        """实现 Deepseek 的具体生成逻辑"""
+        response = self.client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "user", "content": prompt}
+            ]
+        )
+        return response.choices[0].message.content
+
+
+class GeminiClient(AIClient):
+    """Gemini 客户端"""
+
+    def __init__(self, api_key: Optional[str] = None):
+        super().__init__()
+        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
+        if not self.api_key:
+            raise ValueError("未找到 GEMINI_API_KEY")
+        self.client = genai.Client(api_key=self.api_key)
+
+    def generate(self, prompt: str) -> str:
+        """实现 Gemini 的具体生成逻辑"""
+        response = self.client.models.generate_content(
+            model="gemini-1.5-flash",
+            contents=prompt
+        )
+        return response.text
+
+
+class AIProcessor(AICapability):
+    """AI 处理器"""
+
+    def __init__(self, config: AIConfig, prompt_manager: Optional[PromptManager] = None):
+        """初始化 AI 处理器
+
+        Args:
+            config: AI 配置
+            prompt_manager: Prompt管理器，如果不提供则创建默认的
+        """
         self.config = config
-        self.logger = AppLogger.get_logger(__name__,app_name="ai")
-        self.provider_name = provider_name or config.default_provider
-        if self.provider_name not in config.providers:
-            raise ValueError(f"指定的 AI 提供商 '{self.provider_name}' 未在配置中定义")
+        self.prompt_manager = prompt_manager or PromptManager()
+        self.logger = AppLogger.get_logger(__name__)
+        self._init_client()
 
-        provider_config = config.providers[self.provider_name]
-
-        factory = self.PROVIDER_FACTORIES.get(self.provider_name.lower())
-        if not factory:
-            raise ValueError(f"不支持的 AI 提供商: '{self.provider_name}'")
-
-        client = factory(provider_config)
-        if client is None and self.provider_name.lower() != "deepseek":
-            self.logger.warning(f"AI Provider '{self.provider_name}' is a placeholder and not fully implemented.")
-            self.client = self.PROVIDER_FACTORIES["deepseek"](config.providers["deepseek"])
-            self.provider_name = "deepseek"
+    def _init_client(self):
+        """初始化 AI 客户端"""
+        if self.config.provider == AIProvider.DEEPSEEK:
+            self.client = DeepseekClient()
+        elif self.config.provider == AIProvider.GEMINI:
+            self.client = GeminiClient()
         else:
-            self.client = client
+            raise ValueError(f"不支持的 AI 提供商: {self.config.provider}")
 
-        self._request_count = 0
-        self._last_request_time = 0
+    def translate(self, text: str) -> str:
+        """将英文翻译成中文
 
-    def translate(self, text: str, target_language: str) -> str:
-        """翻译文本到目标语言"""
+        Args:
+            text: 待翻译的英文文本
+
+        Returns:
+            str: 翻译后的中文文本，如果翻译失败则返回原文
+        """
+        if not text or not self.config.enable_translation:
+            return text
+
         try:
-            if not text:
-                return text
+            prompt_template = self.prompt_manager.get_prompt("translation")
+            prompt = prompt_template.format(
+                role="translator",
+                text=text
+            )
 
-            system_prompt = self.PROMPTS["zh_translator"]["translation"]
-            user_prompt = f"请翻译成{target_language}:\n\n{text}"
-
-            self.logger.debug(f"开始翻译文本: {text[:100]}...")
-            result = self._get_completion(system_prompt, user_prompt, temperature=0.3)
-
-            if result == "生成失败":
-                return text
-
-            return result
+            return self.client.generate_with_retry(prompt)
         except Exception as e:
             self.logger.error(f"翻译失败: {str(e)}")
             return text
 
-    def generate_summary(self, content: str, context: str = "", max_length: int = 100) -> str:
-        """生成内容摘要"""
+    def create_game_analysis(self, game_data: Dict[str, Any]) -> str:
+        """创建专业比赛分析
+
+        Args:
+            game_data: 比赛相关数据
+
+        Returns:
+            str: 生成的专业分析内容
+        """
+        if not game_data or not self.config.enable_creation:
+            return ""
+
         try:
-            if not content:
-                return "生成失败"
+            prompt_template = self.prompt_manager.get_prompt("professional_analysis")
+            prompt = prompt_template.format(
+                role="analyst",
+                game_data=str(game_data)
+            )
 
-            if isinstance(content, (dict, list)):
-                content = json.dumps(content, ensure_ascii=False, indent=2)
-
-            system_prompt = self.PROMPTS["nba_analyst"]["summary"]
-            user_prompt = f"请总结(限{max_length}字):\n\n{content}\n背景:{context}"
-
-            self.logger.debug(f"开始生成摘要, 内容长度: {len(content)}")
-            return self._get_completion(system_prompt, user_prompt, max_tokens=max_length)
+            return self.client.generate_with_retry(prompt)
         except Exception as e:
-            self.logger.error(f"生成摘要失败: {str(e)}")
-            return "生成失败"
+            self.logger.error(f"创建专业分析失败: {str(e)}")
+            return ""
 
-    def generate_weibo_post(self, content: str, post_type: str = "game_summary") -> str:
-        """生成微博内容"""
+    def create_social_content(self, game_data: Dict[str, Any]) -> str:
+        """创建社交媒体内容
+
+        Args:
+            game_data: 比赛相关数据
+
+        Returns:
+            str: 生成的社交媒体内容
+        """
+        if not game_data or not self.config.enable_creation:
+            return ""
+
         try:
-            if not content:
-                return "生成失败"
+            prompt_template = self.prompt_manager.get_prompt("social_content")
+            prompt = prompt_template.format(
+                role="social_media",
+                game_data=str(game_data)
+            )
 
-            if isinstance(content, (dict, list)):
-                content = json.dumps(content, ensure_ascii=False, indent=2)
-
-            system_prompt = self.PROMPTS["nba_social_analyst"]["weibo"]
-            user_prompt = f"请生成微博:\n\n{content}"
-
-            self.logger.debug(f"开始生成微博, 类型: {post_type}")
-            return self._get_completion(system_prompt, user_prompt, max_tokens=140)
+            return self.client.generate_with_retry(prompt)
         except Exception as e:
-            self.logger.error(f"生成微博内容失败: {str(e)}")
-            return "生成失败"
-
-    def generate_shots_summary(self, shots: List[str]) -> str:
-        """生成投篮集锦总结"""
-        try:
-            if not shots:
-                return "生成失败"
-
-            system_prompt = self.PROMPTS["nba_social_analyst"]["highlight"]
-            user_prompt = f"请总结这些投篮集锦(限140字):\n\n" + "\n".join(shots)
-
-            self.logger.debug(f"开始生成投篮总结, 数量: {len(shots)}")
-            return self._get_completion(system_prompt, user_prompt, max_tokens=140)
-        except Exception as e:
-            self.logger.error(f"生成投篮总结失败: {str(e)}")
-            return "生成失败"
-
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=5),
-        retry=retry_if_exception_type((APITimeoutError, APIError))
-    )
-    @lru_cache(maxsize=100)
-    def _get_completion(
-            self,
-            system_prompt: str,
-            user_prompt: str,
-            temperature: float = 0.7,
-            max_tokens: int = 150,
-    ) -> str:
-        """获取AI完成结果"""
-        try:
-            # 限流控制
-            current_time = time.time()
-            if current_time - self._last_request_time < 1:
-                time.sleep(1 - (current_time - self._last_request_time))
-
-            self._last_request_time = time.time()
-            self._request_count += 1
-
-            # 构建请求
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ]
-
-            self.logger.debug(f"发送AI请求: {json.dumps(messages, ensure_ascii=False)[:200]}...")
-
-            # 使用流式响应
-            if self.provider_name.lower() == "deepseek":
-                response = self.client.chat.completions.create(
-                    model=self.config.providers[self.provider_name]['model_name'],
-                    messages=messages,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    stream=True,
-                    timeout=self.config.timeout
-                )
-                result_chunks = []
-                for chunk in response:
-                    if chunk.choices[0].delta.content:
-                        result_chunks.append(chunk.choices[0].delta.content)
-
-                final_result = "".join(result_chunks).strip()
-                self.logger.debug(f"收到AI响应: {final_result[:200]}...")
-                return final_result
-
-            elif self.provider_name.lower() in ["openai", "gemini"]:
-                self.logger.warning(f"AI Provider '{self.provider_name}' is a placeholder, returning '生成失败'.")
-                return "生成失败"
-            else:
-                raise ValueError(f"Unknown AI Provider: '{self.provider_name}'")
-
-
-        except Exception as e:
-            self.logger.error(f"AI请求失败: {str(e)}", exc_info=True)
-            raise
-
-    def clear_cache(self):
-        """清理缓存"""
-        self._get_completion.cache_clear()
-        self._request_count = 0
-        self._last_request_time = 0
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.clear_cache()
+            self.logger.error(f"创建社交媒体内容失败: {str(e)}")
+            return ""
