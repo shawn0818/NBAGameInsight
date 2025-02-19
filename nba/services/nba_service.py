@@ -358,13 +358,14 @@ class NBAService:
             player_narratives = game_display.get('player_narratives', {})
 
             if player_name:
-                all_players = (
-                        player_narratives.get('original', {}).get('home', []) +
-                        player_narratives.get('original', {}).get('away', [])
-                )
-                for narrative in all_players:
+                # 直接获取所有球员数据
+                home_players = player_narratives.get('home', [])
+                away_players = player_narratives.get('away', [])
+
+                # 搜索指定球员
+                for narrative in home_players + away_players:
                     if player_name in narrative:
-                        return {'original': narrative}
+                        return narrative  # 直接返回叙事文本
                 return {}
 
             return player_narratives
@@ -396,10 +397,10 @@ class NBAService:
 
             if filter_team:
                 if game.game_data.home_team.team_name == filter_team:
-                    return {'original': team_narratives.get('original', {}).get('home', '')}
+                    return team_narratives.get('home', '')  # 直接返回叙事文本
                 elif game.game_data.away_team.team_name == filter_team:
-                    return {'original': team_narratives.get('original', {}).get('away', '')}
-                return {}
+                    return team_narratives.get('away', '')  # 直接返回叙事文本
+                return ''
 
             return team_narratives
         except Exception as e:
@@ -425,15 +426,12 @@ class NBAService:
             if not game:
                 return {}
 
-            game_display = display_service.display_game(game)
+            game_display = display_service.display_game(game)  # 获取 display service 处理后的数据，但目前没有直接使用
             events_data = game_display.get('events', {})
 
             if filters:
                 filtered_events = game.filter_events(**filters)
-                events_data['events'] = [
-                    display_service._parse_event(event)
-                    for event in filtered_events
-                ]
+                events_data['events'] = filtered_events  # 直接将过滤后的事件列表赋值给 events_data['events']，无需额外解析
 
             return events_data
         except Exception as e:

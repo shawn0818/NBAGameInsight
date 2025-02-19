@@ -53,7 +53,14 @@ class ContentFormatter(ABC):
         pass
 
     def format_events(self, events: List[BaseEvent]) -> List[Dict[str, Any]]:
-        """格式化事件列表"""
+        """格式化事件列表
+
+        Args:
+            events: 事件列表
+
+        Returns:
+            List[Dict[str, Any]]: 格式化后的事件列表
+        """
         formatted_events = []
         for event in events:
             formatted_event = self._format_single_event(event)
@@ -89,11 +96,18 @@ class ContentFormatter(ABC):
             return {}
 
     def _calculate_event_importance(self, event: BaseEvent) -> int:
-        """计算事件重要性（0-5）"""
+        """计算事件重要性（0-5）
+
+        Args:
+            event: 比赛事件
+
+        Returns:
+            int: 重要性评分（0-5）
+        """
         importance = 0
 
         # 根据事件类型判断重要性
-        high_importance_types = {"shot", "3pt", "dunk", "block", "steal"}
+        high_importance_types = {"2pt", "3pt", "dunk", "block", "steal"}
         medium_importance_types = {"rebound", "assist", "foul"}
 
         event_type = event.action_type.lower()
@@ -117,15 +131,7 @@ class ContentFormatter(ABC):
         return min(importance, 5)
 
     def _format_percentage(self, made: int, attempted: int) -> str:
-        """格式化百分比
-
-        Args:
-            made: 命中数
-            attempted: 出手数
-
-        Returns:
-            str: 格式化的百分比字符串
-        """
+        """格式化百分比"""
         if attempted == 0:
             return "0.0"
         return f"{(made / attempted * 100):.1f}"
@@ -393,12 +399,14 @@ class GameDisplayService:
             if game.play_by_play and game.play_by_play.actions:
                 events = self.formatter.format_events(game.play_by_play.actions)
 
-            return {
+            game_display = {
                 "game_narrative": game_narrative,
                 "team_narratives": team_narratives,
                 "player_narratives": player_narratives,
                 "events": events
             }
+
+            return game_display
 
         except Exception as e:
             self.logger.error(f"展示比赛数据失败: {str(e)}")
