@@ -248,7 +248,7 @@ class BaseNBAFetcher:
 
         # 获取新数据
         try:
-            self.logger.info(f"Request URL: {url}")
+            self.logger.info(f"正在发送请求: {url}")
             data = self.http_manager.make_request(
                 url=url,
                 params=params,

@@ -42,12 +42,6 @@ class LeagueFetcher(BaseNBAFetcher):
             root_path=self.league_config.CACHE_PATHS['league_data']
         )
 
-        # 配置 mapping 缓存 (不再在 LeagueFetcher 中创建 mapping_cache_config)
-        # mapping_cache_config = BaseCacheConfig(
-        #     duration=self.league_config.MAPPING_CACHE_DURATION,
-        #     root_path=self.league_config.CACHE_PATHS['league_data']
-        # )
-
         # 初始化基类配置 (使用 data_cache_config 进行数据请求的缓存)
         base_config = BaseRequestConfig(
             base_url=self.league_config.BASE_URL,
