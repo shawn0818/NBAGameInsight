@@ -58,7 +58,7 @@ class NBAConfig:
         LEAGUE_CACHE_DIR = CACHE_DIR / "league"
 
         # 媒体存储目录
-        PICTURES_DIR = STORAGE_DIR / "images"
+        PICTURES_DIR = STORAGE_DIR / "pictures"
         VIDEO_DIR = STORAGE_DIR / "videos"
         GIF_DIR = STORAGE_DIR / "gifs"
 
