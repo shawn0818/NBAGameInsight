@@ -1,12 +1,11 @@
-from typing import Dict, Any, Optional, List
-from dataclasses import dataclass, field
+from typing import Optional, List, Dict, Any
+from pydantic import BaseModel, Field
 from enum import Enum
 from abc import ABC, abstractmethod
 
-
-from nba.models.game_model import Game, BaseEvent, TeamInGame, PlayerInGame
-from utils.ai_processor import AIProcessor, AIConfig, AIProvider
+from utils.ai_processor import AIProcessor, AIConfig
 from utils.logger_handler import AppLogger
+from nba.models.game_model import Game, TeamInGame, PlayerInGame, BaseEvent, GameStatusEnum
 
 
 class DisplayMode(Enum):
@@ -17,25 +16,19 @@ class DisplayMode(Enum):
     SOCIAL = "social"  # 社交媒体
 
 
-@dataclass
-class DisplayConfig:
+class DisplayConfig(BaseModel):
     """显示配置"""
     mode: DisplayMode = DisplayMode.ORIGINAL
-    ai_config: Optional[AIConfig] = field(
-        default_factory=lambda: AIConfig(
-            provider=AIProvider.DEEPSEEK,
-            enable_translation=False,  # 开启翻译功能
-            enable_creation=False  # 默认不开启创作功能
-        )
-    )
+    ai_config: Optional[AIConfig] = Field(default_factory=AIConfig)
 
 
 class ContentFormatter(ABC):
     """内容格式化器基类"""
 
-    def __init__(self, ai_processor: Optional[AIProcessor] = None):
+    def __init__(self, ai_processor: Optional[AIProcessor] = None, config: DisplayConfig = None):
         self.ai_processor = ai_processor
-        self.logger = AppLogger.get_logger(__name__)
+        self.config = config or DisplayConfig()
+        self.logger = AppLogger.get_logger(__name__, app_name='nba')
 
     @abstractmethod
     def format_game(self, game: Game) -> str:
@@ -52,427 +45,442 @@ class ContentFormatter(ABC):
         """生成球员叙事"""
         pass
 
+    @abstractmethod
     def format_events(self, events: List[BaseEvent]) -> List[Dict[str, Any]]:
-        """格式化事件列表
+        """格式化事件列表"""
+        pass
 
-        Args:
-            events: 事件列表
+    def _process_narrative(self, original_narrative: str) -> str:
+        """统一的叙事处理方法"""
+        if self.config.mode == DisplayMode.TRANSLATED:
+            return self._process_with_ai(original_narrative, "translate")
+        elif self.config.mode == DisplayMode.PROFESSIONAL:
+            return self._process_with_ai(original_narrative, "analyze")
+        elif self.config.mode == DisplayMode.SOCIAL:
+            return self._process_with_ai(original_narrative, "social")
+        else:  # DisplayMode.ORIGINAL
+            return original_narrative
 
-        Returns:
-            List[Dict[str, Any]]: 格式化后的事件列表
-        """
-        formatted_events = []
-        for event in events:
-            formatted_event = self._format_single_event(event)
-            if formatted_event:
-                formatted_events.append(formatted_event)
-        return formatted_events
-
-    def _format_single_event(self, event: BaseEvent) -> Dict[str, Any]:
-        """格式化单个事件
-
-        Args:
-            event: 比赛事件
-
-        Returns:
-            Dict[str, Any]: 格式化后的事件数据
-        """
+    def _process_with_ai(self, original_text: str, ai_method: str) -> str:
+        """AI 处理逻辑"""
+        if not self.ai_processor:
+            return original_text
         try:
-            return {
-                "event_id": event.action_number,
-                "clock": event.clock,
-                "period": event.period,
-                "action_type": event.action_type,
-                "description": event.description,
-                "team": event.team_tricode if hasattr(event, "team_tricode") else None,
-                "player": event.player_name if hasattr(event, "player_name") else None,
-                "score": (f"{event.score_home}-{event.score_away}"
-                          if hasattr(event, "score_home") and hasattr(event, "score_away")
-                          else None),
-                "importance": self._calculate_event_importance(event)
-            }
+            result = {
+                "translate": lambda: self.ai_processor.translate(original_text),
+                "analyze": lambda: self.ai_processor.create_game_analysis({"narrative": original_text}),
+                "social": lambda: self.ai_processor.create_social_content({"narrative": original_text})
+            }[ai_method]()
+            return result if result and result.strip() else original_text
         except Exception as e:
-            self.logger.error(f"格式化事件失败: {str(e)}")
-            return {}
-
-    def _calculate_event_importance(self, event: BaseEvent) -> int:
-        """计算事件重要性（0-5）
-
-        Args:
-            event: 比赛事件
-
-        Returns:
-            int: 重要性评分（0-5）
-        """
-        importance = 0
-
-        # 根据事件类型判断重要性
-        high_importance_types = {"2pt", "3pt", "dunk", "block", "steal"}
-        medium_importance_types = {"rebound", "assist", "foul"}
-
-        event_type = event.action_type.lower()
-        if any(type_str in event_type for type_str in high_importance_types):
-            importance += 3
-        elif any(type_str in event_type for type_str in medium_importance_types):
-            importance += 2
-
-        # 重要时刻（第四节或加时赛后半段）
-        if event.period >= 4 and ":" in event.clock:
-            minutes = int(event.clock.split(":")[0])
-            if minutes <= 2:
-                importance += 1
-
-        # 比分接近
-        if hasattr(event, "score_home") and hasattr(event, "score_away"):
-            score_diff = abs(int(event.score_home) - int(event.score_away))
-            if score_diff <= 5:
-                importance += 1
-
-        return min(importance, 5)
-
-    def _format_percentage(self, made: int, attempted: int) -> str:
-        """格式化百分比"""
-        if attempted == 0:
-            return "0.0"
-        return f"{(made / attempted * 100):.1f}"
+            self.logger.error(f"{ai_method} processing failed: {str(e)}")
+            return original_text
 
 
-class OriginalFormatter(ContentFormatter):
-    """原始内容格式化器"""
+class GameFormatter(ContentFormatter):
+    """比赛内容格式化器"""
 
     def format_game(self, game: Game) -> str:
         """生成比赛叙事"""
-        game_data = game.game_data
-
-        # 基本比赛信息
-        utc_time = game_data.game_time_utc
-        narrative = f"""
-        On {utc_time.strftime('%Y-%m-%d')} at {utc_time.strftime('%H:%M')} UTC, 
-        in {game_data.arena.arena_name} ({game_data.arena.arena_city}), 
-        the {game_data.home_team.team_city} {game_data.home_team.team_name} hosted 
-        the {game_data.away_team.team_city} {game_data.away_team.team_name}.
-        """
-
-        # 比赛状态叙事
-        if game_data.game_status_text == "Final":
-            home_score = int(game_data.home_team.score)
-            away_score = int(game_data.away_team.score)
-            winner = "home team" if home_score > away_score else "visiting team"
-            narrative += f"""
-            The game has ended with a final score of {home_score}-{away_score}, 
-            with the {winner} securing the victory.
-            """
-        else:
-            period_suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(game_data.period, 'th')
-            narrative += f"""
-            Currently in the {game_data.period}{period_suffix} period, 
-            the score is {game_data.home_team.score}-{game_data.away_team.score}.
-            """
-
-        # 比赛数据概览
-        home_stats = game_data.home_team.statistics
-        away_stats = game_data.away_team.statistics
-
-        narrative += f"""
-        The home team's shooting performance: 
-        {home_stats.field_goals_made}/{home_stats.field_goals_attempted} FG ({self._format_percentage(home_stats.field_goals_made, home_stats.field_goals_attempted)}%), 
-        {home_stats.three_pointers_made}/{home_stats.three_pointers_attempted} 3PT ({self._format_percentage(home_stats.three_pointers_made, home_stats.three_pointers_attempted)}%), 
-        {home_stats.free_throws_made}/{home_stats.free_throws_attempted} FT ({self._format_percentage(home_stats.free_throws_made, home_stats.free_throws_attempted)}%).
-
-        The visiting team's shooting performance: 
-        {away_stats.field_goals_made}/{away_stats.field_goals_attempted} FG ({self._format_percentage(away_stats.field_goals_made, away_stats.field_goals_attempted)}%), 
-        {away_stats.three_pointers_made}/{away_stats.three_pointers_attempted} 3PT ({self._format_percentage(away_stats.three_pointers_made, away_stats.three_pointers_attempted)}%), 
-        {away_stats.free_throws_made}/{away_stats.free_throws_attempted} FT ({self._format_percentage(away_stats.free_throws_made, away_stats.free_throws_attempted)}%).
-        """
-
-        return narrative.strip()
+        original_narrative = self._format_original_game(game)
+        return self._process_narrative(original_narrative)
 
     def format_team(self, team: TeamInGame, is_home: bool) -> str:
         """生成球队叙事"""
-        team_type = "home" if is_home else "visiting"
+        original_narrative = self._format_original_team(team, is_home)
+        return self._process_narrative(original_narrative)
+
+    def format_player(self, player: PlayerInGame) -> str:
+        """生成球员叙事"""
+        original_narrative = self._format_original_player(player)
+        return self._process_narrative(original_narrative)
+
+    def format_events(self, events: List[BaseEvent]) -> List[str]: 
+        """"格式化事件列表, 返回字符串列表"""
+        event_narratives: List[str] = [] # Initialize as a list of strings
+
+        for event in events:
+            event_dict = event.model_dump() # Use model_dump() to convert BaseEvent to dictionary (for Pydantic V2+)
+            formatted_narrative = self._format_original_single_event(event_dict) # Call _format_original_single_event with the dictionary
+            event_narratives.append(formatted_narrative) # Append the formatted string to the list
+
+        return event_narratives
+
+
+    ##=================生成比赛信息原始叙事================
+
+    def _format_original_game(self, game: Game) -> str:
+        """生成比赛原始叙事 (根据比赛状态选择不同格式)"""
+        game_status_enum = game.game_data.game_status
+
+        if game_status_enum == GameStatusEnum.NOT_STARTED:
+            return self._format_basic_game_info(game)  # 未开始，只显示基本信息
+        elif game_status_enum == GameStatusEnum.IN_PROGRESS:
+            basic_info = self._format_basic_game_info(game)
+            status_info = self._format_game_status_info(game)
+            return f"{basic_info} {status_info}"  # 进行中，显示基本信息 + 状态信息
+        elif game_status_enum == GameStatusEnum.FINISHED:
+            return self._format_game_summary_info(game)  # 已结束，显示总结信息
+        else:
+            # 默认情况，或者处理未知状态
+            return self._format_basic_game_info(game)  # Fallback to basic info
+
+    def _format_basic_game_info(self, game: Game) -> str:
+        """生成比赛基本信息叙事 (时间, 地点, 球队)"""
+        game_data = game.game_data
+        narrative_parts = [
+            f"On {game_data.game_time_utc.strftime('%Y-%m-%d')},",  # 简化日期格式
+            f"at {game_data.game_time_utc.strftime('%H:%M')} UTC,",  # 简化时间格式
+            f"in {game_data.arena.arena_name} ({game_data.arena.arena_city}),",
+            f"{game_data.away_team.team_city} {game_data.away_team.team_name} vs",  # 调整为 "Team A vs Team B" 格式
+            f"{game_data.home_team.team_city} {game_data.home_team.team_name}."
+        ]
+        return " ".join(narrative_parts).strip()
+
+    def _format_game_status_info(self, game: Game) -> str:
+        """生成比赛状态信息叙事 (节数, 时钟, 比分, 暂停)"""
+        game_data = game.game_data
+        game_status = game.get_game_status()  # 复用 Game 模型中已有的方法
+        narrative_parts = [
+            f"Status: {game_status['status_text']}.",
+            f"Period: {game_status['period_name']} ({game_status['current_period']}).",  # 显示节数名称和数字
+            f"Time Remaining: {game_status['time_remaining']}.",
+            f"Score: {game_data.away_team.team_tricode} {game_status['away_score']} - {game_data.home_team.team_tricode} {game_status['home_score']}.",
+            # 使用球队 Tricode 简化显示
+            f"Timeouts Remaining: {game_data.away_team.team_tricode} {game_status['away_timeouts']}, {game_data.home_team.team_tricode} {game_status['home_timeouts']}."
+        ]
+        if game_status['home_bonus']:  # 添加 Bonus 状态信息
+            narrative_parts.append(f"{game_data.home_team.team_tricode} is in bonus.")
+        if game_status['away_bonus']:
+            narrative_parts.append(f"{game_data.away_team.team_tricode} is in bonus.")
+
+        return " ".join(narrative_parts).strip()
+
+    def _format_game_summary_info(self, game: Game) -> str:
+        """生成比赛总结信息叙事 (基本信息 + 最终比分)"""
+        basic_info = self._format_basic_game_info(game)  # 复用基本信息格式化方法
+        game_data = game.game_data
+        home_score = int(game_data.home_team.score)
+        away_score = int(game_data.away_team.score)
+        winner = game_data.home_team.team_tricode if home_score > away_score else game_data.away_team.team_tricode  # 使用 Tricode
+        loser = game_data.away_team.team_tricode if home_score > away_score else game_data.home_team.team_tricode  # 使用 Tricode
+
+        summary_parts = [
+            basic_info,
+            f"Final Score: {winner} {max(home_score, away_score)} - {loser} {min(home_score, away_score)}.",  # 简化比分显示
+            f"The {winner} secured the victory."
+        ]
+        return " ".join(summary_parts).strip()
+
+    ##=================生成球队统计信息原始叙事================
+
+    def _format_original_team(self, team: TeamInGame, is_home: bool) -> str:
+        """生成球队原始叙事"""
+        team_type = "Home" if is_home else "Visiting"
         stats = team.statistics
 
-        narrative = f"""
-        The {team_type} team {team.team_city} {team.team_name} performance breakdown:
+        narrative_parts = [
+            f"**{team_type} Team: {team.team_city} {team.team_name} - Data Summary**\n",
 
-        Shooting efficiency:
-        Field Goals: {stats.field_goals_made}/{stats.field_goals_attempted} ({self._format_percentage(stats.field_goals_made, stats.field_goals_attempted)}%)
-        Three Pointers: {stats.three_pointers_made}/{stats.three_pointers_attempted} ({self._format_percentage(stats.three_pointers_made, stats.three_pointers_attempted)}%)
-        Free Throws: {stats.free_throws_made}/{stats.free_throws_attempted} ({self._format_percentage(stats.free_throws_made, stats.free_throws_attempted)}%)
+            "**Time Statistics:**",
+            f"-  **Minutes Played:** {stats.minutes_calculated:.2f} minutes",
+            f"-  **Time Leading:** {stats.time_leading_calculated:.2f} minutes",
 
-        Ball control and defense:
-        Rebounds: {int(stats.rebounds_total)} total ({int(stats.rebounds_offensive)} offensive, {int(stats.rebounds_defensive)} defensive)
-        Assists: {int(stats.assists)}
-        Steals: {int(stats.steals)}
-        Blocks: {int(stats.blocks)}
-        Turnovers: {int(stats.turnovers)}
-        Personal Fouls: {int(stats.fouls_personal)}
-        """
+            "\n**Scoring and Efficiency:**",
+            f"-  **Total Points:** {stats.points}",
+            f"-  **Points Against:** {stats.points_against}",
+            f"-  **Assists:** {stats.assists}",
+            f"-  **Assists/Turnover Ratio:** {stats.assists_turnover_ratio:.2f}",
+            f"-  **Bench Points:** {stats.bench_points}",
 
-        return narrative.strip()
+            "\n**Lead Statistics:**",
+            f"-  **Biggest Lead:** {stats.biggest_lead}",
+            f"-  **Biggest Lead Score:** {stats.biggest_lead_score}",
+            f"-  **Biggest Scoring Run:** {stats.biggest_scoring_run}",
+            f"-  **Biggest Scoring Run Score:** {stats.biggest_scoring_run_score}",
+            f"-  **Lead Changes:** {stats.lead_changes}",
 
-    def format_player(self, player: PlayerInGame) -> str:
-        """生成球员叙事"""
+            "\n**Shooting Statistics:**",
+            f"-  **Field Goals:** {stats.field_goals_made}/{stats.field_goals_attempted} ({stats.field_goals_percentage:.1%})",
+            f"-  **Three Pointers:** {stats.three_pointers_made}/{stats.three_pointers_attempted} ({stats.three_pointers_percentage:.1%})",
+            f"-  **Two Pointers:** {stats.two_pointers_made}/{stats.two_pointers_attempted} ({stats.two_pointers_percentage:.1%})",
+            f"-  **Free Throws:** {stats.free_throws_made}/{stats.free_throws_attempted} ({stats.free_throws_percentage:.1%})",
+
+            "\n**Paint Points:**",
+            f"-  **Points in the Paint:** {stats.points_in_the_paint_made}/{stats.points_in_the_paint_attempted} ({stats.points_in_the_paint_percentage:.1%})",
+            f"-  **Total Paint Points:** {stats.points_in_the_paint}",
+
+            "\n**Fast Break Points:**",
+            f"-  **Fast Break Points:** {stats.fast_break_points_made}/{stats.fast_break_points_attempted} ({stats.fast_break_points_percentage:.1%})",
+            f"-  **Points Fast Break:** {stats.points_fast_break}",
+
+            "\n**Second Chance Points:**",
+            f"-  **Second Chance Points:** {stats.second_chance_points_made}/{stats.second_chance_points_attempted} ({stats.second_chance_points_percentage:.1%})",
+            f"-  **Points Second Chance:** {stats.points_second_chance}",
+            f"-  **Points from Turnovers:** {stats.points_from_turnovers}",
+
+            "\n**Rebounds:**",
+            f"-  **Total Rebounds:** {stats.rebounds_total}",
+            f"-  **Offensive Rebounds:** {stats.rebounds_offensive}",
+            f"-  **Defensive Rebounds:** {stats.rebounds_defensive}",
+            f"-  **Team Rebounds:** {stats.rebounds_team}",
+            f"-  **Team Offensive Rebounds:** {stats.rebounds_team_offensive}",
+            f"-  **Team Defensive Rebounds:** {stats.rebounds_team_defensive}",
+            f"-  **Personal Rebounds:** {stats.rebounds_personal}",
+
+            "\n**Defense:**",
+            f"-  **Blocks:** {stats.blocks}",
+            f"-  **Blocks Received:** {stats.blocks_received}",
+            f"-  **Steals:** {stats.steals}",
+
+            "\n**Turnovers:**",
+            f"-  **Turnovers:** {stats.turnovers}",
+            f"-  **Team Turnovers:** {stats.turnovers_team}",
+            f"-  **Total Turnovers:** {stats.turnovers_total}",
+
+            "\n**Fouls:**",
+            f"-  **Personal Fouls:** {stats.fouls_personal}",
+            f"-  **Team Fouls:** {stats.fouls_team}",
+            f"-  **Technical Fouls:** {stats.fouls_technical}",
+            f"-  **Team Technical Fouls:** {stats.fouls_team_technical}",
+            f"-  **Offensive Fouls:** {stats.fouls_offensive}",
+            f"-  **Fouls Drawn:** {stats.fouls_drawn}"
+        ]
+
+        return "\n".join(narrative_parts).strip()
+
+    ##=================生成球员统计信息原始叙事================
+
+    def _format_original_player(self, player: PlayerInGame) -> str:
+        """生成球员原始叙事 (更偏数据还原版 - 英文叙事风格)"""
         stats = player.statistics
-        starter_status = "starter" if player.starter == "1" else "reserve"
+        starter_status = "Starter" if player.starter == "1" else "Reserve"
 
-        narrative = f"""
-        {player.name} ({starter_status}) Performance Summary:
+        narrative_parts = [
+            f"**Player Performance: {player.name} (#{player.jersey_num}, {player.position}) - Data Summary ({starter_status})**\n",
 
-        Playing Time and Scoring:
-        Minutes: {stats.minutes_calculated:.1f}
-        Points: {int(stats.points)}
-        Plus/Minus: {stats.plus_minus_points:+.1f}
+            "**Playing Time & Scoring:**",
+            f"-  **Minutes Played:** {stats.minutes_calculated:.2f} minutes",
+            f"-  **Points:** {stats.points}",
+            f"-  **Plus/Minus:** {stats.plus_minus_points:+.1f}\n",
 
-        Shooting Breakdown:
-        Field Goals: {stats.field_goals_made}/{stats.field_goals_attempted} ({self._format_percentage(stats.field_goals_made, stats.field_goals_attempted)}%)
-        Three Pointers: {stats.three_pointers_made}/{stats.three_pointers_attempted} ({self._format_percentage(stats.three_pointers_made, stats.three_pointers_attempted)}%)
-        Free Throws: {stats.free_throws_made}/{stats.free_throws_attempted} ({self._format_percentage(stats.free_throws_made, stats.free_throws_attempted)}%)
+            "**Shooting Metrics:**",
+            f"-  **Field Goals:** Made {stats.field_goals_made} of {stats.field_goals_attempted} (Percentage: {stats.field_goals_percentage:.1%})",
+            f"-  **Three-Point Field Goals:** Made {stats.three_pointers_made} of {stats.three_pointers_attempted} (Percentage: {stats.three_pointers_percentage:.1%})",
+            f"-  **Two-Point Field Goals:** Made {stats.two_pointers_made} of {stats.two_pointers_attempted} (Percentage: {stats.two_pointers_percentage:.1%})",
+            f"-  **Free Throws:** Made {stats.free_throws_made} of {stats.free_throws_attempted} (Percentage: {stats.free_throws_percentage:.1%})\n",
 
-        Other Statistics:
-        Rebounds: {int(stats.rebounds_total)} ({int(stats.rebounds_offensive)} OFF, {int(stats.rebounds_defensive)} DEF)
-        Assists: {int(stats.assists)}
-        Steals: {int(stats.steals)}
-        Blocks: {int(stats.blocks)}
-        Turnovers: {int(stats.turnovers)}
-        Personal Fouls: {int(stats.fouls_personal)}
-        """
+            "**Rebounding Metrics:**",
+            f"-  **Total Rebounds:** {stats.rebounds_total}",
+            f"-  **Offensive Rebounds:** {stats.rebounds_offensive}",
+            f"-  **Defensive Rebounds:** {stats.rebounds_defensive}\n",
 
-        return narrative.strip()
+            "**Assists & Ball Control:**",
+            f"-  **Assists:** {stats.assists}",
+            f"-  **Turnovers:** {stats.turnovers}\n",
 
+            "**Defensive Metrics:**",
+            f"-  **Steals:** {stats.steals}",
+            f"-  **Blocks:** {stats.blocks}",
+            f"-  **Blocks Received:** {stats.blocks_received}\n",
 
-class TranslatedFormatter(ContentFormatter):
-    """翻译内容格式化器"""
+            "**Fouls:**",
+            f"-  **Personal Fouls:** {stats.fouls_personal}",
+            f"-  **Fouls Drawn:** {stats.fouls_drawn}",
+            f"-  **Offensive Fouls:** {stats.fouls_offensive}",
+            f"-  **Technical Fouls:** {stats.fouls_technical}\n",
 
-    def format_game(self, game: Game) -> str:
-        """翻译比赛叙事"""
-        original = super().format_game(game)
-        if not self.ai_processor:
-            return original
-        return self.ai_processor.translate(original)
+            "**Points Breakdown:**",
+            f"-  **Fast Break Points:** {stats.points_fast_break}",
+            f"-  **Points in the Paint:** {stats.points_in_the_paint}",
+            f"-  **Second Chance Points:** {stats.points_second_chance}"
+        ]
 
-    def format_team(self, team: TeamInGame, is_home: bool) -> str:
-        """翻译球队叙事"""
-        original = super().format_team(team, is_home)
-        if not self.ai_processor:
-            return original
-        return self.ai_processor.translate(original)
+        return "\n".join(narrative_parts).strip()
 
-    def format_player(self, player: PlayerInGame) -> str:
-        """翻译球员叙事"""
-        original = super().format_player(player)
-        if not self.ai_processor:
-            return original
-        return self.ai_processor.translate(original)
+    ##=================生成比赛事件信息原始叙事================
 
+    def _format_original_single_event(self, event: Dict[str, Any]) -> str:
+        """生成单个事件原始叙述"""
+        # 基础信息
+        narrative_parts = [
+            f"**Action Number:** {event['action_number']}",
+            f"**Period:** {event['period']}",
+            f"**Game Clock:** {event['clock']}",
+            f"**Time:** {event['time_actual']}",
+            f"**Action Type:** {event['action_type']}"
+        ]
 
-class ProfessionalFormatter(ContentFormatter):
-    """专业分析格式化器"""
+        # 球队信息
+        if event.get('team_tricode'):
+            narrative_parts.append(f"**Team:** {event['team_tricode']}")
 
-    def format_game(self, game: Game) -> str:
-        """生成比赛专业分析"""
-        if not self.ai_processor:
-            return super().format_game(game)
-        game_narrative = super().format_game(game)
-        return self.ai_processor.create_game_analysis({"narrative": game_narrative})
+        # 基础球员信息
+        if event.get('player_name'):
+            player_info = f"**Player:** {event['player_name']}"
+            if event.get('player_name_i'):
+                player_info += f" ({event['player_name_i']})"
+            narrative_parts.append(player_info)
 
-    def format_team(self, team: TeamInGame, is_home: bool) -> str:
-        """生成球队专业分析"""
-        if not self.ai_processor:
-            return super().format_team(team, is_home)
-        team_narrative = super().format_team(team, is_home)
-        return self.ai_processor.create_game_analysis({"narrative": team_narrative})
+        # 比分信息
+        if event.get('score_home') is not None and event.get('score_away') is not None:
+            narrative_parts.append(f"**Score:** Home {event['score_home']} - Away {event['score_away']}")
 
-    def format_player(self, player: PlayerInGame) -> str:
-        """生成球员专业分析"""
-        if not self.ai_processor:
-            return super().format_player(player)
-        player_narrative = super().format_player(player)
-        return self.ai_processor.create_game_analysis({"narrative": player_narrative})
+        # 子类型（如果有）
+        if event.get('sub_type'):
+            narrative_parts.append(f"**Sub Type:** {event['sub_type']}")
 
+        # 根据事件类型添加特定信息
+        action_type = event['action_type']
 
-class SocialFormatter(ContentFormatter):
-    """社交媒体格式化器"""
+        if action_type in ["2pt", "3pt"]:  # 投篮事件
+            narrative_parts.extend([
+                f"**Shot Result:** {event.get('shot_result')}",
+                f"**Shot Distance:** {event.get('shot_distance')} ft",
+                f"**Area:** {event.get('area')}",
+                f"**Area Detail:** {event.get('area_detail', 'N/A')}"
+            ])
+            if event.get('assist_player_name_initial'):
+                narrative_parts.append(f"**Assist By:** {event['assist_player_name_initial']}")
+            if event.get('block_player_name'):
+                narrative_parts.append(f"**Blocked By:** {event['block_player_name']}")
+            if event.get('qualifiers'):
+                narrative_parts.append(f"**Qualifiers:** {', '.join(event['qualifiers'])}")
 
-    def format_game(self, game: Game) -> str:
-        """生成比赛社交媒体内容"""
-        if not self.ai_processor:
-            return super().format_game(game)
-        game_narrative = super().format_game(game)
-        return self.ai_processor.create_social_content({"narrative": game_narrative})
+        elif action_type == "rebound":  # 篮板事件
+            narrative_parts.extend([
+                f"**Rebound Type:** {event['sub_type']}",
+                f"**Rebound Total:** {event['rebound_total']}",
+                f"**Defensive Total:** {event.get('rebound_defensive_total', 'N/A')}",
+                f"**Offensive Total:** {event.get('rebound_offensive_total', 'N/A')}"
+            ])
 
-    def format_team(self, team: TeamInGame, is_home: bool) -> str:
-        """生成球队社交媒体内容"""
-        if not self.ai_processor:
-            return super().format_team(team, is_home)
-        team_narrative = super().format_team(team, is_home)
-        return self.ai_processor.create_social_content({"narrative": team_narrative})
+        elif action_type == "turnover":  # 失误事件
+            narrative_parts.extend([
+                f"**Turnover Type:** {event['sub_type']}",
+                f"**Turnover Total:** {event['turnover_total']}"
+            ])
+            if event.get('steal_player_name'):
+                narrative_parts.append(f"**Steal By:** {event['steal_player_name']}")
 
-    def format_player(self, player: PlayerInGame) -> str:
-        """生成球员社交媒体内容"""
-        if not self.ai_processor:
-            return super().format_player(player)
-        player_narrative = super().format_player(player)
-        return self.ai_processor.create_social_content({"narrative": player_narrative})
+        elif action_type == "foul":  # 犯规事件
+            narrative_parts.extend([
+                f"**Foul Type:** {event['sub_type']}"
+            ])
+            if event.get('foul_drawn_player_name'):
+                narrative_parts.append(f"**Foul Drawn By:** {event['foul_drawn_player_name']}")
+            if event.get('official_id'):
+                narrative_parts.append(f"**Official ID:** {event['official_id']}")
 
+        elif action_type == "substitution":  # 换人事件
+            narrative_parts.extend([
+                f"**Incoming Player:** {event['incoming_player_name']} ({event['incoming_player_name_i']})",
+                f"**Outgoing Player:** {event['outgoing_player_name']} ({event['outgoing_player_name_i']})"
+            ])
+
+        elif action_type == "jumpball":  # 跳球事件
+            narrative_parts.extend([
+                f"**Won By:** {event['jump_ball_won_player_name']}",
+                f"**Lost By:** {event['jump_ball_lost_player_name']}"
+            ])
+            if event.get('jump_ball_recovered_name'):
+                narrative_parts.append(f"**Recovered By:** {event['jump_ball_recovered_name']}")
+
+        # 添加事件描述
+        narrative_parts.append(f"**Description:** {event['description']}")
+
+        return "\n".join(narrative_parts)
 
 class GameDisplayService:
     """比赛数据展示服务"""
 
     def __init__(self, config: Optional[DisplayConfig] = None):
-        """初始化显示服务
-
-        Args:
-            config: 显示配置，包含展示模式和AI配置（可选）
-        """
         self.config = config or DisplayConfig()
         self.logger = AppLogger.get_logger(__name__, app_name='nba')
 
-        # 优先初始化基础功能
-        self.formatter = OriginalFormatter(None)
-
-        # 尝试初始化 AI 功能（如果配置了的话）
+        self.ai_processor = None
         if self.config.ai_config:
             try:
                 self.ai_processor = AIProcessor(self.config.ai_config)
-                self._init_formatter()  # 成功初始化 AI 后再设置对应的 formatter
-                self.logger.info("AI 增强功能初始化成功")
+                self.logger.info("AI enhancement initialized successfully")
             except Exception as e:
-                self.logger.warning(f"AI 增强功能初始化失败: {e}, 将使用基础数据展示")
-                self.ai_processor = None
-                # 保持使用 OriginalFormatter
+                self.logger.warning(f"AI enhancement initialization failed: {e}")
+
+        self._init_formatter()
 
     def _init_formatter(self):
-        """初始化对应的格式化器
+        """初始化格式化器"""
+        self.formatter = GameFormatter(self.ai_processor, self.config)
 
-        根据配置的展示模式和 AI 处理器状态选择合适的格式化器
-        """
-        formatters = {
-            DisplayMode.ORIGINAL: OriginalFormatter,
-            DisplayMode.TRANSLATED: TranslatedFormatter,
-            DisplayMode.PROFESSIONAL: ProfessionalFormatter,
-            DisplayMode.SOCIAL: SocialFormatter
-        }
-
-        formatter_class = formatters.get(self.config.mode, OriginalFormatter)
-        self.formatter = formatter_class(self.ai_processor)
-
-    def display_game(self, game: Game) -> Dict[str, Any]:
-        """展示比赛数据
-
-        Args:
-            game: 比赛数据对象
-
-        Returns:
-            Dict[str, Any]: 格式化后的比赛数据，包含:
-                - game_narrative: 比赛整体叙事
-                - team_narratives: 球队表现叙事
-                - player_narratives: 球员表现叙事
-                - events: 比赛事件列表
-        """
+    def display_game(self, game: Game, player_id: Optional[int] = None) -> Dict[str, Any]:
+        """显示比赛数据"""
         try:
-            # 生成比赛叙事
-            game_narrative = self.formatter.format_game(game)
-
-            # 生成球队叙事
-            team_narratives = {
-                "home": self.formatter.format_team(game.game_data.home_team, True),
-                "away": self.formatter.format_team(game.game_data.away_team, False)
-            }
-
-            # 生成球员叙事
-            player_narratives = {
-                "home": [
-                    self.formatter.format_player(player)
-                    for player in game.game_data.home_team.players
-                    if player.played == "1"  # 只包含上场球员
-                ],
-                "away": [
-                    self.formatter.format_player(player)
-                    for player in game.game_data.away_team.players
-                    if player.played == "1"  # 只包含上场球员
-                ]
-            }
-
-            # 格式化比赛事件
-            events = []
-            if game.play_by_play and game.play_by_play.actions:
-                events = self.formatter.format_events(game.play_by_play.actions)
-
-            game_display = {
-                "game_narrative": game_narrative,
-                "team_narratives": team_narratives,
-                "player_narratives": player_narratives,
-                "events": events
-            }
-
-            return game_display
-
-        except Exception as e:
-            self.logger.error(f"展示比赛数据失败: {str(e)}")
-            return {
+            result = {
                 "game_narrative": "",
                 "team_narratives": {"home": "", "away": ""},
                 "player_narratives": {"home": [], "away": []},
                 "events": []
             }
 
-    def get_key_events(self, events: List[Dict[str, Any]], min_importance: int = 4) -> List[Dict[str, Any]]:
-        """获取关键事件
+            # 如果没有传入完整的game_data，说明只需要处理events
+            if not game.game_data:
+                if game.play_by_play and game.play_by_play.actions:
+                    result["events"] = self.formatter.format_events(game.play_by_play.actions)
+                return result
 
-        Args:
-            events: 事件列表
-            min_importance: 最小重要性级别，默认为4
+            # 基础比赛叙事
+            result["game_narrative"] = self.formatter.format_game(game)
 
-        Returns:
-            List[Dict[str, Any]]: 重要事件列表
-        """
-        return [
-            event for event in events
-            if event.get("importance", 0) >= min_importance
-        ]
+            # 球队叙事
+            result["team_narratives"] = {
+                "home": self.formatter.format_team(game.game_data.home_team, True),
+                "away": self.formatter.format_team(game.game_data.away_team, False)
+            }
 
-    def get_player_events(self, events: List[Dict[str, Any]], player_name: str) -> List[Dict[str, Any]]:
-        """获取指定球员的事件
+            # 球员叙事（如果有完整game数据才处理）
+            if game.game_data:
+                if player_id:
+                    # 获取指定球员数据
+                    player = game.get_player_stats(player_id)
+                    if player:
+                        # 根据球员所属球队放入对应列表
+                        is_home = player in game.game_data.home_team.players
+                        team_key = "home" if is_home else "away"
+                        if player.played == "1":
+                            result["player_narratives"][team_key].append(
+                                self.formatter.format_player(player)
+                            )
+                else:
+                    # 获取所有上场球员数据
+                    result["player_narratives"] = {
+                        "home": [
+                            self.formatter.format_player(player)
+                            for player in game.game_data.home_team.players
+                            if player.played == "1"
+                        ],
+                        "away": [
+                            self.formatter.format_player(player)
+                            for player in game.game_data.away_team.players
+                            if player.played == "1"
+                        ]
+                    }
 
-        Args:
-            events: 事件列表
-            player_name: 球员姓名
+            # 事件处理
+            if game.play_by_play and game.play_by_play.actions:
+                filtered_events = (
+                    game.filter_events(player_id=player_id)
+                    if player_id and game.game_data
+                    else game.play_by_play.actions
+                )
+                result["events"] = self.formatter.format_events(filtered_events)
 
-        Returns:
-            List[Dict[str, Any]]: 球员相关事件列表
-        """
-        return [
-            event for event in events
-            if event.get("player") == player_name
-        ]
+            return result
 
-    def get_team_events(self, events: List[Dict[str, Any]], team_code: str) -> List[Dict[str, Any]]:
-        """获取指定球队的事件
-
-        Args:
-            events: 事件列表
-            team_code: 球队代码
-
-        Returns:
-            List[Dict[str, Any]]: 球队相关事件列表
-        """
-        return [
-            event for event in events
-            if event.get("team") == team_code
-        ]
-
-    def get_period_events(self, events: List[Dict[str, Any]], period: int) -> List[Dict[str, Any]]:
-        """获取指定节的事件
-
-        Args:
-            events: 事件列表
-            period: 节数
-
-        Returns:
-            List[Dict[str, Any]]: 指定节的事件列表
-        """
-        return [
-            event for event in events
-            if event.get("period") == period
-        ]
+        except Exception as e:
+            self.logger.error(f"Formatting game data failed: {str(e)}")
+            return {
+                "game_narrative": "",
+                "team_narratives": {"home": "", "away": ""},
+                "player_narratives": {"home": [], "away": []},
+                "events": []
+            }
