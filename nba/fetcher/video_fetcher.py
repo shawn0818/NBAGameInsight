@@ -10,7 +10,7 @@ class VideoConfig:
     """视频数据配置"""
     BASE_URL: str = "https://stats.nba.com/stats"
     CACHE_PATH = NBAConfig.PATHS.VIDEOURL_CACHE_DIR
-    CACHE_DURATION: timedelta = timedelta(seconds=3600)
+    CACHE_DURATION: timedelta = timedelta(hours=1)
 
     # 备用URL配置
     FALLBACK_URLS: Dict[str, str] = {
@@ -34,25 +34,35 @@ class VideoConfig:
 
 
 class VideoRequestParams:
-    """视频查询参数构建器"""
+    """视频查询参数构建器
+
+    参数组合规则：
+    1. 只传入game_id: 获取比赛全部视频
+    2. game_id + ContextMeasure: 获取特定类型的视频(如投篮)
+    3. game_id + team_id: 等同于只传game_id
+    4. game_id + team_id + ContextMeasure: 获取特定球队的特定类型视频
+    5. game_id + player_id: 获取球员在该场比赛的所有视频
+    6. game_id + player_id + ContextMeasure: 获取球员特定类型的视频
+    """
 
     def __init__(
             self,
             game_id: str,
             player_id: Optional[int] = None,
             team_id: Optional[int] = None,
-            context_measure: ContextMeasure = ContextMeasure.FGM,
+            context_measure: Optional[ContextMeasure] = None,
             season: str = "2024-25",
             season_type: str = "Regular Season"
     ):
+        # 基础参数验证
         if not game_id:
             raise ValueError("game_id cannot be empty")
-        if not isinstance(context_measure, ContextMeasure):
-            raise ValueError(f"Invalid context_measure: {context_measure}")
         if player_id and not str(player_id).isdigit():
             raise ValueError("player_id must be a positive integer")
         if team_id and not str(team_id).isdigit():
             raise ValueError("team_id must be a positive integer")
+        if context_measure and not isinstance(context_measure, ContextMeasure):
+            raise ValueError(f"Invalid context_measure: {context_measure}")
 
         self.game_id = game_id
         self.player_id = player_id
@@ -70,7 +80,7 @@ class VideoRequestParams:
             'TeamID': int(self.team_id) if self.team_id else 0,
             'PlayerID': int(self.player_id) if self.player_id else 0,
             'GameID': self.game_id,
-            'ContextMeasure': self.context_measure.value,
+            'ContextMeasure': self.context_measure.value if self.context_measure else '',
             'Outcome': '',
             'Location': '',
             'Month': 0,
@@ -132,13 +142,12 @@ class VideoFetcher(BaseNBAFetcher):
             video_urls = data.get('resultSets', {}).get('Meta', {}).get('videoUrls', [])
             return bool(video_urls)  # 如果 videoUrls 不为空，返回 True
         except (AttributeError, TypeError):
-            # 如果数据结构不正确（例如缺少 resultSets 或 Meta），也认为是无效的
             return False
 
     @lru_cache(maxsize=100)
-    def get_game_videos_raw(self,
+    def get_game_video_urls(self,
                             game_id: str,
-                            context_measure: ContextMeasure = ContextMeasure.FGM,
+                            context_measure: Optional[ContextMeasure] = None,
                             player_id: Optional[int] = None,
                             team_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
         """获取比赛视频数据"""
@@ -146,8 +155,8 @@ class VideoFetcher(BaseNBAFetcher):
             # 构建和验证请求参数
             params = VideoRequestParams(
                 game_id=game_id,
-                player_id=str(player_id) if player_id else None,
-                team_id=str(team_id) if team_id else None,
+                player_id=player_id,
+                team_id=team_id,
                 context_measure=context_measure
             ).build()
 
@@ -157,7 +166,7 @@ class VideoFetcher(BaseNBAFetcher):
                 game_id,
                 str(player_id) if player_id else None,
                 str(team_id) if team_id else None,
-                context_measure.value
+                context_measure.value if context_measure else None
             ]))
             cache_key = '_'.join(cache_key_parts)
 
@@ -168,7 +177,7 @@ class VideoFetcher(BaseNBAFetcher):
             )
 
             # 验证缓存数据
-            if cached_data and VideoFetcher._validate_cached_data(cached_data):
+            if cached_data and self._validate_cached_data(cached_data):
                 self.logger.info(f"从缓存中获取比赛(ID:{game_id})的视频数据")
                 return cached_data
 
@@ -181,13 +190,12 @@ class VideoFetcher(BaseNBAFetcher):
             )
 
             # 验证响应数据
-            if data and VideoFetcher._validate_cached_data(data):  # 添加对新获取数据的验证
+            if data and self._validate_cached_data(data):
                 self.logger.info(f"成功获取包含视频链接数据")
                 return data
             else:
                 self.logger.warning(f"获取的视频链接数据验证失败或为空")
                 return None
-
 
         except ValueError as e:
             self.logger.error(f"参数验证失败: {e}")
@@ -196,23 +204,21 @@ class VideoFetcher(BaseNBAFetcher):
             self.logger.error(f"获取视频链接数据失败: {e}")
             return None
 
-
-
     def cleanup_cache(self, game_id: Optional[str] = None, older_than: Optional[timedelta] = None) -> None:
         """清理缓存数据"""
         try:
             prefix = self.__class__.__name__.lower()
             if game_id:
                 cache_key = f"video_{game_id}"
-                self.logger.info(f"正在清理比赛(ID:{game_id})的视频缓存")
+                self.logger.info(f"正在清理比赛(ID:{game_id})的视频链接缓存")
                 self.cache_manager.clear(prefix=prefix, identifier=cache_key)
             else:
                 cache_age = older_than or self.video_config.CACHE_DURATION
-                self.logger.info(f"正在清理{cache_age}之前的视频缓存")
+                self.logger.info(f"正在清理{cache_age}之前的视频链接缓存")
                 self.cache_manager.clear(prefix=prefix, age=cache_age)
         except Exception as e:
             self.logger.error(f"清理缓存失败: {e}")
 
     def clear_cache(self):
         """清除LRU缓存"""
-        self.get_game_videos_raw.cache_clear()
+        self.get_game_video_urls.cache_clear()
