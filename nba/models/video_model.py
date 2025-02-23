@@ -38,7 +38,7 @@ class VideoAsset(BaseModel):
     uuid: str
     qualities: Dict[str, VideoQuality]
 
-    def get_preferred_quality(self, quality: str = 'hd') -> Optional[VideoQuality]:
+    def get_preferred_quality(self, quality: str = 'md') -> Optional[VideoQuality]:
         """获取指定质量的视频信息，如果不存在则返回可用的最高质量"""
         if quality in self.qualities:
             return self.qualities[quality]
@@ -88,3 +88,4 @@ class VideoResponse(BaseModel):
 
     class Config:
         frozen = True
+

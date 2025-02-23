@@ -199,5 +199,6 @@ class ScheduleParser:
         """获取第一场比赛的ID"""
         try:
             return str(games.iloc[0]['gameId']) if not games.empty else None
-        except Exception:
+        except (IndexError, KeyError) as e:
+            self.logger.warning(f"获取比赛ID失败，DataFrame 可能为空或缺少 'gameId' 列: {e}")
             return None

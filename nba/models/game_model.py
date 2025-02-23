@@ -29,6 +29,8 @@ class NotPlayingReason(str, Enum):
     PERSONAL = "INACTIVE_PERSONAL"
     GLEAGUE = "INACTIVE_GLEAGUE_TWOWAY"
     CONDITIONING = "DND_RETURN_TO_COMPETITION_RECONDITIONING"
+    DND_INJURY = "DND_INJURY"  # 添加 DND_INJURY
+    GLEAGUE_ASSIGNMENT = "INACTIVE_GLEAGUE_ON_ASSIGNMENT"
 
 
 class ShotResult(str, Enum):
@@ -418,6 +420,91 @@ class BaseEvent(BaseModel):
 
     model_config = ConfigDict(from_attributes=True, extra='allow')
 
+    @classmethod
+    def filter_by_team(cls, events: List["BaseEvent"], team_id: int) -> List["BaseEvent"]:
+        """按球队ID筛选事件"""
+        return [event for event in events if event.team_id == team_id]
+
+    @classmethod
+    def filter_by_player(cls, events: List["BaseEvent"], player_id: int) -> List["BaseEvent"]:
+        """按球员ID筛选事件"""
+        return [event for event in events if event.person_id == player_id]
+
+    @classmethod
+    def filter_by_period(cls, events: List["BaseEvent"], period: int) -> List["BaseEvent"]:
+        """按节数筛选事件"""
+        return [event for event in events if event.period == period]
+
+    @classmethod
+    def filter_by_clutch_time(cls, events: List["BaseEvent"], minutes: int = 2) -> List["BaseEvent"]:
+        """筛选关键时刻事件(第四节或加时赛最后几分钟)"""
+        return [
+            event for event in events
+            if (event.period >= 4 and ":" in event.clock and
+                int(event.clock.split(":")[0]) <= minutes)
+        ]
+
+    @classmethod
+    def filter_multi(cls,
+                     events: List["BaseEvent"],
+                     team_id: Optional[int] = None,
+                     player_id: Optional[int] = None,
+                     period: Optional[int] = None,
+                     is_clutch: bool = False,
+                     clutch_minutes: int = 2) -> List["BaseEvent"]:
+        """多条件筛选"""
+        filtered = events
+
+        if team_id is not None:
+            filtered = cls.filter_by_team(filtered, team_id)
+
+        if player_id is not None:
+            filtered = cls.filter_by_player(filtered, player_id)
+
+        if period is not None:
+            filtered = cls.filter_by_period(filtered, period)
+
+        if is_clutch:
+            filtered = cls.filter_by_clutch_time(filtered, clutch_minutes)
+
+        return filtered
+
+    def calculate_importance(self) -> int:
+        """计算事件重要性(0-5)"""
+        importance = 0
+
+        # 事件类型重要性
+        high_importance_types = {"2pt", "3pt", "dunk", "block", "steal"}
+        medium_importance_types = {"rebound", "assist", "foul"}
+
+        if self.action_type.lower() in high_importance_types:
+            importance += 3
+        elif self.action_type.lower() in medium_importance_types:
+            importance += 2
+
+        # 关键时刻加分
+        if self.period >= 4 and ":" in self.clock:
+            minutes = int(self.clock.split(":")[0])
+            if minutes <= 2:
+                importance += 1
+
+        # 比分接近加分
+        if self.score_home and self.score_away:
+            score_diff = abs(int(self.score_home) - int(self.score_away))
+            if score_diff <= 5:
+                importance += 1
+
+        return min(importance, 5)
+
+    @property
+    def score_difference(self) -> Optional[int]:
+        """计算比分差值"""
+        if self.score_home and self.score_away:
+            return int(self.score_home) - int(self.score_away)
+        return None
+
+
+
 class GameEvent(BaseEvent):
     """比赛事件(开始/结束)"""
     action_type: Literal["game"] = Field(..., description="事件类型", alias="actionType")
@@ -457,6 +544,11 @@ class ShotEvent(BaseEvent):
     assist_player_name_initial: Optional[str] = Field(None, description="助攻者简称", alias="assistPlayerNameInitial")
     block_person_id: Optional[int] = Field(None, description="盖帽者ID", alias="blockPersonId")
     block_player_name: Optional[str] = Field(None, description="盖帽者姓名", alias="blockPlayerName")
+
+    @classmethod
+    def filter_by_result(cls, events: List["ShotEvent"], result: ShotResult) -> List["ShotEvent"]:
+        """按投篮结果筛选"""
+        return [event for event in events if event.shot_result == result]
 
 
 class TwoPointEvent(ShotEvent):
@@ -605,8 +697,7 @@ class GameData(BaseModel):
     # 添加北京时间
     game_time_beijing: datetime = Field(
         default_factory=lambda: TimeHandler.to_beijing(datetime.now(TimeHandler.UTC_TZ)),
-        description="北京时间",
-        alias="gameTimeBeijing"
+        description="北京时间"
     )
     duration: conint(ge=0) = Field(default=0, description="比赛时长（分钟）")
     game_code: str = Field(default="", description="比赛代码", alias="gameCode")
@@ -625,47 +716,6 @@ class GameData(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-    def get_game_time_info(self) -> dict:
-        """获取比赛时间相关信息
-
-        获取当前比赛的详细时间状态，包括：
-        - 比赛总剩余时间（所有节次的总和）
-        - 当前节次剩余时间
-        - 是否加时赛
-        - 当前节次名称（如'第3节'或'第1个加时'）
-        - 当前节次数字
-        - 当前北京时间
-
-        Returns:
-            dict: 包含以下字段的字典:
-                - total_seconds_left (int): 比赛总剩余秒数（如第3节剩6:30时为1590秒 = 当前6:30 + 第4节12:00）
-                - current_period_seconds (int): 当前节次剩余秒数（如6:30 = 390秒）
-                - is_overtime (bool): 是否为加时赛
-                - period_name (str): 当前节次名称（如'第3节'或'第1个加时'）
-                - period (int): 当前节次数字（1-4为常规时间，>4为加时赛）
-                - beijing_time (str): 当前北京时间，格式为'YYYY-MM-DD HH:MM:SS'
-
-        Example:
-            #>>> game_data.get_game_time_info()
-            {
-                'total_seconds_left': 1590,  # 26分30秒
-                'current_period_seconds': 390,  # 6分30秒
-                'is_overtime': False,
-                'period_name': '第3节',
-                'period': 3,
-                'beijing_time': '2024-02-19 20:30:00'
-            }
-        """
-        # 获取比赛状态信息
-        time_status = TimeHandler.get_game_time_status(self.period, self.game_clock)
-
-        # 合并比赛状态和北京时间信息
-        return {
-            **time_status,  # 展开比赛状态信息
-            'beijing_time': TimeHandler.format_time(self.game_time_beijing)  # 添加格式化的北京时间
-        }
-
-
 # ===========================
 # 6. 完整的Game模型，并提供基本的数据接口
 # ===========================
@@ -682,60 +732,58 @@ class Game(BaseModel):
     #=====model层提供清晰的数据访问接口,类似于数据库的功能，service层可以直接调用这些接口，代码更简洁=========
 
     ## 1.获取比赛基本信息
-    def get_game_basic_info(self) -> Dict[str, Any]:
-        """获取比赛基本信息
-
-        Returns:
-            Dict[str, Any]: 包含比赛基本信息的字典
-        """
-        return {
-            'game_id': self.game_data.game_id,
-            'game_time_local': self.game_data.game_time_local,
-            'game_status': self.game_data.game_status,
-            'status_text': self.game_data.game_status_text,
-            'period': self.game_data.period,
-            'game_clock': self.game_data.game_clock,
-            'arena_name': self.game_data.arena.arena_name,
-            'attendance': self.game_data.attendance,
-            'home_team': self.game_data.home_team.team_name,
-            'away_team': self.game_data.away_team.team_name,
-            'home_score': self.game_data.home_team.score,
-            'away_score': self.game_data.away_team.score,
-        }
-
     def get_game_status(self) -> Dict[str, Any]:
-        """获取比赛当前状态
+        """
+        获取比赛状态信息，返回字典
 
         Returns:
-            Dict[str, Any]: 包含比赛当前状态的字典
+            Dict[str, Any]: 包含比赛状态信息的字典
         """
+        game_data = self.game_data
+        status_text = game_data.game_status_text
+        period_name = f"Period {game_data.period}"  # 简化节数名称
+        current_period = game_data.period
+        time_remaining_str = str(game_data.game_clock)
+
+        # 尝试解析时间，处理 'PT' 开头的 ISO 格式时间
+        try:
+            time_remaining = TimeHandler.parse_duration(time_remaining_str)
+            minutes = time_remaining // 60
+            seconds = time_remaining % 60
+            time_remaining = f"{minutes:02d}:{seconds:02d}"  # 格式化为 MM:SS
+        except ValueError:
+            time_remaining = time_remaining_str  # 无法解析则直接使用原始字符串
+
+        away_score = int(game_data.away_team.score)
+        home_score = int(game_data.home_team.score)
+        away_timeouts = game_data.away_team.timeouts_remaining
+        home_timeouts = game_data.home_team.timeouts_remaining
+        home_bonus = game_data.home_team.in_bonus == "1"  # 转换为布尔值
+        away_bonus = game_data.away_team.in_bonus == "1"  # 转换为布尔值
+
         return {
-            'status_code': self.game_data.game_status,
-            'status_text': self.game_data.game_status_text,
-            'current_period': self.game_data.period,
-            'game_clock': self.game_data.game_clock,
-            'home_score': self.game_data.home_team.score,
-            'away_score': self.game_data.away_team.score,
-            'home_timeouts': self.game_data.home_team.timeouts_remaining,
-            'away_timeouts': self.game_data.away_team.timeouts_remaining,
-            'home_bonus': self.game_data.home_team.in_bonus == "1",
-            'away_bonus': self.game_data.away_team.in_bonus == "1"
+            "status_text": status_text,
+            "period_name": period_name,
+            "current_period": current_period,
+            "time_remaining": time_remaining,
+            "away_score": away_score,
+            "home_score": home_score,
+            "away_timeouts": away_timeouts,
+            "home_timeouts": home_timeouts,
+            "home_bonus": home_bonus,
+            "away_bonus": away_bonus
         }
 
     @staticmethod
     def _active_players(players: List[PlayerInGame]) -> List[Dict[str, Any]]:
+        """获取场上球员"""
         return [
             {'id': p.person_id, 'name': p.name, 'position': p.position}
             for p in players if p.on_court == "1"
         ]
 
     def get_current_lineup(self) -> Dict[str, List[Dict[str, Any]]]:
-        """获取当前场上阵容
-
-        Returns:
-            Dict[str, List[Dict[str, Any]]]: 主客队当前场上阵容信息
-        """
-
+        """获取当前场上阵容"""
         return {
             'home': self._active_players(self.game_data.home_team.players),
             'away': self._active_players(self.game_data.away_team.players)
@@ -773,50 +821,26 @@ class Game(BaseModel):
                       team_id: Optional[int] = None,
                       player_id: Optional[int] = None,
                       action_types: Optional[Set[str]] = None) -> List[BaseEvent]:
-        """
-        多维度筛选事件
-
-        Args:
-            period: 比赛节数
-            team_id: 球队ID
-            player_id: 球员ID
-            action_types: 事件类型集合
-        """
+        """多维度筛选事件"""
         if not self.play_by_play or not self.play_by_play.actions:
             return []
 
-        filtered_events = []
+        filtered_events = BaseEvent.filter_multi(
+            self.play_by_play.actions,
+            team_id=team_id,
+            player_id=player_id,
+            period=period
+        )
 
-        for event in self.play_by_play.actions:
-            if period is not None and event.period != period:
-                continue
-
-            if team_id is not None and event.team_id != team_id:
-                continue
-
-            if player_id is not None and event.person_id != player_id:
-                continue
-
-            if action_types is not None and event.action_type not in action_types:
-                continue
-
-            filtered_events.append(event)
+        if action_types:  # 如果 action_types 参数被传入了值
+            filtered_events = [
+                event for event in filtered_events
+                if event.action_type in action_types
+            ]
 
         return filtered_events
 
-    def get_player_events(self, player_id: int) -> List[BaseEvent]:
-        """获取指定球员的所有事件"""
-        return self.filter_events(player_id=player_id)
-
-    def get_team_period_events(self, team_id: int, period: int) -> List[BaseEvent]:
-        """获取指定球队在特定节次的所有事件"""
-        return self.filter_events(team_id=team_id, period=period)
-
-    def get_shot_events(self, team_id: Optional[int] = None) -> List[BaseEvent]:
-        """获取投篮事件"""
-        return self.filter_events(team_id=team_id, action_types={"2pt", "3pt"})
-
-    #5.获取投篮数据
+    #4.获取投篮数据
     def get_shot_data(self, player_id: Optional[int] = None) -> List[Dict[str, Any]]:
         """获取投篮数据
 
