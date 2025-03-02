@@ -7,7 +7,7 @@ from nba.models.game_model import (
     PeriodEvent, JumpBallEvent, TwoPointEvent, ThreePointEvent,
     FreeThrowEvent, ReboundEvent, StealEvent, BlockEvent, FoulEvent,
     AssistEvent, TurnoverEvent, SubstitutionEvent, TimeoutEvent, ViolationEvent,
-    ShotEvent, GameEvent, TeamStatistics, PlayerStatistics
+    ShotEvent, GameEvent, TeamStatistics, PlayerStatistics, EjectionEvent
 )
 from utils.logger_handler import AppLogger
 
@@ -30,6 +30,7 @@ class GameDataParser:
         "violation": ViolationEvent,
         "timeout": TimeoutEvent,
         "substitution": SubstitutionEvent,
+        "ejection": EjectionEvent,
         "game": GameEvent
     }
 
