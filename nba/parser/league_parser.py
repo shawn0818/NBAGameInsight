@@ -316,6 +316,7 @@ class LeagueMapper:
         通过名称、缩写或 slug 获取球队 ID (支持模糊匹配)。 使用 fuzzywuzzy 模糊匹配。
         """
         self.logger.info(f"开始查询球队: {name}")
+
         # 1. 尝试直接匹配原始输入
         team_id = self._team_name_to_id.get(name)
         if team_id is not None:
@@ -338,8 +339,6 @@ class LeagueMapper:
         fuzzy_match_threshold = 70  # 设置模糊匹配阈值，例如 70 分
         if best_match and score >= fuzzy_match_threshold:
             return self._team_name_to_id[best_match]
-
-        return None
 
     def get_player_id_by_name(self, name: str) -> Optional[Union[int, List[int]]]:
         """
