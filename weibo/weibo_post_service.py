@@ -1,139 +1,151 @@
-# weibo/weibo_post_service.py
-import logging
-import time
-from typing import Optional, List, Dict, Any
-from pathlib import Path
-from nba.services.nba_service import NBAService
-from weibo.weibo_publisher import WeiboPublisher
-from weibo.weibo_model import WeiboPost, WeiboResponse
+import os
+from typing import List, Optional, Dict, Any, Union
+from weibo.weibo_picture_publisher import WeiboImagePublisher
+from weibo.weibo_video_publisher import WeiboVideoPublisher
+from utils.logger_handler import AppLogger
 
 
-class NBAWeiboService:
-    def __init__(self, nba_service: NBAService):
-        self.nba = nba_service
-        self.weibo = WeiboPublisher()
-        self.logger = logging.getLogger(__name__)
+class WeiboPostService:
+    """微博发布服务，提供统一的发布接口"""
 
-    def is_ready(self) -> bool:
-        """检查服务是否准备就绪"""
-        return hasattr(self, 'nba') and hasattr(self, 'weibo')
+    def __init__(self, cookie: Optional[str] = None):
+        """初始化服务
 
-    def publish_game_analysis(self, content: Dict[str, Any], with_video: bool = False) -> WeiboResponse:
-        """发布比赛分析
         Args:
-            content: 预先准备好的内容
-            with_video: 是否包含视频集锦
+            cookie: 用户登录Cookie，如果不提供会尝试从环境变量获取
+        """
+        self.logger = AppLogger.get_logger(__name__, app_name='weibo')
+
+        # 优先使用传入的cookie，否则尝试从环境变量获取
+        self.cookie = cookie
+        if not self.cookie:
+            self.cookie = os.getenv("WB_COOKIES")
+            if not self.cookie:
+                self.logger.error("未设置WB_COOKIES环境变量且未提供cookie参数")
+                raise ValueError("微博Cookie未提供且环境变量WB_COOKIES未设置")
+
+        self.image_publisher = WeiboImagePublisher(self.cookie)
+        self.video_publisher = WeiboVideoPublisher(self.cookie)
+
+    def post_picture(self,
+                     content: str,
+                     image_paths: Union[str, List[str]]) -> Dict[str, Any]:
+        """发布图片微博
+
+        Args:
+            content: 微博文本内容
+            image_paths: 单个图片路径或图片路径列表
+
+        Returns:
+            Dict: 包含成功状态和消息的字典
         """
         try:
-            text = content.get("analysis") or self._format_game_analysis(content["game_info"])
+            self.logger.info(f"开始发布图片微博，图片数量: {len(image_paths) if isinstance(image_paths, list) else 1}")
 
-            images = []
-            if with_video and content.get("videos"):
-                if "gifs" in content["videos"]:
-                    gifs = list(content["videos"]["gifs"].values())[:4]
-                    if gifs:
-                        images.extend(gifs)
-                        highlight_text = self._format_game_highlights(content["game_info"])
-                        if highlight_text:
-                            text = f"{text}\n\n{highlight_text}"
+            # 直接使用图片发布器的方法发布图片
+            result = self.image_publisher.publish_images(image_paths, content)
 
-            post = WeiboPost(text=text, images=images)
-            success = self.weibo.publish(post)
+            self.logger.info(f"图片微博发布结果: {result}")
+            return result
 
-            return WeiboResponse(
-                success=success,
-                message="发布成功" if success else "发布失败"
+        except Exception as e:
+            error_message = f"发布图片微博失败: {str(e)}"
+            self.logger.error(error_message, exc_info=True)
+            return {"success": False, "message": error_message}
+
+    def post_video(self,
+                   video_path: str,
+                   title: str,
+                   content: str,
+                   cover_path: Optional[str] = None,
+                   is_original: bool = True,
+                   album_id: Optional[str] = None,
+                   channel_ids: Optional[List[int]] = None) -> Dict[str, Any]:
+        """发布视频微博
+
+        Args:
+            video_path: 视频文件路径
+            title: 视频标题
+            content: 微博文本内容
+            cover_path: 视频封面图片路径（可选）
+            is_original: 是否为原创内容（默认为True）
+            album_id: 合集ID（可选）
+            channel_ids: 频道ID列表（可选）
+
+        Returns:
+            Dict: 包含成功状态和消息的字典
+        """
+        try:
+            self.logger.info(f"开始发布视频微博，视频路径: {video_path}")
+
+            # 上传封面（如果有）
+            cover_pid = None
+            if cover_path:
+                self.logger.info(f"上传视频封面: {cover_path}")
+                try:
+                    cover_info = self.image_publisher.upload_image(cover_path)
+                    if cover_info:
+                        cover_pid = cover_info.get('pid')
+                        self.logger.info(f"封面上传成功，PID: {cover_pid}")
+                except Exception as cover_error:
+                    self.logger.warning(f"封面上传失败，将使用默认封面: {str(cover_error)}")
+
+            # 使用进度回调函数
+            def progress_callback(current, total, percentage):
+                self.logger.info(f"视频上传进度: {current}/{total} 块 ({percentage:.2f}%)")
+
+            # 上传并发布视频
+            self.logger.info("开始上传视频...")
+            upload_result = self.video_publisher.upload_video(
+                file_path=video_path,
+                progress_callback=progress_callback
             )
 
+            if not upload_result or 'media_id' not in upload_result:
+                error_message = "视频上传失败，未获取到media_id"
+                self.logger.error(error_message)
+                return {"success": False, "message": error_message}
+
+            media_id = upload_result.get('media_id')
+            self.logger.info(f"视频上传成功，media_id: {media_id}")
+
+            # 发布视频
+            self.logger.info("开始发布视频内容...")
+            publish_result = self.video_publisher.publish_video(
+                media_id=media_id,
+                title=title,
+                content=content,
+                cover_pid=cover_pid,
+                is_original=is_original,
+                album_id=album_id,
+                channel_ids=channel_ids
+            )
+
+            if publish_result.get('ok') == 1:
+                self.logger.info(f"视频微博发布成功!")
+                return {"success": True, "message": "视频微博发布成功", "data": publish_result}
+            else:
+                message = publish_result.get('msg', '发布失败')
+                self.logger.error(f"视频微博发布失败: {message}")
+                return {"success": False, "message": message, "data": publish_result}
+
         except Exception as e:
-            self.logger.error(f"发布比赛分析失败: {e}")
-            return WeiboResponse(False, str(e))
+            error_message = f"发布视频微博失败: {str(e)}"
+            self.logger.error(error_message, exc_info=True)
+            return {"success": False, "message": error_message}
 
-    def _format_game_analysis(self, game_info: Dict) -> str:
-        """格式化比赛分析文本，重点关注比赛进程分析"""
-        try:
-            basic_info = game_info.get("basic_info", {})
-            events_analysis = game_info.get("events_analysis", {})
 
-            # 1. 基础信息
-            text = (f"{basic_info['home_team']['name']} VS {basic_info['away_team']['name']}\n"
-                    f"比分：{basic_info['home_team']['score']}-{basic_info['away_team']['score']}\n\n")
-
-            # 2. AI 分析赛程
-            events_by_period = events_analysis.get("events_by_period", {})
-            ai_analysis = events_analysis.get("ai_analysis")
-
-            if ai_analysis:
-                text += f"{ai_analysis}\n\n"
-
-            # 3. 关键转折点
-            key_plays = events_analysis.get("key_plays", [])
-            if key_plays:
-                text += "【比赛转折点】\n"
-                prev_score_diff = 0
-                for play in key_plays:
-                    if play.get('score'):
-                        home_score, away_score = map(int, play['score'].split('-'))
-                        score_diff = home_score - away_score
-                        # 分差变化超过5分或最后2分钟的关键球
-                        if (abs(score_diff - prev_score_diff) >= 5 or
-                                (play['period'] >= 4 and play['time'] <= "02:00")):
-                            text += (f"• {play['period']}节 {play['time']} "
-                                     f"{play['description']} [{play['score']}]\n")
-                            prev_score_diff = score_diff
-
-            # 4. 末节关键时刻分析
-            event_timeline = events_analysis.get("event_timeline", [])
-            if event_timeline:
-                last_period_events = [
-                    e for e in event_timeline
-                    if e['period'] == max(e['period'] for e in event_timeline)
-                       and e['time'] <= "05:00"  # 只关注最后5分钟
-                ]
-
-                if last_period_events:
-                    text += "\n【末节关键进程】\n"
-                    for event in last_period_events:
-                        if event.get('score'):  # 只关注涉及得分的事件
-                            text += (f"{event['time']} {event['description']} "
-                                     f"[{event['score']}]\n")
-
-            return text.strip()
-        except Exception as e:
-            self.logger.error(f"格式化比赛分析失败: {e}")
-            return "比赛分析生成失败"
-
-    def _format_game_highlights(self, game_info: Dict) -> str:
-        """格式化比赛集锦文本，突出精彩进程"""
-        try:
-            events_analysis = game_info.get("events_analysis", {})
-            key_plays = events_analysis.get("key_plays", [])
-
-            text = "【精彩时刻】\n"
-            if key_plays:
-                # 按得分影响力和时间节点筛选关键进球
-                significant_plays = [
-                    play for play in key_plays
-                    if ((play['type'] == 'score' and play.get('points', 0) >= 3) or  # 三分球
-                        (play['type'] in ['block', 'steal'] and play['period'] >= 4) or  # 末节关键防守
-                        (play['type'] == 'assist' and play['period'] >= 4))  # 末节关键助攻
-                ]
-
-                for play in significant_plays[:4]:  # 限制展示4个，与GIF数量对应
-                    text += (f"[{play['period']}节 {play['time']}] "
-                             f"{play['description']}")
-                    if play.get('score'):
-                        text += f" [{play['score']}]"
-                    text += "\n"
-
-            return text.strip()
-        except Exception as e:
-            self.logger.error(f"格式化比赛集锦失败: {e}")
-            return "比赛集锦生成失败"
+    def close(self):
+        """清理资源"""
+        if hasattr(self, 'image_publisher'):
+            del self.image_publisher
+        if hasattr(self, 'video_publisher'):
+            del self.video_publisher
 
     def __enter__(self):
+        """支持使用with语句"""
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if hasattr(self, 'weibo'):
-            del self.weibo
+        """退出with语句块时自动关闭资源"""
+        self.close()
