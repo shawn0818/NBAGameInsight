@@ -761,56 +761,23 @@ class NBAService:
 
     ### =============4.2.2视频功能，调用gamevideo子模块==============
 
-    def _process_game_videos(
-            self,
-            game_id: str,
-            videos: Dict[str, VideoAsset],
-            merge: bool = True,
-            output_dir: Optional[Path] = None,
-            force_reprocess: bool = False
-        ) -> Dict[str, Path]:
-        """处理比赛视频的通用方法（同步版）"""
-        video_service = self._get_service('videodownloader')  # 使用正确的服务名称
-        if not video_service:
-            return {}
-
-        try:
-            # 合并视频检查
-            if merge:
-                output_path = (output_dir or NBAConfig.PATHS.VIDEO_DIR) / f"highlight_{game_id}.mp4"
-                if not force_reprocess and output_path.exists():
-                    self.logger.info(f"检测到已存在的处理结果: {output_path}")
-                    return {"merged": output_path}
-
-            # 下载视频
-            video_paths = video_service.batch_download_videos(videos, game_id, force_reprocess=force_reprocess)
-            if not video_paths:
-                return {}
-
-            # 如果不需要合并，直接返回
-            if not merge or not self.video_processor:
-                return video_paths
-
-            # 合并视频
-            output_path = (output_dir or NBAConfig.PATHS.VIDEO_DIR) / f"highlight_{game_id}.mp4"
-            merged = self.video_processor.merge_videos(
-                list(video_paths.values()),
-                output_path,
-                force_reprocess=force_reprocess
-            )
-            return {"merged": merged} if merged else video_paths
-
-        except Exception as e:
-            self.logger.error(f"处理比赛视频失败: {e}")
-            return {}
-
     def get_team_highlights(self,
                             team: Optional[str] = None,
                             merge: bool = True,
                             output_dir: Optional[Path] = None,
                             force_reprocess: bool = False) -> Dict[str, Path]:
-        """获取球队集锦视频（同步版本，添加增量处理）"""
-        video_service = self._get_service('videodownloader')  # 更新服务名称
+        """获取球队集锦视频（同步版本，添加增量处理）
+
+        Args:
+            team: 球队名称，不提供则使用默认球队
+            merge: 是否合并视频
+            output_dir: 输出目录
+            force_reprocess: 是否强制重新处理
+
+        Returns:
+            Dict[str, Path]: 视频路径字典
+        """
+        video_service = self._get_service('videodownloader')
         if not video_service or not self.data_service:
             return {}
 
@@ -840,14 +807,33 @@ class NBAService:
             if not videos:
                 return {}
 
-            # 传递force_reprocess参数
-            return self._process_game_videos(
-                game.game_data.game_id,
+            # 下载视频
+            video_paths = video_service.batch_download_videos(
                 videos,
-                merge,
-                output_dir,
+                game.game_data.game_id,
                 force_reprocess=force_reprocess
             )
+            if not video_paths:
+                return {}
+
+            # 如果不需要合并，直接返回
+            if not merge or not self.video_processor:
+                return video_paths
+
+            # 获取所有视频路径
+            video_files = list(video_paths.values())
+
+            # 按事件ID排序
+            video_files.sort(key=self._extract_event_id)
+
+            # 合并视频
+            output_path = (output_dir or NBAConfig.PATHS.VIDEO_DIR) / f"highlight_{game.game_data.game_id}.mp4"
+            merged = self.video_processor.merge_videos(
+                video_files,
+                output_path,
+                force_reprocess=force_reprocess
+            )
+            return {"merged": merged} if merged else video_paths
 
         except Exception as e:
             self.logger.error(f"获取球队集锦失败: {e}")
@@ -860,9 +846,21 @@ class NBAService:
                               output_dir: Optional[Path] = None,
                               request_delay: float = 1.0,
                               force_reprocess: bool = False) -> Dict[str, Union[Path, Dict[str, Path]]]:
-        """获取球员集锦视频（添加增量处理）"""
+        """获取球员集锦视频（添加增量处理）
+
+        Args:
+            player_name: 球员名称，不提供则使用默认球员
+            context_measures: 上下文度量集合，如{FGM, AST}
+            merge: 是否合并视频
+            output_dir: 输出目录
+            request_delay: 请求间隔时间(秒)
+            force_reprocess: 是否强制重新处理
+
+        Returns:
+            Dict[str, Union[Path, Dict[str, Path]]]: 视频路径字典
+        """
         import time
-        video_service = self._get_service('videodownloader')  # 使用正确的服务名称
+        video_service = self._get_service('videodownloader')
         if not video_service or not self.data_service:
             return {}
 
@@ -924,11 +922,16 @@ class NBAService:
             if not merge or not self.video_processor:
                 return all_paths
 
-            # 合并所有视频
+            # 收集所有视频路径
             all_video_paths = [
                 path for paths in all_paths.values()
                 for path in paths.values()
             ]
+
+            # 按事件ID排序
+            all_video_paths.sort(key=self._extract_event_id)
+
+            # 合并视频
             output_path = (output_dir or NBAConfig.PATHS.VIDEO_DIR) / f"player_highlight_{player_id}.mp4"
             merged = self.video_processor.merge_videos(
                 all_video_paths,
@@ -940,6 +943,87 @@ class NBAService:
         except Exception as e:
             self.logger.error(f"获取球员集锦失败: {e}")
             return {}
+
+    def _process_game_videos(
+            self,
+            game_id: str,
+            videos: Dict[str, VideoAsset],
+            merge: bool = True,
+            output_dir: Optional[Path] = None,
+            force_reprocess: bool = False
+    ) -> Dict[str, Path]:
+        """处理比赛视频的通用方法（同步版）
+
+        Args:
+            game_id: 比赛ID
+            videos: 视频资产字典
+            merge: 是否合并视频
+            output_dir: 输出目录
+            force_reprocess: 是否强制重新处理
+
+        Returns:
+            Dict[str, Path]: 视频路径字典
+        """
+        video_service = self._get_service('videodownloader')  # 使用正确的服务名称
+        if not video_service:
+            return {}
+
+        try:
+            # 合并视频检查
+            if merge:
+                output_path = (output_dir or NBAConfig.PATHS.VIDEO_DIR) / f"highlight_{game_id}.mp4"
+                if not force_reprocess and output_path.exists():
+                    self.logger.info(f"检测到已存在的处理结果: {output_path}")
+                    return {"merged": output_path}
+
+            # 下载视频
+            video_paths = video_service.batch_download_videos(videos, game_id, force_reprocess=force_reprocess)
+            if not video_paths:
+                return {}
+
+            # 如果不需要合并，直接返回
+            if not merge or not self.video_processor:
+                return video_paths
+
+            # 获取所有视频路径
+            video_files = list(video_paths.values())
+
+            # 按事件ID排序
+            video_files.sort(key=self._extract_event_id)
+
+            # 合并视频
+            output_path = (output_dir or NBAConfig.PATHS.VIDEO_DIR) / f"highlight_{game_id}.mp4"
+            merged = self.video_processor.merge_videos(
+                video_files,
+                output_path,
+                force_reprocess=force_reprocess
+            )
+            return {"merged": merged} if merged else video_paths
+
+        except Exception as e:
+            self.logger.error(f"处理比赛视频失败: {e}")
+            return {}
+
+    def _extract_event_id(self, path: Path) -> int:
+        """从文件名中提取事件ID
+
+        Args:
+            path: 视频文件路径
+
+        Returns:
+            int: 事件ID，如果无法提取则返回0
+        """
+        try:
+            # 从文件名 "event_0123_game_xxxx.mp4" 中提取事件ID
+            filename = path.name
+            parts = filename.split('_')
+            if len(parts) >= 2 and parts[0] == "event":
+                return int(parts[1])
+            return 0
+        except (ValueError, IndexError):
+            self.logger.warning(f"无法从文件名'{path.name}'中提取事件ID")
+            return 0
+
 
     def get_player_analysis(self,
                             player_name: Optional[str] = None,

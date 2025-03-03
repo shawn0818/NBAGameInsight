@@ -1,9 +1,8 @@
 from pathlib import Path
-from typing import Optional, Dict, Tuple, List
+from typing import Optional, Dict
 from dataclasses import dataclass
 import time
 import threading
-import requests
 import random
 from nba.fetcher.video_fetcher import VideoFetcher
 from nba.models.video_model import VideoAsset, ContextMeasure
@@ -34,8 +33,16 @@ class VideoConfig:
     def get_output_path(self, game_id: str, event_id: str, player_id: Optional[int] = None,
                         context_measure: Optional[str] = None) -> Path:
         """获取输出路径"""
-        # 基础文件名
-        filename = f"video_{game_id}_{event_id}"
+        # 确保event_id是整数，并用4位前导零填充
+        try:
+            event_id_int = int(event_id)
+            # 使用4位数字前导零，足够覆盖一场比赛的所有事件
+            formatted_event_id = f"{event_id_int:04d}"
+        except ValueError:
+            formatted_event_id = event_id
+
+        # 文件名格式: event_0123_game_xxxx.mp4
+        filename = f"event_{formatted_event_id}_game_{game_id}"
 
         # 如果有player_id，添加到文件名
         if player_id is not None:
