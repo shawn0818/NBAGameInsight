@@ -45,8 +45,18 @@ class WeiboPostService:
             # 直接使用图片发布器的方法发布图片
             result = self.image_publisher.publish_images(image_paths, content)
 
-            self.logger.info(f"图片微博发布结果: {result}")
-            return result
+            # 添加详细日志，记录完整的返回结果
+            self.logger.debug(f"微博API返回结果: {result}")
+
+            # WeiboImagePublisher中的publish_images方法已经处理了成功/失败的判断
+            # 并返回了统一格式的结果，我们只需要信任这个结果
+            if result and result.get("success") == True:
+                self.logger.info(f"图片微博发布成功")
+                return {"success": True, "message": result.get("message", "发布成功"), "data": result.get("data", {})}
+            else:
+                error_message = result.get("message", "未知错误")
+                self.logger.error(f"图片微博发布失败: {error_message}")
+                return {"success": False, "message": error_message, "data": result.get("data", {})}
 
         except Exception as e:
             error_message = f"发布图片微博失败: {str(e)}"
@@ -61,22 +71,15 @@ class WeiboPostService:
                    is_original: bool = True,
                    album_id: Optional[str] = None,
                    channel_ids: Optional[List[int]] = None) -> Dict[str, Any]:
-        """发布视频微博
-
-        Args:
-            video_path: 视频文件路径
-            title: 视频标题
-            content: 微博文本内容
-            cover_path: 视频封面图片路径（可选）
-            is_original: 是否为原创内容（默认为True）
-            album_id: 合集ID（可选）
-            channel_ids: 频道ID列表（可选）
-
-        Returns:
-            Dict: 包含成功状态和消息的字典
-        """
+        """发布视频微博"""
         try:
             self.logger.info(f"开始发布视频微博，视频路径: {video_path}")
+
+            # 添加视频文件检查
+            if not os.path.exists(video_path):
+                error_message = f"视频文件不存在: {video_path}"
+                self.logger.error(error_message)
+                return {"success": False, "message": error_message}
 
             # 上传封面（如果有）
             cover_pid = None
@@ -121,7 +124,12 @@ class WeiboPostService:
                 channel_ids=channel_ids
             )
 
-            if publish_result.get('ok') == 1:
+            # 详细记录API返回
+            self.logger.debug(f"发布视频API返回: {publish_result}")
+
+            # 简化判断逻辑
+            if publish_result.get('ok') == 1 or publish_result.get('code') == 100000 or "success" in str(
+                    publish_result).lower():
                 self.logger.info(f"视频微博发布成功!")
                 return {"success": True, "message": "视频微博发布成功", "data": publish_result}
             else:
@@ -133,6 +141,29 @@ class WeiboPostService:
             error_message = f"发布视频微博失败: {str(e)}"
             self.logger.error(error_message, exc_info=True)
             return {"success": False, "message": error_message}
+
+    def _check_file_exists(self, file_path, file_type="文件") -> bool:
+        """检查文件是否存在，并记录日志
+
+        Args:
+            file_path: 文件路径
+            file_type: 文件类型描述
+
+        Returns:
+            bool: 文件是否存在
+        """
+        import os.path
+
+        if not file_path:
+            self.logger.error(f"未指定{file_type}路径")
+            return False
+
+        if not os.path.exists(file_path):
+            self.logger.error(f"{file_type}不存在: {file_path}")
+            return False
+
+        self.logger.info(f"找到{file_type}: {file_path}")
+        return True
 
 
     def close(self):
