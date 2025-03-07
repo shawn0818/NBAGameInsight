@@ -10,7 +10,7 @@ class WeiboImagePublisher:
     SUPPORTED_FORMATS = ('.jpg', '.jpeg', '.png', '.gif')
     APP_ID = "339644097"  # 应该是web端在微博内部的id
     UID = "6006177856"  # 微博的账户ID
-    TIMEOUT = (30, 600)  # 连接超时30秒, 读取超时10分钟 ，简单设置下超时时间
+    TIMEOUT = (180, 600)  # 连接超时30秒, 读取超时10分钟 ，简单设置下超时时间
 
     def __init__(self, cookie: str):
         """初始化上传器
@@ -241,7 +241,7 @@ class WeiboImagePublisher:
 
                 # 添加随机延迟，避免频繁请求
                 if i < len(image_paths) - 1:  # 如果不是最后一张图片
-                    delay = random.uniform(1, 3)
+                    delay = random.uniform(5, 15)
                     self.logger.debug(f"等待 {delay:.2f} 秒后上传下一张图片")
                     time.sleep(delay)
 
