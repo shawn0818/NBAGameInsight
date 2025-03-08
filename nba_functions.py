@@ -13,6 +13,7 @@ import time
 import logging
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Union
+from config.nba_config import NBAConfig
 
 
 def get_game_info(nba_service, ai_processor=None, content_generator=None):
@@ -448,7 +449,7 @@ def process_player_round_gifs(nba_service, player_name=None):
         print(f"找到 {len(video_files)} 个视频文件")
 
         # 3. 创建GIF输出目录
-        gif_dir = video_dir / f"player_rounds_{player_id}"
+        gif_dir = NBAConfig.PATHS.GIF_DIR / f"player_rounds_{player_id}_{game.game_data.game_id}"
         gif_dir.mkdir(parents=True, exist_ok=True)
 
         # 4. 为每个视频创建对应的GIF
@@ -460,10 +461,11 @@ def process_player_round_gifs(nba_service, player_name=None):
                 event_id = None
                 match = re.search(r'event_(\d+)_', video_path.name)
                 if match:
-                    event_id = match.group(1)
-                else:
-                    print(f"  × 无法从文件名提取事件ID: {video_path.name}")
-                    continue
+                    # 提取ID并去除前导零
+                    event_id = match.group(1).lstrip('0')
+                    # 如果全部都是零，那么至少保留一个零
+                    if not event_id:
+                        event_id = '0'
 
                 print(f"处理事件 #{event_id} 的GIF: {video_path.name}")
 

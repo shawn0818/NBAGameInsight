@@ -189,42 +189,40 @@ class GameVideoService:
         self.video_parser = VideoParser()
         self.downloader = VideoDownloader(config=self.config)
 
-    def get_game_videos(
-            self,
-            game_id: Optional[str] = None,
-            player_id: Optional[int] = None,
-            team_id: Optional[int] = None,
-            context_measure: Optional[ContextMeasure] = None
-    ) -> Dict[str, VideoAsset]:
-        """获取 NBA 视频资源元数据。"""
+    def get_game_videos(self, game_id: str, player_id: Optional[int] = None,
+                        team_id: Optional[int] = None, context_measure: Optional[ContextMeasure] = None,
+                        force_refresh: bool = True) -> Dict[str, VideoAsset]:
+        """获取比赛视频资源"""
         try:
-            # 调用视频获取API
+            # 1. 使用fetcher获取原始数据
             raw_data = self.video_fetcher.get_game_video_urls(
                 game_id=game_id,
                 player_id=player_id,
                 team_id=team_id,
-                context_measure=context_measure
+                context_measure=context_measure,
+                force_refresh=force_refresh
             )
 
             if not raw_data:
-                error_msg = f"获取视频数据失败，参数: game_id={game_id}, player_id={player_id}, team_id={team_id}, context_measure={context_measure}"
-                self.logger.error(error_msg)
+                self.logger.warning(f"未获取到原始视频数据")
                 return {}
 
-            parsed_data = self.video_parser.parse_videos(raw_data)
-            if not parsed_data:
-                error_msg = f"解析视频数据失败，参数: game_id={game_id}"
-                self.logger.error(error_msg)
+            # 2. 使用parser解析数据
+            parser = VideoParser()
+            response = parser.parse_videos(raw_data, game_id)
+
+            if not response:
+                self.logger.error(f"解析视频数据失败")
                 return {}
 
-            videos = parsed_data.resultSets.get('video_assets', {})
-            log_msg = f"获取视频元数据成功，视频数量: {len(videos)}"
-            self.logger.info(log_msg)
+            # 3. 获取解析后的视频资产
+            videos = response.get_videos()
+
+            self.logger.info(f"获取视频元数据成功，视频数量: {len(videos)}")
             return videos
 
         except Exception as e:
-            error_msg = f"获取视频资源时出错，{e}"
-            self.logger.error(error_msg, exc_info=True)
+            self.logger.error(f"获取比赛视频失败: {str(e)}")
             return {}
 
     def download_videos(

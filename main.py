@@ -203,18 +203,10 @@ class NBAApplication:
         )
 
         # 视频配置
-        video_config = VideoConfig(
-            quality='hd',
-            chunk_size=8192
-        )
+        video_config = VideoConfig()
 
         # 视频处理配置
-        video_process_config = VideoProcessConfig(
-            ffmpeg_path='ffmpeg',
-            max_workers=3,
-            gif_fps=15,
-            gif_scale="480:-1"
-        )
+        video_process_config = VideoProcessConfig()
 
         return NBAService(
             config=nba_config,
@@ -259,12 +251,7 @@ class NBAApplication:
         self.logger.info("初始化AI处理器...")
         try:
             # 创建AI配置
-            ai_config = AIConfig(
-                provider=AIProvider.DEEPSEEK,
-                model=AIModel.DEEPSEEK_CHAT,
-                enable_translation=True,
-                enable_creation=True
-            )
+            ai_config = AIConfig()
 
             # 初始化AI处理器
             ai_processor = AIProcessor(ai_config)

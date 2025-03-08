@@ -1,3 +1,5 @@
+import os
+import tempfile
 from pathlib import Path
 from typing import List, Optional, Union, Dict
 import subprocess
@@ -16,9 +18,9 @@ class VideoProcessConfig:
     retry_delay: float = 1.0
 
     # GIF配置
-    gif_fps: int = 12
-    gif_scale: str = "960:-1"
-    gif_quality: int = 20
+    gif_fps: int = 12  # 提高帧率到 15fps，更流畅
+    gif_scale: str = "960:-1"  # 保持宽度 1280，最佳清晰度
+    gif_quality: int = 8  # 质量设置为 5，高清晰度
 
 
 class VideoProcessor:
@@ -59,54 +61,104 @@ class VideoProcessor:
                 self.logger.error(f"处理出错[{task_id}]: {str(e)}")
                 return False
 
-    def merge_videos(
-            self,
-            video_paths: List[Path],
-            output_path: Path,
-            remove_source: bool = False,
-            force_reprocess: bool = False
-    ) -> Optional[Path]:
-        """同步合并多个视频文件"""
-        task_id = f"merge_{output_path.stem}"
-        file_list = output_path.parent / f"filelist_{task_id}.txt"  # 在这里初始化
+    def merge_videos(self,
+                     video_files: List[Path],
+                     output_path: Path,
+                     remove_watermark: bool = True,
+                     force_reprocess: bool = False) -> Optional[Path]:
+        """合并多个视频文件，并可选去除水印
 
-        try:
-            if not video_paths:
-                return None
+        Args:
+            video_files: 视频文件路径列表
+            output_path: 输出路径
+            remove_watermark: 是否去除水印
+            force_reprocess: 是否强制重新处理
 
-            # 增量处理: 检查是否已存在
-            if not force_reprocess and output_path.exists():
-                self.logger.info(f"合并视频已存在，跳过处理: {output_path}")
-                return output_path
-
-            # 创建filelist文件
-            with open(file_list, "w") as f:
-                for video_path in sorted(video_paths):
-                    f.write(f"file '{video_path}'\n")
-
-            cmd = [
-                self.config.ffmpeg_path,
-                '-f', 'concat',
-                '-safe', '0',
-                '-i', str(file_list),
-                '-c', 'copy',
-                str(output_path)
-            ]
-
-            success = self._run_ffmpeg(cmd, task_id)
-            if success and remove_source:
-                for video_path in video_paths:
-                    video_path.unlink()
-
-            return output_path if success else None
-
-        except Exception as e:
-            self.logger.error(f"合并失败[{task_id}]: {str(e)}")
+        Returns:
+            Optional[Path]: 合并后的视频路径，失败则返回None
+        """
+        if not video_files:
+            self.logger.error("没有视频文件可供合并")
             return None
 
-        finally:
-            if file_list.exists():
-                file_list.unlink()
+        # 检查输出文件是否已存在
+        if output_path.exists() and not force_reprocess:
+            self.logger.info(f"输出文件已存在: {output_path}")
+            return output_path
+
+        # 创建输出目录
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            # 准备输入文件列表
+            with tempfile.NamedTemporaryFile('w+t', suffix='.txt', delete=False) as f:
+                input_list_path = f.name
+                for video_file in video_files:
+                    if video_file.exists():
+                        f.write(f"file '{video_file.absolute()}'\n")
+                    else:
+                        self.logger.warning(f"文件不存在: {video_file}")
+
+            # 先合并视频（不去水印）
+            merged_temp_path = output_path.parent / f"temp_{output_path.name}"
+            concat_cmd = [
+                'ffmpeg',
+                '-y',  # 覆盖现有文件
+                '-f', 'concat',
+                '-safe', '0',
+                '-i', input_list_path,
+                '-c', 'copy',
+                str(merged_temp_path)
+            ]
+
+            # 执行合并命令
+            self.logger.info(f"执行视频合并命令: {' '.join(concat_cmd)}")
+            subprocess.run(concat_cmd, check=True)
+
+            # 如果需要去水印，对合并后的视频进行处理
+            if remove_watermark and merged_temp_path.exists():
+                delogo_cmd = [
+                    'ffmpeg',
+                    '-y',
+                    '-i', str(merged_temp_path),
+                    '-vf', 'delogo=x=1030:y=5:w=230:h=40',
+                    '-c:v', 'libx264',  # 使用H.264编码器
+                    '-crf', '18',  # 高质量设置
+                    '-preset', 'medium',  # 平衡处理时间和质量
+                    '-c:a', 'copy',  # 保持音频不变
+                    str(output_path)
+                ]
+
+                # 执行去水印命令
+                self.logger.info(f"执行水印去除命令: {' '.join(delogo_cmd)}")
+                subprocess.run(delogo_cmd, check=True)
+
+                # 删除临时合并文件
+                merged_temp_path.unlink()
+            elif not remove_watermark and merged_temp_path.exists():
+                # 如果不需要去水印，直接重命名合并文件
+                merged_temp_path.rename(output_path)
+
+            # 清理输入文件列表
+            os.unlink(input_list_path)
+
+            if output_path.exists():
+                self.logger.info(f"视频处理成功: {output_path}")
+                return output_path
+            else:
+                self.logger.error(f"视频处理后未找到输出文件: {output_path}")
+                return None
+
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"FFmpeg命令执行失败: {e}")
+            return None
+        except Exception as e:
+            self.logger.error(f"视频处理失败: {e}")
+            # 确保清理临时文件
+            temp_path = output_path.parent / f"temp_{output_path.name}"
+            if temp_path.exists():
+                temp_path.unlink()
+            return None
 
     def batch_convert_to_gif(
             self,
@@ -220,7 +272,7 @@ class VideoProcessor:
             merged = self.merge_videos(
                 video_paths,
                 output_path,
-                remove_source=False,
+                remove_watermark=True,
                 force_reprocess=force_reprocess
             )
             if merged:

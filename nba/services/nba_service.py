@@ -9,7 +9,6 @@ import time
 from nba.services.game_data_service import GameDataProvider, InitializationError, GameDataConfig
 from nba.services.game_video_service import GameVideoService, VideoConfig
 from nba.services.game_charts_service import GameChartsService, ChartConfig
-from utils.ai_processor import AIProcessor, AIConfig
 from nba.models.video_model import ContextMeasure, VideoAsset
 from config.nba_config import NBAConfig
 from utils.logger_handler import AppLogger
@@ -148,7 +147,6 @@ class NBAService:
     def __init__(
             self,
             config: Optional[NBAServiceConfig] = None,
-            ai_config: Optional[AIConfig] = None,
             data_config: Optional[GameDataConfig] = None,
             video_config: Optional[VideoConfig] = None,
             chart_config: Optional[ChartConfig] = None,
@@ -160,9 +158,8 @@ class NBAService:
 
         Args:
             config: NBA服务主配置，控制全局行为
-            ai_config: AI处理器配置，用于高级数据分析
             data_config: 比赛数据服务配置
-            video_config: 视频处理服务配置
+            video_config: 视频下载服务配置
             chart_config: 图表生成服务配置
             video_process_config:视频合并转化gif配置
 
@@ -186,7 +183,6 @@ class NBAService:
 
         # 初始化服务
         self._init_all_services(
-            ai_config=ai_config,
             data_config=data_config,
             video_config=video_config,
             chart_config=chart_config,
@@ -195,7 +191,6 @@ class NBAService:
 
     def _init_all_services(
             self,
-            ai_config: Optional[AIConfig] = None,
             data_config: Optional[GameDataConfig] = None,
             video_config: Optional[VideoConfig] = None,
             chart_config: Optional[ChartConfig] = None,
@@ -206,17 +201,14 @@ class NBAService:
         按照特定的顺序和依赖关系初始化各个子服务。
 
         初始化顺序：
-        1. AI处理器（可选）
-        2. 数据服务（核心服务）
-        3. 图表服务
-        4. 视频服务
+        1. 数据服务（核心服务）
+        2. 图表服务
+        3. 视频服务
 
         服务依赖关系：
-        - 显示服务依赖于AI配置（如果存在）
         - 所有服务都依赖于数据服务
 
         Args:
-            ai_config: AI服务配置
             data_config: 数据服务配置
             video_config: 视频服务配置
             chart_config: 图表服务配置
@@ -225,12 +217,6 @@ class NBAService:
             InitializationError: 当核心服务初始化失败时抛出
         """
         try:
-            # 初始化 AI 处理器（可选服务）
-            if ai_config:
-                self._services['ai'] = AIProcessor(ai_config)
-                self._update_service_status('ai', ServiceStatus.AVAILABLE)
-            else:
-                self._update_service_status('ai', ServiceStatus.UNAVAILABLE)
 
             # 初始化GameData服务配置（核心服务）
             data_config = data_config or GameDataConfig(
@@ -254,7 +240,6 @@ class NBAService:
 
             # 服务初始化映射
             service_configs = {
-                'ai': (AIProcessor, ai_config),
                 'data': (GameDataProvider, data_config),
                 'chart': (GameChartsService, chart_config),
                 'videodownloader': (GameVideoService, video_config),
@@ -268,6 +253,7 @@ class NBAService:
         except Exception as e:
             self.logger.error(f"服务初始化失败: {str(e)}")
             raise InitializationError(f"服务初始化失败: {str(e)}")
+
 
     @property
     def data_service(self) -> Optional[GameDataProvider]:
@@ -306,15 +292,6 @@ class NBAService:
         """
         return self._get_service('video_processor')
 
-    @property
-    def ai_service(self) -> Optional[AIProcessor]:
-        """获取AI服务实例
-        
-        Returns:
-            Optional[AIProcessor]: AI服务实例，如果服务不可用则返回None
-        """
-        return self._get_service('ai')
-
 
     def _init_service(self,
                       name: str,
@@ -322,9 +299,7 @@ class NBAService:
                       service_config: Any) -> None:
         """单个服务的初始化方法
 
-        负责初始化单个服务并更新其状态。如果是AI服务且配置为None，
-        则将服务标记为不可用而不是报错。
-
+        负责初始化单个服务并更新其状态。
         Args:
             name: 服务名称
             service_class: 服务类
@@ -335,12 +310,8 @@ class NBAService:
             - AI服务是可选的，其他服务初始化失败会被记录为错误状态
         """
         try:
-            if name == 'ai' and service_config is None:
-                self._update_service_status(name, ServiceStatus.UNAVAILABLE)
-                return
-
-            # 处理不需要配置的服务 (如 display)
-            if service_config is None and name != 'ai':
+            # 处理不需要配置的服务
+            if service_config is None :
                 self._services[name] = service_class()
             else:
                 self._services[name] = service_class(service_config)
@@ -637,7 +608,7 @@ class NBAService:
             # 按照事件重要性排序
             sorted_events = sorted(
                 filtered_events,
-                key=lambda e: e.calculate_importance() if hasattr(e, 'calculate_importance') else 0,
+                key=lambda evt: evt.calculate_importance() if hasattr(e, 'calculate_importance') else 0,
                 reverse=True
             )
 
@@ -831,6 +802,7 @@ class NBAService:
             merged = self.video_processor.merge_videos(
                 video_files,
                 output_path,
+                remove_watermark=True,
                 force_reprocess=force_reprocess
             )
             return {"merged": merged} if merged else video_paths
@@ -932,10 +904,11 @@ class NBAService:
             all_video_paths.sort(key=self._extract_event_id)
 
             # 合并视频
-            output_path = (output_dir or NBAConfig.PATHS.VIDEO_DIR) / f"player_highlight_{player_id}.mp4"
+            output_path = (output_dir or NBAConfig.PATHS.VIDEO_DIR) / f"player_highlight_{player_id}_{game.game_data.game_id}.mp4"
             merged = self.video_processor.merge_videos(
                 all_video_paths,
                 output_path,
+                remove_watermark=True,
                 force_reprocess=force_reprocess
             )
             return {"merged": merged} if merged else all_paths
@@ -996,6 +969,7 @@ class NBAService:
             merged = self.video_processor.merge_videos(
                 video_files,
                 output_path,
+                remove_watermark=True,
                 force_reprocess=force_reprocess
             )
             return {"merged": merged} if merged else video_paths
