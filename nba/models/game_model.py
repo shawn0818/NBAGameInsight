@@ -1197,6 +1197,7 @@ class Game(BaseModel):
             return {"error": "比赛数据不完整或不可用"}
 
         try:
+            logger.info("正在准备用于AI分析的结构化数据......")
             # 1. 创建一个处理上下文字典以减少重复查询
             context = {
                 # 存储球队名称映射，避免重复生成
@@ -1238,6 +1239,7 @@ class Game(BaseModel):
                 "player_stats": self._prepare_ai_player_stats(player_id),
                 "events": self._prepare_ai_events(player_id)
             }
+
         except Exception as e:
             logger.error(f"准备AI数据失败: {str(e)}")
             return {"error": f"准备AI数据失败: {str(e)}"}
@@ -1603,16 +1605,31 @@ class Game(BaseModel):
         }
 
     def _prepare_ai_events(self, player_id: Optional[int] = None) -> Dict[str, Any]:
-        """准备比赛事件的AI友好格式，使用filter_events方法"""
+        """准备比赛事件的AI友好格式，提供完整的比赛事件流"""
         if not self.play_by_play or not self.play_by_play.actions:
-            return {"data": [], "count": 0}
+            return {"data": [], "count": 0, "player_related_action_numbers": []}
 
-        # 使用filter_events方法直接获取筛选后的事件
-        filtered_events = self.filter_events(player_id=player_id)
+        # 使用全部事件
+        all_events = self.play_by_play.actions
+
+        # 如果指定了球员ID，收集与球员相关的事件ID (action_number)
+        player_related_action_numbers = []
+        if player_id:
+            for event in all_events:
+                # 检查事件是否与球员直接或间接相关
+                if (event.person_id == player_id or
+                        getattr(event, 'assist_person_id', None) == player_id or
+                        getattr(event, 'block_person_id', None) == player_id or
+                        getattr(event, 'steal_person_id', None) == player_id or
+                        getattr(event, 'foul_drawn_person_id', None) == player_id or
+                        (hasattr(event, 'scoring_person_id') and event.scoring_person_id == player_id) or
+                        (hasattr(event, 'incoming_person_id') and event.incoming_person_id == player_id) or
+                        (hasattr(event, 'outgoing_person_id') and event.outgoing_person_id == player_id)):
+                    player_related_action_numbers.append(event.action_number)
 
         # 将事件转换为字典格式
         events_data = []
-        for event in filtered_events:
+        for event in all_events:
             # 创建基础事件数据
             event_dict = {
                 "action_number": event.action_number,
@@ -1674,6 +1691,14 @@ class Game(BaseModel):
                     "shot_action_number": getattr(event, "shot_action_number", None)
                 })
 
+            elif action_type == "assist":  # 助攻事件 - 添加这个分支
+                event_dict.update({
+                    "assist_total": getattr(event, "assist_total", None),
+                    "scoring_player_name": getattr(event, "scoring_player_name", None),
+                    "scoring_player_name_i": getattr(event, "scoring_player_name_i", None),
+                    "scoring_person_id": getattr(event, "scoring_person_id", None)
+                })
+
             elif action_type == "turnover":  # 失误事件
                 event_dict.update({
                     "turnover_total": getattr(event, "turnover_total", None),
@@ -1730,5 +1755,6 @@ class Game(BaseModel):
 
         return {
             "data": events_data,
-            "count": len(events_data)
+            "count": len(events_data),
+            "player_related_action_numbers": player_related_action_numbers if player_id else []
         }
