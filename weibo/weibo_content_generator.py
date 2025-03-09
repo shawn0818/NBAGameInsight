@@ -9,6 +9,68 @@ NBA_HASHTAG = "#NBA#"
 BASKETBALL_HASHTAG = "#篮球#"
 
 # Prompt 模板
+COMPREHENSIVE_WEIBO_PROMPT = """
+你是NBA官方微博的内容创作专家，擅长将复杂的比赛数据转化为引人入胜的中文社交媒体内容。
+请基于以下NBA比赛数据，一次性生成所有所需的微博内容（全部内容必须是中文）：
+
+1. 【比赛标题】(限30字)
+   - 包含两队名称（中文）和最终比分
+   - 突出胜负关系和关键表现
+   - 适度使用emoji表情增强吸引力
+
+2. 【比赛摘要】(150-200字)
+   - 简明扼要总结比赛过程和关键转折点
+   - 突出双方球队数据对比和特点
+   - 提及关键球员的表现和数据
+
+3. 【球员分析】(针对{player_name}，100-150字)
+   - 深入剖析该球员在本场比赛的表现
+   - 结合数据和比赛回合，分析他的优势与不足
+   - 使用生动语言描述关键进球或助攻
+
+4. 【投篮图解说】(针对{player_name}，80-100字)
+   - 简明分析该球员本场比赛投篮分布特点
+   - 突出命中率数据和投篮热区
+   - 适合配合投篮图一起发布
+
+5. 【球队投篮分析】(针对{team_name}，80-100字)
+   - 分析球队整体投篮趋势和特点
+   - 提及投篮命中率和三分球表现
+   - 适合配合球队投篮分布图发布
+
+6. 【回合解说】(每个回合100-150字)
+   - 针对提供的回合ID列表，为每个回合生成专业解说
+   - 解说内容生动详实，展现现场感和专业度
+   - 描述回合中的技术动作和战术意图
+   - 特别强调{player_name}在回合中的表现
+   - 回合解说格式为：回合ID: "解说内容"
+
+所有内容必须：
+1. 完全使用中文表达，包括球队名称、球员名字和术语
+2. 确保准确性，百分比数据保留两位小数
+3. 风格生动活泼，适合微博平台传播
+4. 适度使用emoji表情增强表现力
+
+比赛数据: {game_data}
+相关回合ID列表: {round_ids}
+
+请以JSON格式返回所有内容：
+{
+  "title": "比赛标题",
+  "summary": "比赛摘要",
+  "player_analysis": "球员分析",
+  "shot_chart_text": "投篮图解说",
+  "team_shot_analysis": "球队投篮分析",
+  "rounds": {
+    "回合ID1": "该回合的解说内容",
+    "回合ID2": "该回合的解说内容",
+    ...更多回合
+  },
+  "hashtags": ["#话题1#", "#话题2#", "#话题3#", "#话题4#", "#话题5#"]
+}
+"""
+
+# 以下保留现有的单独生成提示词，以便单独需要时使用
 GAME_TITLE_PROMPT = (
     "你是一名专业的体育记者，擅长为NBA比赛创作简洁有力的中文标题。\n"
     "请基于以下信息生成一个中文标题，要求：\n"
@@ -50,6 +112,7 @@ ROUND_ANALYSIS_PROMPT = (
     "回合数据：{rounds_data}"
 )
 
+
 # 辅助函数：提取球队信息
 def get_team_info(ai_data: Dict[str, Any]) -> Dict[str, str]:
     game_info = ai_data.get("game_info", {})
@@ -61,9 +124,11 @@ def get_team_info(ai_data: Dict[str, Any]) -> Dict[str, str]:
         "away_tricode": teams.get("away", {}).get("tricode", "客队"),
     }
 
+
 # 辅助函数：提取比赛日期
 def get_game_date(ai_data: Dict[str, Any]) -> str:
     return ai_data.get("game_info", {}).get("date", {}).get("beijing", "比赛日期")
+
 
 # 辅助函数：提取比赛得分
 def get_game_scores(ai_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -72,6 +137,7 @@ def get_game_scores(ai_data: Dict[str, Any]) -> Dict[str, Any]:
         "home_score": score_data.get("home", {}).get("points", "?"),
         "away_score": score_data.get("away", {}).get("points", "?")
     }
+
 
 class WeiboContentGenerator:
     """
@@ -126,6 +192,58 @@ class WeiboContentGenerator:
             self.logger.warning(f"格式化比赛时间失败: {e}")
             return f"第{period}节 {clock}"
 
+    def generate_comprehensive_content(self, ai_data: Dict[str, Any], player_name: str = None,
+                                       team_name: str = None, round_ids: List[int] = None) -> Dict[str, Any]:
+        """一次性生成所有微博内容类型，包括回合解说
+
+        Args:
+            ai_data: 完整的比赛AI友好数据
+            player_name: 需要分析的球员名称
+            team_name: 需要分析的球队名称
+            round_ids: 需要解说的回合ID列表
+
+        Returns:
+            包含所有内容类型的字典
+        """
+        player_name = player_name or ""
+        team_name = team_name or ""
+        round_ids = round_ids or []
+
+        # 使用综合prompt
+        prompt = COMPREHENSIVE_WEIBO_PROMPT.format(
+            player_name=player_name,
+            team_name=team_name,
+            game_data=json.dumps(ai_data, ensure_ascii=False),
+            round_ids=json.dumps(round_ids)
+        )
+
+        try:
+            self.logger.info(f"正在生成综合微博内容 (球员:{player_name}, 球队:{team_name}, 回合数:{len(round_ids)})...")
+            response = self.ai_processor.generate(prompt)
+
+            # 提取JSON部分
+            json_match = re.search(r'({[\s\S]*})', response)
+            if json_match:
+                content_json = json.loads(json_match.group(1))
+                self.logger.info(f"成功生成全部微博内容，包含{len(content_json.get('rounds', {}))}个回合解说")
+                return content_json
+            else:
+                self.logger.error("无法解析AI返回的JSON内容")
+                return {"error": "内容解析失败"}
+
+        except Exception as e:
+            self.logger.error(f"生成综合内容失败: {e}", exc_info=True)
+            # 返回基本的备用内容
+            return {
+                "title": f"{team_name}vs{player_name}精彩表现",
+                "summary": "本场比赛精彩纷呈，双方展开激烈对抗。",
+                "player_analysis": f"{player_name}在本场比赛中有出色发挥。",
+                "shot_chart_text": f"{player_name}本场比赛投篮分布图显示了他的得分区域。",
+                "team_shot_analysis": f"{team_name}球队整体投篮效率良好。",
+                "rounds": {str(rid): f"{player_name}在这个回合展现出色表现！" for rid in round_ids},
+                "hashtags": ["#NBA#", "#篮球#", "#比赛集锦#"]
+            }
+
     def generate_game_title(self, ai_data: Dict[str, Any]) -> str:
         """
         生成比赛标题
@@ -133,6 +251,15 @@ class WeiboContentGenerator:
         Returns:
             生成的比赛标题字符串
         """
+        # 尝试使用综合内容生成
+        try:
+            comprehensive_content = self.generate_comprehensive_content(ai_data)
+            if "title" in comprehensive_content and comprehensive_content["title"]:
+                return comprehensive_content["title"]
+        except Exception as e:
+            self.logger.warning(f"使用综合生成标题失败，将使用单独生成: {e}")
+
+        # 如果综合生成失败，退回到单独生成
         if not ai_data or "error" in ai_data:
             return "NBA精彩比赛"
 
@@ -160,6 +287,15 @@ class WeiboContentGenerator:
         Returns:
             生成的比赛摘要字符串
         """
+        # 尝试使用综合内容生成
+        try:
+            comprehensive_content = self.generate_comprehensive_content(ai_data)
+            if "summary" in comprehensive_content and comprehensive_content["summary"]:
+                return comprehensive_content["summary"]
+        except Exception as e:
+            self.logger.warning(f"使用综合生成摘要失败，将使用单独生成: {e}")
+
+        # 如果综合生成失败，退回到单独生成
         if not ai_data or "error" in ai_data:
             return ""
 
@@ -220,6 +356,15 @@ class WeiboContentGenerator:
         Returns:
             生成的球员分析字符串
         """
+        # 尝试使用综合内容生成
+        try:
+            comprehensive_content = self.generate_comprehensive_content(ai_data, player_name=player_name)
+            if "player_analysis" in comprehensive_content and comprehensive_content["player_analysis"]:
+                return comprehensive_content["player_analysis"]
+        except Exception as e:
+            self.logger.warning(f"使用综合生成球员分析失败，将使用单独生成: {e}")
+
+        # 如果综合生成失败，退回到单独生成
         if not ai_data or not player_name or "error" in ai_data:
             return ""
 
@@ -256,6 +401,38 @@ class WeiboContentGenerator:
             self.logger.error(f"生成球员分析失败: {e}", exc_info=True)
             return f"{player_name}在本场比赛中有出色表现。"
 
+    def generate_shot_chart_text(self, ai_data: Dict[str, Any], player_name: str) -> str:
+        """
+        生成球员投篮图解说
+
+        Returns:
+            生成的投篮图解说字符串
+        """
+        # 从综合内容中获取
+        try:
+            comprehensive_content = self.generate_comprehensive_content(ai_data, player_name=player_name)
+            if "shot_chart_text" in comprehensive_content and comprehensive_content["shot_chart_text"]:
+                return comprehensive_content["shot_chart_text"]
+        except Exception as e:
+            self.logger.warning(f"获取球员投篮图解说失败: {e}")
+            return f"{player_name}本场比赛的投篮分布图显示了他的得分热区和命中情况。"
+
+    def generate_team_shot_analysis(self, ai_data: Dict[str, Any], team_name: str) -> str:
+        """
+        生成球队投篮分析
+
+        Returns:
+            生成的球队投篮分析字符串
+        """
+        # 从综合内容中获取
+        try:
+            comprehensive_content = self.generate_comprehensive_content(ai_data, team_name=team_name)
+            if "team_shot_analysis" in comprehensive_content and comprehensive_content["team_shot_analysis"]:
+                return comprehensive_content["team_shot_analysis"]
+        except Exception as e:
+            self.logger.warning(f"获取球队投篮分析失败: {e}")
+            return f"{team_name}球队本场比赛的投篮分布展示了团队的进攻策略和热区。"
+
     def generate_round_analysis(self, ai_data: Dict[str, Any], current_round: int) -> str:
         """
         生成回合解说分析
@@ -281,137 +458,26 @@ class WeiboContentGenerator:
             self.logger.error(f"生成回合解说失败: {e}", exc_info=True)
             return "回合解说生成失败，请稍后重试。"
 
-    def _prepare_game_content(self, ai_data: Dict[str, Any]) -> str:
-        """
-        内部方法：准备比赛集锦微博内容
-        """
-        team_info = get_team_info(ai_data)
-        game_date = get_game_date(ai_data)
-        scores = get_game_scores(ai_data)
-        summary = self.generate_game_summary(ai_data)
-        content = (
-            f"{game_date} NBA常规赛 {team_info['away_full']}({scores['away_score']}) vs "
-            f"{team_info['home_full']}({scores['home_score']})"
-        )
-        if summary:
-            content += f"\n\n{summary}"
-            content_lower = content.lower()
-            if NBA_HASHTAG.lower() not in content_lower:
-                content += f" {NBA_HASHTAG}"
-            if BASKETBALL_HASHTAG.lower() not in content_lower:
-                content += f" {BASKETBALL_HASHTAG}"
-            content = self._normalize_hashtags(content)
-        return content
-
-    def _prepare_player_content(self, ai_data: Dict[str, Any], player_name: str) -> str:
-        """
-        内部方法：准备球员集锦微博内容
-        """
-        team_info = get_team_info(ai_data)
-        game_date = get_game_date(ai_data)
-        scores = get_game_scores(ai_data)
-        content = (
-            f"{game_date} NBA常规赛 {team_info['away_full']}({scores['away_score']}) vs "
-            f"{team_info['home_full']}({scores['home_score']})"
-        )
-        player_analysis = self.generate_player_analysis(ai_data, player_name)
-        if player_analysis:
-            content += f"\n\n{player_analysis}"
-            content_lower = content.lower()
-            if NBA_HASHTAG.lower() not in content_lower:
-                content += f" {NBA_HASHTAG}"
-            if BASKETBALL_HASHTAG.lower() not in content_lower:
-                content += f" {BASKETBALL_HASHTAG}"
-            player_tag = f"#{player_name}#"
-            if player_tag.lower() not in content_lower:
-                content += f" {player_tag}"
-            content = self._normalize_hashtags(content)
-        return content
-
-    def _prepare_chart_content(self, ai_data: Dict[str, Any], player_name: str) -> str:
-        """
-        内部方法：准备投篮图表微博内容
-        """
-        team_info = get_team_info(ai_data)
-        game_date = get_game_date(ai_data)
-        # 移除了未使用的 scores 变量
-        content = f"{game_date} {team_info['away_full']} vs {team_info['home_full']}"
-        content += f"\n{player_name}本场比赛投篮分布图"
-
-        for team in ["home", "away"]:
-            for player in ai_data.get("player_stats", {}).get(team, []):
-                if player.get("basic", {}).get("name", "").lower() == player_name.lower():
-                    shooting = player.get("shooting", {})
-                    if shooting:
-                        fg = shooting.get("field_goals", {})
-                        three = shooting.get("three_pointers", {})
-                        content += f"\n投篮: {fg.get('made', 0)}/{fg.get('attempted', 0)}"
-                        if "percentage" in fg:
-                            content += f" ({fg.get('percentage', 0)}%)"
-                        content += f"\n三分: {three.get('made', 0)}/{three.get('attempted', 0)}"
-                        if "percentage" in three:
-                            content += f" ({three.get('percentage', 0)}%)"
-                        points = player.get("basic", {}).get("points", 0)
-                        content += f"\n得分: {points}分"
-                    break
-
-        content_lower = content.lower()
-        if NBA_HASHTAG.lower() not in content_lower:
-            content += f" {NBA_HASHTAG}"
-        if BASKETBALL_HASHTAG.lower() not in content_lower:
-            content += f" {BASKETBALL_HASHTAG}"
-        player_tag = f"#{player_name}#"
-        if player_tag.lower() not in content_lower:
-            content += f" {player_tag}"
-        content = self._normalize_hashtags(content)
-        return content
-
-    def _prepare_team_chart_content(self, ai_data: Dict[str, Any], team_name: str) -> str:
-        """
-        内部方法：准备球队投篮图微博内容
-        """
-        team_info = get_team_info(ai_data)
-        game_date = get_game_date(ai_data)
-        scores = get_game_scores(ai_data)
-
-        content = f"{game_date} {team_info['away_full']} vs {team_info['home_full']}\n"
-        content += f"{team_name}球队本场比赛投篮分布图\n"
-
-        # 添加比分信息
-        content += f"比分: {scores['away_score']} - {scores['home_score']}\n"
-
-        # 添加球队投篮数据
-        for team_type in ["home", "away"]:
-            current_team = team_info[f"{team_type}_full"]
-            if current_team.lower() == team_name.lower():
-                team_stats = ai_data.get("team_stats", {}).get(team_type, {})
-                if team_stats:
-                    shooting = team_stats.get("shooting", {})
-                    if shooting:
-                        fg = shooting.get("field_goals", {})
-                        three = shooting.get("three_pointers", {})
-                        content += f"\n投篮: {fg.get('made', 0)}/{fg.get('attempted', 0)}"
-                        if "percentage" in fg:
-                            content += f" ({fg.get('percentage', 0)}%)"
-                        content += f"\n三分: {three.get('made', 0)}/{three.get('attempted', 0)}"
-                        if "percentage" in three:
-                            content += f" ({three.get('percentage', 0)}%)"
-                break
-
-        # 添加标签
-        content_lower = content.lower()
-        if NBA_HASHTAG.lower() not in content_lower:
-            content += f"\n\n{NBA_HASHTAG}"
-        if BASKETBALL_HASHTAG.lower() not in content_lower:
-            content += f" {BASKETBALL_HASHTAG}"
-        team_tag = f"#{team_name}#"
-        if team_tag.lower() not in content_lower:
-            content += f" {team_tag}"
-        content = self._normalize_hashtags(content)
-        return content
-
     def batch_generate_round_analyses(self, ai_data, round_ids, player_name, player_id=None):
+        """批量生成多个回合的解说内容"""
         try:
+            # 使用综合内容生成
+            comprehensive_content = self.generate_comprehensive_content(
+                ai_data,
+                player_name=player_name,
+                round_ids=round_ids
+            )
+
+            # 从综合内容中提取回合解说
+            if "rounds" in comprehensive_content and comprehensive_content["rounds"]:
+                round_analyses = comprehensive_content["rounds"]
+                # 将string类型的键转换为整数类型
+                return {int(k): v for k, v in round_analyses.items()}
+
+            # 如果回合解说为空，则回退到旧方法
+            self.logger.warning("从综合内容中未获取到回合解说，将使用旧方法")
+
+            # 以下是原有的实现，作为备选
             # 获取所有回合数据
             all_rounds_data = []
             if "events" in ai_data and "data" in ai_data["events"]:
@@ -521,70 +587,37 @@ class WeiboContentGenerator:
             self.logger.error(f"批量生成回合解说失败: {e}", exc_info=True)
             return {}
 
-    def generate_fallback_content(self, round_data, player_name, round_index=1, total_rounds=1):
-        """基于回合数据生成备选解说内容"""
-        try:
-            # 提取关键信息
-            period = round_data.get("period", "")
-            clock = round_data.get("clock", "")
-            action_type = round_data.get("action_type", "")
-            description = round_data.get("description", "")
-            score_home = round_data.get("score_home", "")
-            score_away = round_data.get("score_away", "")
+    def _generate_simple_round_content(self, ai_data: Dict[str, Any], round_id: int, player_name: str,
+                                       round_index: int = 1, total_rounds: int = 1) -> str:
+        """
+        生成简单的回合解说内容，专门处理助攻回合
+        """
+        # 检查这是否是一个助攻回合
+        is_assist_round = False
+        assist_description = ""
 
-            # 格式化时间
-            formatted_time = self.format_game_time(period, clock)
+        # 查找所有助攻投篮
+        for event in ai_data.get("events", {}).get("data", []):
+            if (event.get("action_type") in ["2pt", "3pt"] and
+                    "assist_person_id" in event and
+                    event.get("action_number") == round_id):
+                is_assist_round = True
+                shooter_name = event.get("player_name", "队友")
+                shot_type = "三分球" if event.get("action_type") == "3pt" else "两分球"
+                shot_result = "命中" if event.get("shot_result") == "Made" else "未命中"
+                assist_description = f"{player_name}传出精彩助攻，{shooter_name}{shot_result}一记{shot_type}。"
+                break
 
-            # 根据动作类型生成描述
-            if action_type == "2pt":
-                shot_type = "两分球"
-            elif action_type == "3pt":
-                shot_type = "三分球"
-            elif action_type == "rebound":
-                shot_type = "篮板球"
-            elif action_type == "assist":
-                shot_type = "助攻"
-            elif action_type == "steal":
-                shot_type = "抢断"
-            elif action_type == "block":
-                shot_type = "盖帽"
-            else:
-                shot_type = "精彩表现"
+        # 使用格式化的时间
+        formatted_time = f"第{round_index}回合"
 
-            # 基础描述文本
-            content = f"{player_name}本场表现回顾{round_index}/{total_rounds} {formatted_time}\n\n"
+        # 根据是否是助攻回合生成不同内容
+        if is_assist_round:
+            content = f"{player_name}展现出色的传球视野，送出一记精准助攻！{assist_description}这样的传球展现了他作为全场组织者的能力，不仅能得分，更能帮助队友创造得分机会。"
+        else:
+            content = f"{player_name}在这个回合展现出色表现！无论是得分、传球还是防守，都展示了他的全面技术和领袖气质。"
 
-            # 添加中文描述
-            if description:
-                # 简单处理英文描述
-                if "Jump Shot" in description:
-                    chi_desc = f"{player_name}投中一记漂亮的跳投"
-                elif "3PT" in description:
-                    chi_desc = f"{player_name}命中一记三分球"
-                elif "Layup" in description:
-                    chi_desc = f"{player_name}完成一次漂亮的上篮"
-                elif "Dunk" in description:
-                    chi_desc = f"{player_name}完成一记精彩扣篮"
-                elif "Assist" in description or "AST" in description:
-                    chi_desc = f"{player_name}送出一记精准助攻"
-                else:
-                    chi_desc = f"{player_name}展现精彩表现"
-
-                content += f"{chi_desc}"
-            else:
-                content += f"{player_name}展现了一次精彩的{shot_type}表现"
-
-            # 添加比分信息
-            if score_home and score_away:
-                content += f"，当前比分 {score_away}-{score_home}"
-
-            # 添加标签
-            content += "\n\n#NBA# #湖人# #勒布朗# #詹姆斯#"
-
-            return content
-        except Exception as e:
-            self.logger.error(f"生成备选内容失败: {e}")
-            return f"{player_name}本场表现回顾{round_index}/{total_rounds}\n\n精彩表现！\n\n#NBA# #湖人# #勒布朗# #詹姆斯#"
+        return content
 
     def _format_round_content(self, ai_data: Dict[str, Any], round_id: int, player_name: str,
                               analysis_text: str, round_index: int = 1, total_rounds: int = 1) -> str:
@@ -664,47 +697,72 @@ class WeiboContentGenerator:
             # 返回一个简单的备用内容
             return f"{player_name}本场表现回顾{round_index}/{total_rounds}\n\n精彩表现！\n\n#NBA# #湖人# #勒布朗# #詹姆斯#"
 
-    def _generate_simple_round_content(self, ai_data: Dict[str, Any], round_id: int, player_name: str,
-                                       round_index: int = 1, total_rounds: int = 1) -> str:
-        """
-        生成简单的回合解说内容，专门处理助攻回合
-        """
-        # 检查这是否是一个助攻回合
-        is_assist_round = False
-        assist_description = ""
+    def generate_fallback_content(self, round_data, player_name, round_index=1, total_rounds=1):
+        """基于回合数据生成备选解说内容"""
+        try:
+            # 提取关键信息
+            period = round_data.get("period", "")
+            clock = round_data.get("clock", "")
+            action_type = round_data.get("action_type", "")
+            description = round_data.get("description", "")
+            score_home = round_data.get("score_home", "")
+            score_away = round_data.get("score_away", "")
 
-        # 查找所有助攻投篮
-        for event in ai_data.get("events", {}).get("data", []):
-            if (event.get("action_type") in ["2pt", "3pt"] and
-                    "assist_person_id" in event and
-                    event.get("action_number") == round_id):
-                is_assist_round = True
-                shooter_name = event.get("player_name", "队友")
-                shot_type = "三分球" if event.get("action_type") == "3pt" else "两分球"
-                shot_result = "命中" if event.get("shot_result") == "Made" else "未命中"
-                assist_description = f"{player_name}传出精彩助攻，{shooter_name}{shot_result}一记{shot_type}。"
-                break
+            # 格式化时间
+            formatted_time = self.format_game_time(period, clock)
 
-        # 使用格式化的时间
-        formatted_time = f"第{round_index}回合"
+            # 根据动作类型生成描述
+            if action_type == "2pt":
+                shot_type = "两分球"
+            elif action_type == "3pt":
+                shot_type = "三分球"
+            elif action_type == "rebound":
+                shot_type = "篮板球"
+            elif action_type == "assist":
+                shot_type = "助攻"
+            elif action_type == "steal":
+                shot_type = "抢断"
+            elif action_type == "block":
+                shot_type = "盖帽"
+            else:
+                shot_type = "精彩表现"
 
-        # 根据是否是助攻回合生成不同内容
-        if is_assist_round:
-            content = f"{player_name}本场表现回顾{round_index}/{total_rounds} {formatted_time}\n\n"
-            content += f"{player_name}展现出色的传球视野，送出一记精准助攻！{assist_description}这样的传球展现了他作为全场组织者的能力，不仅能得分，更能帮助队友创造得分机会。\n\n"
-            content += "#NBA# #湖人# #勒布朗# #詹姆斯#"
-        else:
-            content = f"{player_name}本场表现回顾{round_index}/{total_rounds} {formatted_time}\n\n"
-            content += f"{player_name}在这个回合展现出色表现！无论是得分、传球还是防守，都展示了他的全面技术和领袖气质。\n\n"
-            content += "#NBA# #湖人# #勒布朗# #詹姆斯#"
+            # 基础描述文本
+            content = ""
 
-        return content
+            # 添加中文描述
+            if description:
+                # 简单处理英文描述
+                if "Jump Shot" in description:
+                    chi_desc = f"{player_name}投中一记漂亮的跳投"
+                elif "3PT" in description:
+                    chi_desc = f"{player_name}命中一记三分球"
+                elif "Layup" in description:
+                    chi_desc = f"{player_name}完成一次漂亮的上篮"
+                elif "Dunk" in description:
+                    chi_desc = f"{player_name}完成一记精彩扣篮"
+                elif "Assist" in description or "AST" in description:
+                    chi_desc = f"{player_name}送出一记精准助攻"
+                else:
+                    chi_desc = f"{player_name}展现精彩表现"
 
+                content += f"{chi_desc}"
+            else:
+                content += f"{player_name}展现了一次精彩的{shot_type}表现"
+
+            # 添加比分信息
+            if score_home and score_away:
+                content += f"，当前比分 {score_away}-{score_home}"
+
+            return content
+        except Exception as e:
+            self.logger.error(f"生成备选内容失败: {e}")
+            return f"{player_name}在这个回合展现出色表现！"
 
     def prepare_weibo_content(self, ai_data: Dict[str, Any], post_type: str = "game",
                               player_name: Optional[str] = None, round_number: Optional[int] = None) -> Dict[str, str]:
         """
-        准备微博发布内容
+        准备微博发布内容，使用新的综合内容生成方法
 
         Args:
             ai_data: AI友好数据
@@ -718,28 +776,63 @@ class WeiboContentGenerator:
         if not ai_data or "error" in ai_data:
             return {"title": "NBA精彩瞬间", "content": f"NBA比赛精彩集锦 {NBA_HASHTAG} {BASKETBALL_HASHTAG}"}
 
-        title = self.generate_game_title(ai_data)
+        # 先尝试获取所有内容，团队名称根据需要确定
+        team_name = None
+        if post_type == "team_chart":
+            team_name = player_name  # 在team_chart模式下，player_name实际上是team_name
 
+        # 如果是回合解说，则需要传入回合ID列表
+        round_ids = None
+        if post_type == "round" and round_number is not None:
+            round_ids = [round_number] if isinstance(round_number, int) else round_number
+
+        # 获取综合内容
+        comprehensive_content = self.generate_comprehensive_content(
+            ai_data,
+            player_name=player_name if post_type != "team_chart" else None,
+            team_name=team_name,
+            round_ids=round_ids
+        )
+
+        # 默认标题
+        title = comprehensive_content.get("title", "NBA精彩比赛")
+
+        # 根据不同类型组织内容
         if post_type == "game":
-            content = self._prepare_game_content(ai_data)
+            summary = comprehensive_content.get("summary", "")
+            hashtags = " ".join(comprehensive_content.get("hashtags", ["#NBA#", "#篮球#"]))
+            content = f"{summary}\n\n{hashtags}"
         elif post_type == "player" and player_name:
-            content = self._prepare_player_content(ai_data, player_name)
-        elif post_type == "chart" and player_name:
-            content = self._prepare_chart_content(ai_data, player_name)
-        elif post_type == "team_chart" and player_name:  # player_name在这里实际上是team_name
-            content = self._prepare_team_chart_content(ai_data, player_name)
-        elif post_type == "round" and round_number is not None:
-            content = self.batch_generate_round_analyses(ai_data, round_number, player_name or "")
-        else:
-            content = f"NBA精彩比赛 {NBA_HASHTAG} {BASKETBALL_HASHTAG}"
-
-        if post_type == "player" and player_name:
+            player_analysis = comprehensive_content.get("player_analysis", "")
+            hashtags = " ".join(comprehensive_content.get("hashtags", ["#NBA#", "#篮球#", f"#{player_name}#"]))
+            content = f"{player_analysis}\n\n{hashtags}"
             title = f"{title} - {player_name}个人集锦"
         elif post_type == "chart" and player_name:
+            shot_chart_text = comprehensive_content.get("shot_chart_text", f"{player_name}本场比赛投篮分布图")
+            hashtags = " ".join(comprehensive_content.get("hashtags", ["#NBA#", "#篮球#", f"#{player_name}#"]))
+            content = f"{player_name}本场比赛投篮分布图\n\n{shot_chart_text}\n\n{hashtags}"
             title = f"{title} - {player_name}投篮分布"
-        elif post_type == "team_chart" and player_name:  # player_name在这里实际上是team_name
-            title = f"{title} - {player_name}球队投篮分布"
-        elif post_type == "round" and round_number is not None:
-            title = f"{title} - {player_name or ''}回合#{round_number}解说"
+        elif post_type == "team_chart" and team_name:
+            team_shot_analysis = comprehensive_content.get("team_shot_analysis", f"{team_name}球队本场比赛投篮分布图")
+            hashtags = " ".join(comprehensive_content.get("hashtags", ["#NBA#", "#篮球#", f"#{team_name}#"]))
+            content = f"{team_name}球队本场比赛投篮分布图\n\n{team_shot_analysis}\n\n{hashtags}"
+            title = f"{title} - {team_name}球队投篮分布"
+        elif post_type == "round" and round_number is not None and player_name:
+            # 对于回合解说，我们只需要返回JSON内容，因为实际发布时会用_format_round_content格式化
+            round_id = round_number[0] if isinstance(round_number, list) else round_number
+            round_content = None
+
+            # 从综合内容中获取此回合的解说
+            if "rounds" in comprehensive_content:
+                round_content = comprehensive_content["rounds"].get(str(round_id))
+
+            if not round_content:
+                # 如果没有找到解说，生成简单解说
+                round_content = self._generate_simple_round_content(ai_data, round_id, player_name)
+
+            content = round_content
+            title = f"{title} - {player_name}回合#{round_id}解说"
+        else:
+            content = f"NBA精彩比赛 {NBA_HASHTAG} {BASKETBALL_HASHTAG}"
 
         return {"title": title.strip(), "content": content.strip()}
