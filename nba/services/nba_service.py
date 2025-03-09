@@ -858,7 +858,6 @@ class NBAService:
                 context_measures = {
                     ContextMeasure.FGM,
                     ContextMeasure.AST,
-                    ContextMeasure.REB,
                     ContextMeasure.STL
                 }
 

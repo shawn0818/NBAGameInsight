@@ -29,8 +29,8 @@ class AIModel(Enum):
 @dataclass
 class AIConfig:
     """AI 服务配置"""
-    provider: AIProvider = AIProvider.OPENROUTER
-    model: AIModel = AIModel.GEMINI_FLASH
+    provider: AIProvider = AIProvider.DEEPSEEK
+    model: AIModel = AIModel.DEEPSEEK_R1
     enable_translation: bool = True
     enable_creation: bool = True
     # 请求相关配置

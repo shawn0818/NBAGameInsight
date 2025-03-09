@@ -19,8 +19,8 @@ class VideoProcessConfig:
 
     # GIF配置
     gif_fps: int = 12  # 提高帧率到 15fps，更流畅
-    gif_scale: str = "960:-1"  # 保持宽度 1280，最佳清晰度
-    gif_quality: int = 8  # 质量设置为 5，高清晰度
+    gif_scale: str = "720:-1"  # 保持宽度 1280，最佳清晰度
+    gif_quality: int = 10  # 质量设置为 5，高清晰度
 
 
 class VideoProcessor:
