@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import IntEnum, Enum
-from typing import Optional, List, Dict, Any, Literal, Set
+from typing import Optional, List, Dict, Any, Literal
 from pydantic import BaseModel, Field, model_validator, conint, confloat, ConfigDict
 
 from utils.time_handler import  TimeHandler
@@ -473,33 +473,6 @@ class BaseEvent(BaseModel):
 
         return filtered
 
-    def calculate_importance(self) -> int:
-        """计算事件重要性(0-5)"""
-        importance = 0
-
-        # 事件类型重要性
-        high_importance_types = {"2pt", "3pt", "dunk", "block", "steal"}
-        medium_importance_types = {"rebound", "assist", "foul"}
-
-        if self.action_type.lower() in high_importance_types:
-            importance += 3
-        elif self.action_type.lower() in medium_importance_types:
-            importance += 2
-
-        # 关键时刻加分
-        if self.period >= 4 and ":" in self.clock:
-            minutes = int(self.clock.split(":")[0])
-            if minutes <= 2:
-                importance += 1
-
-        # 比分接近加分
-        if self.score_home and self.score_away:
-            score_diff = abs(int(self.score_home) - int(self.score_away))
-            if score_diff <= 5:
-                importance += 1
-
-        return min(importance, 5)
-
     @property
     def score_difference(self) -> Optional[int]:
         """计算比分差值"""
@@ -688,15 +661,6 @@ class SubstitutionEvent(BaseEvent):
 # 5. 比赛核心数据模型
 # ===========================
 
-class PlayByPlay(BaseModel):
-    """比赛回放数据"""
-    game: Dict[str, Any] = Field(..., description="比赛信息")
-    meta: Optional[Dict[str, Any]] = Field(None, description="元数据")
-    actions: List[BaseEvent] = Field(default_factory=list, description="所有事件列表")
-
-    model_config = ConfigDict(from_attributes=True)
-
-
 class GameData(BaseModel):
     """比赛详细数据模型"""
     game_id: str = Field(default="", description="比赛ID", alias="gameId")
@@ -730,6 +694,15 @@ class GameData(BaseModel):
         if hasattr(self, 'game_time_utc') and self.game_time_utc:
             self.game_time_beijing = TimeHandler.to_beijing(self.game_time_utc)
         return self
+
+
+class PlayByPlay(BaseModel):
+    """比赛回放数据"""
+    game: Dict[str, Any] = Field(..., description="比赛信息")
+    meta: Optional[Dict[str, Any]] = Field(None, description="元数据")
+    actions: List[BaseEvent] = Field(default_factory=list, description="所有事件列表")
+
+    model_config = ConfigDict(from_attributes=True)
 
 # ===========================
 # 6. 完整的Game模型，并提供基本的数据接口
@@ -789,13 +762,7 @@ class Game(BaseModel):
             "away_bonus": away_bonus
         }
 
-    @staticmethod
-    def _active_players(players: List[PlayerInGame]) -> List[Dict[str, Any]]:
-        """获取场上球员"""
-        return [
-            {'id': p.person_id, 'name': p.name, 'position': p.position}
-            for p in players if p.on_court == "1"
-        ]
+
 
     def get_current_lineup(self) -> Dict[str, List[Dict[str, Any]]]:
         """获取当前场上阵容"""
@@ -804,265 +771,13 @@ class Game(BaseModel):
             'away': self._active_players(self.game_data.away_team.players)
         }
 
-    ##2.筛选球队的统计数据
-
-    def get_team_stats(self, team_id: int) -> Optional[TeamInGame]:
-        """获取指定球队的统计数据"""
-        if self.game_data.home_team.team_id == team_id:
-            return self.game_data.home_team
-        elif self.game_data.away_team.team_id == team_id:
-            return self.game_data.away_team
-        return None
-
-    ##2.筛选球员的统计数据
-    def get_player_stats(self, player_id: int) -> Optional[PlayerInGame]:
-        """获取指定球员的统计数据"""
-        # 在主队中查找
-        for player in self.game_data.home_team.players:
-            if player.person_id == player_id:
-                return player
-
-        # 在客队中查找
-        for player in self.game_data.away_team.players:
-            if player.person_id == player_id:
-                return player
-
-        return None
-
-
-    ##3.筛选事件
-    def filter_events(self,
-                      period: Optional[int] = None,
-                      team_id: Optional[int] = None,
-                      player_id: Optional[int] = None,
-                      action_types: Optional[Set[str]] = None) -> List[BaseEvent]:
-        """多维度筛选事件"""
-        if not self.play_by_play or not self.play_by_play.actions:
-            return []
-
-        filtered_events = BaseEvent.filter_multi(
-            self.play_by_play.actions,
-            team_id=team_id,
-            player_id=player_id,
-            period=period
-        )
-
-        if action_types:  # 如果 action_types 参数被传入了值
-            filtered_events = [
-                event for event in filtered_events
-                if event.action_type in action_types
-            ]
-
-        return filtered_events
-
-    def calculate_scoring_efficiency(self, player_id: Optional[int] = None, team_id: Optional[int] = None) -> Dict[
-        str, Any]:
-        """计算进攻效率统计信息
-
-        为特定球员或球队计算详细的进攻效率数据，如真实命中率、有效投篮率等。
-
-        Args:
-            player_id: 可选的球员ID
-            team_id: 可选的球队ID
-
-        Returns:
-            Dict[str, Any]: 包含详细效率指标的字典
-        """
-        try:
-            if player_id:
-                # 获取球员数据
-                player = self.get_player_stats(player_id)
-                if not player:
-                    return {"error": f"未找到ID为{player_id}的球员"}
-
-                stats = player.statistics
-
-                # 计算基础效率指标
-                fg_pct = stats.field_goals_percentage or 0
-                fg3_pct = stats.three_pointers_percentage or 0
-                ft_pct = stats.free_throws_percentage or 0
-
-                # 真实命中率
-                tsa = stats.field_goals_attempted + 0.44 * stats.free_throws_attempted
-                ts_pct = 0 if tsa == 0 else stats.points / (2 * tsa)
-
-                # 有效投篮率
-                efg_pct = 0
-                if stats.field_goals_attempted > 0:
-                    efg_pct = (stats.field_goals_made + 0.5 * stats.three_pointers_made) / stats.field_goals_attempted
-
-                # 得分效率
-                points_per_shot = 0 if stats.field_goals_attempted == 0 else stats.points / stats.field_goals_attempted
-
-                return {
-                    "name": player.name,
-                    "team_id": None,  # 需要额外查询
-                    "minutes": stats.minutes_calculated,
-                    "basic_stats": {
-                        "points": stats.points,
-                        "field_goals": {"made": stats.field_goals_made, "attempted": stats.field_goals_attempted,
-                                        "pct": fg_pct},
-                        "three_pointers": {"made": stats.three_pointers_made,
-                                           "attempted": stats.three_pointers_attempted, "pct": fg3_pct},
-                        "free_throws": {"made": stats.free_throws_made, "attempted": stats.free_throws_attempted,
-                                        "pct": ft_pct}
-                    },
-                    "advanced_stats": {
-                        "true_shooting_pct": ts_pct,
-                        "effective_fg_pct": efg_pct,
-                        "points_per_shot": points_per_shot,
-                        "points_per_possession": None  # 需要额外数据计算
-                    }
-                }
-
-            elif team_id:
-                # 获取球队数据
-                team = self.get_team_stats(team_id)
-                if not team:
-                    return {"error": f"未找到ID为{team_id}的球队"}
-
-                stats = team.statistics
-
-                # 提取基础效率指标
-                return {
-                    "team_name": f"{team.team_city} {team.team_name}",
-                    "team_id": team.team_id,
-                    "basic_stats": {
-                        "points": stats.points,
-                        "points_against": stats.points_against,
-                        "field_goals": {
-                            "made": stats.field_goals_made,
-                            "attempted": stats.field_goals_attempted,
-                            "pct": stats.field_goals_percentage
-                        }
-                    },
-                    "efficiency_stats": {
-                        "points_per_possession": None,  # 需要额外数据
-                        "true_shooting_pct": stats.true_shooting_percentage,
-                        "assists_per_turnover": stats.assists_turnover_ratio
-                    },
-                    "scoring_breakdown": {
-                        "paint_points": stats.points_in_the_paint,
-                        "fast_break_points": stats.points_fast_break,
-                        "second_chance_points": stats.points_second_chance,
-                        "points_off_turnovers": stats.points_from_turnovers
-                    }
-                }
-
-            return {"error": "必须提供球员ID或球队ID"}
-
-        except Exception as e:
-            logger.error(f"计算进攻效率时出错: {str(e)}")
-            return {"error": f"计算进攻效率时出错: {str(e)}"}
-
-    def get_game_summary(self) -> Dict[str, Any]:
-        """获取比赛综合摘要信息
-
-        Returns:
-            Dict[str, Any]: 包含比赛关键信息的摘要字典
-        """
-        try:
-            game_data = self.game_data
-
-            # 获取主队和客队信息
-            home_team = f"{game_data.home_team.team_city} {game_data.home_team.team_name}"
-            away_team = f"{game_data.away_team.team_city} {game_data.away_team.team_name}"
-            home_score = int(game_data.home_team.score)
-            away_score = int(game_data.away_team.score)
-
-            # 确定获胜方
-            winner = home_team if home_score > away_score else away_team
-            winning_score = home_score if home_score > away_score else away_score
-            losing_score = away_score if home_score > away_score else home_score
-
-            # 获取主队得分最高的球员
-            home_players = sorted(game_data.home_team.players,
-                                  key=lambda p: p.statistics.points,
-                                  reverse=True)
-            away_players = sorted(game_data.away_team.players,
-                                  key=lambda p: p.statistics.points,
-                                  reverse=True)
-
-            home_top_scorer = home_players[0] if home_players else None
-            away_top_scorer = away_players[0] if away_players else None
-
-            # 创建汇总
-            summary = {
-                "game_id": game_data.game_id,
-                "date": game_data.game_time_beijing.strftime('%Y-%m-%d'),
-                "arena": f"{game_data.arena.arena_name}, {game_data.arena.arena_city}",
-                "teams": {
-                    "home": {
-                        "name": home_team,
-                        "score": home_score,
-                        "top_scorer": {
-                            "name": home_top_scorer.name if home_top_scorer else "N/A",
-                            "points": home_top_scorer.statistics.points if home_top_scorer else 0
-                        }
-                    },
-                    "away": {
-                        "name": away_team,
-                        "score": away_score,
-                        "top_scorer": {
-                            "name": away_top_scorer.name if away_top_scorer else "N/A",
-                            "points": away_top_scorer.statistics.points if away_top_scorer else 0
-                        }
-                    }
-                },
-                "result": {
-                    "winner": winner,
-                    "score": f"{winning_score}-{losing_score}",
-                    "differential": abs(home_score - away_score)
-                },
-                "status": game_data.game_status_text,
-                "attendance": game_data.attendance
-            }
-
-            # 如果比赛已结束，添加亮点球员
-            if game_data.game_status == GameStatusEnum.FINISHED:
-                # 合并所有球员并按得分排序
-                all_players = home_players + away_players
-                top_scorers = sorted(all_players,
-                                     key=lambda p: p.statistics.points,
-                                     reverse=True)[:3]
-
-                top_rebounders = sorted(all_players,
-                                        key=lambda p: p.statistics.rebounds_total,
-                                        reverse=True)[:3]
-
-                top_assisters = sorted(all_players,
-                                       key=lambda p: p.statistics.assists,
-                                       reverse=True)[:3]
-
-                summary["notable_performances"] = {
-                    "scoring": [
-                        {
-                            "name": p.name,
-                            "team": "home" if p in home_players else "away",
-                            "points": p.statistics.points
-                        } for p in top_scorers
-                    ],
-                    "rebounding": [
-                        {
-                            "name": p.name,
-                            "team": "home" if p in home_players else "away",
-                            "rebounds": p.statistics.rebounds_total
-                        } for p in top_rebounders
-                    ],
-                    "assists": [
-                        {
-                            "name": p.name,
-                            "team": "home" if p in home_players else "away",
-                            "assists": p.statistics.assists
-                        } for p in top_assisters
-                    ]
-                }
-
-            return summary
-
-        except Exception as e:
-            logger.error(f"获取比赛摘要时出错: {str(e)}")
-            return {"error": f"获取比赛摘要时出错: {str(e)}"}
+    @staticmethod
+    def _active_players(players: List[PlayerInGame]) -> List[Dict[str, Any]]:
+        """获取场上球员"""
+        return [
+            {'id': p.person_id, 'name': p.name, 'position': p.position}
+            for p in players if p.on_court == "1"
+        ]
 
     ##=========== 投篮分布图数据准备方法 ===========##
 
@@ -1181,17 +896,7 @@ class Game(BaseModel):
     ##=========== AI数据准备方法 ===========##
 
     def prepare_ai_data(self, player_id: Optional[int] = None) -> Dict[str, Any]:
-        """准备用于AI分析的结构化数据
-
-        提供结构化数据格式，专为AI模型分析设计。
-        保留原始数据结构，同时添加必要的上下文信息。
-
-        Args:
-            player_id: 可选的球员ID，用于筛选特定球员数据
-
-        Returns:
-            Dict[str, Any]: 包含结构化数据的字典
-        """
+        """准备用于AI分析的结构化数据"""
         if not self.game_data:
             logger.error("比赛数据不完整")
             return {"error": "比赛数据不完整或不可用"}
@@ -1226,14 +931,20 @@ class Game(BaseModel):
                         "time": self.game_data.game_time_beijing.strftime('%H:%M')
                     }
                 },
-                # 存储比赛状态信息
-                "game_status": self.get_game_status()
+                # 基本比赛状态信息（直接计算而不是调用方法）
+                "status": {
+                    "status_text": self.game_data.game_status_text,
+                    "period": self.game_data.period,
+                    "period_name": f"Period {self.game_data.period}",
+                    "clock": str(self.game_data.game_clock),
+                    "home_score": int(self.game_data.home_team.score),
+                    "away_score": int(self.game_data.away_team.score)
+                }
             }
 
             # 2. 准备完整的数据结构，使用上下文字典
             return {
-                "game_info": self._prepare_ai_game_info(context),
-                "game_status": self._prepare_ai_game_status(context),
+                "game_info": self._prepare_ai_game_info(context),  # 现在包含状态信息
                 "game_result": self._prepare_ai_game_result(context),
                 "team_stats": self._prepare_ai_team_stats(context),
                 "player_stats": self._prepare_ai_player_stats(player_id),
@@ -1245,12 +956,28 @@ class Game(BaseModel):
             return {"error": f"准备AI数据失败: {str(e)}"}
 
     def _prepare_ai_game_info(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        """准备比赛基本信息的AI友好格式"""
+        """准备比赛基本信息和状态的AI友好格式"""
         game_data = self.game_data
+        status = context["status"]
 
         # 直接从上下文中获取球队和日期信息
         home_team_full = context["team_names"]["home"]["full_name"]
         away_team_full = context["team_names"]["away"]["full_name"]
+
+        # 计算比分差
+        score_diff = abs(status['home_score'] - status['away_score'])
+
+        # 解析时间
+        time_remaining_str = status['clock']
+        time_remaining = time_remaining_str
+        try:
+            # 处理 'PT' 开头的 ISO 格式时间
+            seconds = TimeHandler.parse_duration(time_remaining_str)
+            minutes = seconds // 60
+            seconds = seconds % 60
+            time_remaining = f"{minutes:02d}:{seconds:02d}"  # 格式化为 MM:SS
+        except ValueError:
+            pass  # 保持原始格式
 
         # 构建场馆信息和上下文说明
         arena_info = {
@@ -1260,74 +987,71 @@ class Game(BaseModel):
             "full_location": f"{game_data.arena.arena_name}, {game_data.arena.arena_city}, {game_data.arena.arena_state}"
         }
 
-        context_text = f"{home_team_full}主场迎战{away_team_full}，比赛于北京时间{context['dates']['beijing']['date']} {context['dates']['beijing']['time']}在{arena_info['name']}进行"
+        # 确定领先方
+        leader = "home" if status['home_score'] > status['away_score'] else "away"
+        leader_tricode = context["team_names"][leader]["tricode"]
 
-        # 直接使用字典字面量返回
-        return {
-            "game_id": game_data.game_id,
-            "teams": {
-                "home": context["team_names"]["home"],
-                "away": context["team_names"]["away"]
-            },
-            "date": {
-                "utc": context["dates"]["utc"]["date"],
-                "time_utc": context["dates"]["utc"]["time"],
-                "beijing": context["dates"]["beijing"]["date"],
-                "time_beijing": context["dates"]["beijing"]["time"]
-            },
-            "arena": arena_info,
-            "context": context_text
-        }
-
-    def _prepare_ai_game_status(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        """准备比赛状态的AI友好格式"""
-        game_status = context["game_status"]
-        score_diff = abs(game_status['home_score'] - game_status['away_score'])
-
-        # 构建状态上下文
-        if game_status['status_text'] == '进行中':
-            if game_status['current_period'] <= 2:
+        # 构建比赛状态上下文
+        if status['status_text'] == '进行中':
+            if status['period'] <= 2:
                 phase = "上半场"
-            elif game_status['current_period'] <= 4:
+            elif status['period'] <= 4:
                 phase = "下半场"
             else:
                 phase = "加时赛"
-
-            leader = context["team_names"]["home"]["tricode"] if game_status['home_score'] > game_status[
-                'away_score'] else context["team_names"]["away"]["tricode"]
-            status_context = f"比赛{phase}{game_status['period_name']}，{leader}领先{score_diff}分，剩余时间{game_status['time_remaining']}"
+            status_context = f"比赛{phase}{status['period_name']}，{leader_tricode}领先{score_diff}分，剩余时间{time_remaining}"
         else:
-            status_context = f"比赛已{game_status['status_text']}"
+            status_context = f"比赛已{status['status_text']}"
 
-        # 直接使用字典字面量返回
+        # 比赛基本信息上下文
+        basic_context = f"{home_team_full}主场迎战{away_team_full}，比赛于北京时间{context['dates']['beijing']['date']} {context['dates']['beijing']['time']}在{arena_info['name']}进行"
+
+        # 直接使用字典字面量返回合并的信息
         return {
-            "status": game_status['status_text'],
-            "period": {
-                "current": game_status['current_period'],
-                "name": game_status['period_name']
-            },
-            "time_remaining": game_status['time_remaining'],
-            "score": {
-                "home": {
-                    "team": context["team_names"]["home"]["tricode"],
-                    "points": game_status['home_score']
+            "basic": {
+                "game_id": game_data.game_id,
+                "teams": {
+                    "home": context["team_names"]["home"],
+                    "away": context["team_names"]["away"]
                 },
-                "away": {
-                    "team": context["team_names"]["away"]["tricode"],
-                    "points": game_status['away_score']
+                "date": {
+                    "utc": context["dates"]["utc"]["date"],
+                    "time_utc": context["dates"]["utc"]["time"],
+                    "beijing": context["dates"]["beijing"]["date"],
+                    "time_beijing": context["dates"]["beijing"]["time"]
                 },
-                "leader": "home" if game_status['home_score'] > game_status['away_score'] else "away",
-                "differential": score_diff
+                "arena": arena_info,
+                "context": basic_context
             },
-            "bonus": {
-                "home": game_status['home_bonus'],
-                "away": game_status['away_bonus']
-            },
-            "timeouts": {
-                "home": game_status['home_timeouts'],
-                "away": game_status['away_timeouts']
-            },
-            "context": status_context
+            "status": {
+                "state": status['status_text'],
+                "period": {
+                    "current": status['period'],
+                    "name": status['period_name']
+                },
+                "time_remaining": time_remaining,
+                "score": {
+                    "home": {
+                        "team": context["team_names"]["home"]["tricode"],
+                        "points": status['home_score']
+                    },
+                    "away": {
+                        "team": context["team_names"]["away"]["tricode"],
+                        "points": status['away_score']
+                    },
+                    "leader": leader,
+                    "differential": score_diff
+                },
+                "bonus": {
+                    "home": game_data.home_team.in_bonus == "1",
+                    "away": game_data.away_team.in_bonus == "1"
+                },
+                "timeouts": {
+                    "home": game_data.home_team.timeouts_remaining,
+                    "away": game_data.away_team.timeouts_remaining
+                },
+                "context": status_context
+            }
         }
 
     def _prepare_ai_game_result(self, context: Dict[str, Any]) -> Dict[str, Any]:
