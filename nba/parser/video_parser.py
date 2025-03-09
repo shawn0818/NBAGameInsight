@@ -119,7 +119,8 @@ class VideoParser:
             qualities = {}
 
             # 标清视频
-            if all(k in video_data for k in ['sdur', 'surl', 'sth']):
+            if all(k in video_data for k in ['sdur', 'surl', 'sth']) and video_data['surl'] is not None and video_data[
+                'sth'] is not None:
                 qualities['sd'] = VideoQuality(
                     duration=round(video_data['sdur'] / 1000.0, 3),  # 转换为秒，保留3位小数
                     url=video_data['surl'],
@@ -127,7 +128,8 @@ class VideoParser:
                 )
 
             # 中等质量视频
-            if all(k in video_data for k in ['mdur', 'murl', 'mth']):
+            if all(k in video_data for k in ['mdur', 'murl', 'mth']) and video_data['murl'] is not None and video_data[
+                'mth'] is not None:
                 qualities['md'] = VideoQuality(
                     duration=round(video_data['mdur'] / 1000.0, 3),
                     url=video_data['murl'],
@@ -135,7 +137,8 @@ class VideoParser:
                 )
 
             # 高清视频
-            if all(k in video_data for k in ['ldur', 'lurl', 'lth']):
+            if all(k in video_data for k in ['ldur', 'lurl', 'lth']) and video_data['lurl'] is not None and video_data[
+                'lth'] is not None:
                 qualities['hd'] = VideoQuality(
                     duration=round(video_data['ldur'] / 1000.0, 3),
                     url=video_data['lurl'],
