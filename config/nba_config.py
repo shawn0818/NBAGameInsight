@@ -61,6 +61,10 @@ class NBAConfig:
         PICTURES_DIR = STORAGE_DIR / "pictures"
         VIDEO_DIR = STORAGE_DIR / "videos"
         GIF_DIR = STORAGE_DIR / "gifs"
+        # 添加特定子目录
+        TEAM_VIDEOS_DIR = VIDEO_DIR / "team_videos"
+        PLAYER_VIDEOS_DIR = VIDEO_DIR / "player_videos"
+        GAME_HIGHLIGHTS_DIR = VIDEO_DIR / "game_highlights"
 
         # 日志文件
         APP_LOG = LOGS_DIR / "app.log"
