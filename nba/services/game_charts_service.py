@@ -268,7 +268,8 @@ class CourtRenderer:
     def add_shot_marker_with_portrait(axis: Axes, x: float, y: float,
                                       player_id: int, marker_size: float = 0.02,
                                       alpha: float = 1.0,
-                                      config: Optional[ChartConfig] = None) -> None:
+                                      config: Optional[ChartConfig] = None,
+                                      border_color: Optional[str] = None) -> None:
         """添加带有球员头像的投篮标记（增强版：抗锯齿处理）"""
         try:
             # 应用全局缩放因子
@@ -324,8 +325,9 @@ class CourtRenderer:
 
             # 显示头像图像（抗锯齿处理）
             marker_ax.imshow(output, alpha=alpha, interpolation='antialiased')
-            # 边框样式（从配置获取，否则使用默认值）
-            border_color = config.marker_border_color if config else '#3A7711'
+            # 边框样式（从配置获取，否则使用默认值或传入的自定义颜色）
+            if border_color is None:
+                border_color = config.marker_border_color if config else '#3A7711'
             border_width = config.marker_border_width if config else 0.5
             # 添加圆形边框（抗锯齿）
             circle = plt.Circle((size_px / 2, size_px / 2), size_px / 2 - 0.5,
@@ -352,100 +354,6 @@ class GameChartsService:
         self.game_data_service = game_data_service
         self.config = config or ChartConfig()
 
-    def plot_player_scoring_impact(self,
-                                   shots: List[Dict[str, Any]],
-                                   player_id: Optional[int] = None,
-                                   title: Optional[str] = None,
-                                   output_path: Optional[Union[str, Path]] = None) -> Tuple[
-        Optional[plt.Figure], Dict[str, Any]]:
-        """绘制球员投篮图
-
-        Args:
-            shots: 投篮数据列表
-            player_id: 球员ID（用于显示头像）
-            title: 图表标题
-            output_path: 输出路径
-        """
-        shot_stats = {'total': 0, 'made': 0, 'assisted': 0, 'unassisted': 0}
-
-        try:
-            if not shots:
-                self.logger.warning("未提供投篮数据")
-                return None, shot_stats
-
-            # 创建图表
-            fig, ax = CourtRenderer.draw_court(self.config)
-
-            # 计算合适的标记大小 - 与球场成比例
-            # 球场宽度为500单位，调整为更合适的视觉大小
-            marker_size = 100 * self.config.scale_factor  # 显著增大标记尺寸
-
-            # 绘制投篮点
-            for shot in shots:
-                x = shot.get('x_legacy')
-                y = shot.get('y_legacy')
-                made = shot.get('shot_result') == 'Made'
-
-                if x is None or y is None:
-                    self.logger.warning(f"Invalid shot coordinates: x={x}, y={y}")
-                    continue
-
-                if x is not None and y is not None:
-                    x = float(x)
-                    y = float(y)
-
-                    if made:
-                        ax.scatter(x, y,
-                                   marker='o',
-                                   edgecolors='#3A7711',  # 深绿色边框
-                                   facecolors='#F0F0F0',  # 浅灰色填充
-                                   s=marker_size,  # 增大点的大小
-                                   linewidths=2 * self.config.scale_factor,
-                                   zorder=2)
-                    else:
-                        ax.scatter(x, y,
-                                   marker='x',
-                                   color='#A82B2B',  # 暗红色
-                                   s=marker_size,  # 增大点的大小
-                                   linewidths=2 * self.config.scale_factor,
-                                   zorder=2)
-
-            # 添加标题
-            if title:
-                ax.set_title(title, pad=20, fontsize=12 * self.config.scale_factor)
-
-            # 添加制作者水印信息
-            ax.text(-240, 400, 'Created by 微博@勒布朗bot',
-                    verticalalignment='top',
-                    horizontalalignment='left',
-                    fontsize=10 * self.config.scale_factor,
-                    color='gray',
-                    alpha=0.5)
-
-            # 添加球员头像 - 使用现有方法但传入更大的尺寸参数
-            if player_id:
-                # 中圈半径约为60单位，将头像尺寸调整为与中圈相当
-                portrait_size = 0.15  # 显著增大头像尺寸，约为原来的7.5倍
-                portrait_position = (0.85, 0.03)  # 右下角，留出一些边距
-
-                # 使用现有方法但传入自定义尺寸和位置
-                CourtRenderer.add_player_portrait(
-                    ax,
-                    player_id,
-                    position=portrait_position,
-                    size=portrait_size,
-                    config=self.config
-                )
-
-            if output_path:
-                self._save_figure(fig, output_path)
-
-            return fig, shot_stats
-
-        except Exception as e:
-            self.logger.error(f"绘制投篮图时出错: {str(e)}", exc_info=True)
-            return None, shot_stats
-
     def _save_figure(self, fig: plt.Figure, output_path: str) -> None:
         """保存图表到文件
 
@@ -468,113 +376,317 @@ class GameChartsService:
             self.logger.error(f"保存图表时出错: {e}")
             raise e
 
-    def plot_team_shots(self, game, team_id: int,
-                        title: Optional[str] = None,
-                        output_path: Optional[str] = None) -> Optional[plt.Figure]:
-        """绘制球队所有球员的投篮分布图（区域自适应头像大小）"""
-        try:
-            fig, ax = CourtRenderer.draw_court(self.config)
-            team_shots = game.get_team_shot_data(team_id)
-            if not team_shots:
-                return None
 
-            # 收集所有命中投篮的坐标和对应球员
-            all_made_shots_data = []
-            for player_id, shots in team_shots.items():
-                for shot in shots:
-                    if shot.get('shot_result') == 'Made':
+    def plot_shots(self,
+                   shots_data: Union[Dict[int, List[Dict[str, Any]]], List[Dict[str, Any]]],  # 接受球队或球员投篮数据
+                   title: Optional[str] = None,
+                   output_path: Optional[str] = None,
+                   shot_outcome: str = "made_only",
+                   data_type: str = "team") -> Optional[plt.Figure]:
+        """绘制投篮分布图 (通用方法，支持球队和球员)
+
+        根据 data_type 参数，绘制球队或球员的投篮分布图。
+
+        Args:
+            shots_data: 投篮数据，可以是球队投篮数据字典 (team_shots) 或 球员投篮数据列表 (player_shots)
+                        - 如果 data_type="team"，则应为 Dict[player_id: int, shots: List[Dict[str, Any]]] 格式
+                        - 如果 data_type="player"，则应为 List[Dict[str, Any]] 格式
+            title: 图表标题
+            output_path: 输出路径
+            shot_outcome: 投篮结果筛选，可选 "made_only"(仅命中), "all"(所有投篮)
+            data_type: 数据类型，可选 "team"(球队), "player"(球员)，默认为 "team"
+
+        Returns:
+            Optional[plt.Figure]: 生成的图表对象
+        """
+        try:
+            # 验证 shot_outcome 参数
+            if shot_outcome not in ["made_only", "all"]:
+                self.logger.warning(f"无效的shot_outcome值: {shot_outcome}，使用默认值 'made_only'")
+                shot_outcome = "made_only"
+
+            fig, ax = CourtRenderer.draw_court(self.config)
+
+            # 添加图例说明
+            from matplotlib.lines import Line2D
+            legend_elements = []
+
+            # 图例元素：命中投篮
+            legend_elements.append(
+                Line2D([0], [0], marker='o', color='w', markerfacecolor='#3A7711',
+                       markeredgecolor='#3A7711', markersize=10, label='投篮命中')
+            )
+
+            # 如果显示所有投篮，添加未命中图例
+            if shot_outcome == "all":
+                legend_elements.append(
+                    Line2D([0], [0], marker='o', color='w', markerfacecolor='white',
+                           markeredgecolor='#C9082A', markersize=10, label='投篮未命中')
+                )
+            ax.legend(handles=legend_elements, loc='upper right')
+
+
+            all_shots_info = [] # 用于存储所有投篮点信息，包括 player_id, x, y, size, alpha, is_made
+
+            if data_type == "team":
+                team_shots = shots_data #  shots_data  应该是 team_shots 字典
+                if not team_shots:
+                    self.logger.warning("球队投篮数据为空")
+                    return None
+
+                # 收集投篮的坐标和对应球员
+                all_player_shots_data = [] # 用于临时存储所有球员的投篮数据 (player_id, x, y, is_made)
+                for player_id, shots in team_shots.items():
+                    for shot in shots:
+                        # 获取投篮结果（命中或未命中）
+                        shot_result = shot.get('shot_result')
+                        if shot_outcome == "made_only" and shot_result != "Made":
+                            continue # 筛选未命中的投篮
+
                         x = shot.get('x_legacy')
                         y = shot.get('y_legacy')
                         if x is not None and y is not None:
                             x, y = float(x), float(y)
-                            all_made_shots_data.append((player_id, x, y))
+                            all_player_shots_data.append((player_id, x, y, shot_result == "Made"))
 
-            if len(all_made_shots_data) < 5:
-                self.logger.warning("投篮点太少，无法生成热度图")
-                return None
+                if len(all_player_shots_data) < 5:
+                    self.logger.warning("投篮点太少，无法生成热度图")
+                    return None
 
-            # 准备用于密度计算的投篮坐标
-            shot_points = np.array([(x, y) for _, x, y in all_made_shots_data]).T
+                # 准备用于密度计算的投篮坐标 (只使用命中的投篮计算密度)
+                made_shot_points = np.array([(x, y) for _, x, y, is_made in all_player_shots_data if is_made]).T
+                if made_shot_points.size == 0 and shot_outcome == "all": # 如果没有命中投篮，则使用所有投篮计算密度
+                    self.logger.warning("没有命中的投篮，使用所有投篮计算密度")
+                    made_shot_points = np.array([(x, y) for _, x, y, _ in all_player_shots_data]).T
+                if made_shot_points.size == 0 or made_shot_points.shape[1] < 5: # 如果仍然没有足够的点，返回None
+                    self.logger.warning("投篮点太少，无法生成热度图")
+                    return None
 
-            # 计算全局投篮点核密度估计 (KDE)
-            global_kde = gaussian_kde(shot_points, bw_method='silverman')
-            shot_densities = global_kde(shot_points)
-            max_density = np.max(shot_densities)
-            min_density = np.min(shot_densities)
+                # 计算全局投篮点核密度估计 (KDE)
+                global_kde = gaussian_kde(made_shot_points, bw_method='silverman')
 
-            # 预处理：为已知的高密度区域定义特殊系数
-            def get_region_modifier(x, y):
-                """返回基于区域的头像大小修正系数"""
-                # 禁区内 - 显著减小头像
-                if -80 <= x <= 80 and -47.5 <= y <= 142.5:
-                    if y < 0:  # 篮筐附近
-                        return 0.4  # 篮下区域头像更小
-                    return 0.5  # 禁区其他区域
+                # 获取所有点的密度（包括未命中的点）
+                all_points = np.array([(x, y) for _, x, y, _ in all_player_shots_data]).T
+                shot_densities = global_kde(all_points)
+                max_density = np.max(shot_densities)
+                min_density = np.min(shot_densities)
 
-                # 左底角三分
-                if x < -200 and y < 100:
-                    return 0.6
+                # 预处理：为已知的高密度区域定义特殊系数
+                def _get_region_modifier(x, y):
+                    """返回基于区域的头像大小修正系数"""
+                    # 禁区内 - 显著减小头像
+                    if -80 <= x <= 80 and -47.5 <= y <= 142.5:
+                        if y < 0:  # 篮筐附近
+                            return 0.4  # 篮下区域头像更小
+                        return 0.5  # 禁区其他区域
 
-                # 右底角三分
-                if x > 200 and y < 100:
-                    return 0.6
+                    # 左底角三分
+                    if x < -200 and y < 100:
+                        return 0.6
 
-                # 弧顶三分区
-                if -120 <= x <= 120 and 200 <= y <= 270:
-                    return 0.7
+                    # 右底角三分
+                    if x > 200 and y < 100:
+                        return 0.6
 
-                # 中距离区域 - 适中头像
-                if 100 <= y <= 180:
-                    return 0.8
+                    # 弧顶三分区
+                    if -120 <= x <= 120 and 200 <= y <= 270:
+                        return 0.7
 
-                # 其他区域 - 标准头像
-                return 1.0
+                    # 中距离区域 - 适中头像
+                    if 100 <= y <= 180:
+                        return 0.8
 
-            # 准备最终的投篮信息列表
-            shots_info = []
-            for i, (player_id, x, y) in enumerate(all_made_shots_data):
-                # 计算该点的密度因子(0~1范围)
-                normalized_density = (shot_densities[i] - min_density) / (
-                            max_density - min_density) if max_density > min_density else 0.5
+                    # 其他区域 - 标准头像
+                    return 1.0
 
-                # 结合区域修正和密度因子
-                region_modifier = get_region_modifier(x, y)
+                # 循环处理每个投篮点，计算头像大小和透明度
+                for i, (player_id, x, y, is_made) in enumerate(all_player_shots_data):
+                    normalized_density = (shot_densities[i] - min_density) / (max_density - min_density) if max_density > min_density else 0.5
+                    region_modifier = _get_region_modifier(x, y) # 调用内部方法获取区域修正系数
+                    density_factor = 1.0 - min(0.75, normalized_density ** 2)
+                    combined_factor = region_modifier * density_factor
+                    base_size = 0.015
+                    final_size = base_size * max(0.3, min(1.2, combined_factor))
 
-                # 密度越高，尺寸越小(使用非线性映射)
-                density_factor = 1.0 - min(0.75, normalized_density ** 2)
+                    all_shots_info.append({
+                        'player_id': player_id,
+                        'x': x, 'y': y,
+                        'size': final_size,
+                        'alpha': max(0.8, 1.0 - normalized_density * 0.2),
+                        'is_made': is_made
+                    })
 
-                # 组合两种因子
-                combined_factor = region_modifier * density_factor
 
-                # 计算最终尺寸
-                # 基础尺寸
-                base_size = 0.015
-                # 限制最小和最大尺寸
-                final_size = base_size * max(0.3, min(1.2, combined_factor))
+            elif data_type == "player":
+                player_shots = shots_data # shots_data 应该是 player_shots 列表
+                if not player_shots:
+                    self.logger.warning("球员投篮数据为空")
+                    return None
 
-                # 保存结果
-                shots_info.append({
-                    'player_id': player_id,
-                    'x': x, 'y': y,
-                    'size': final_size,
-                    'alpha': max(0.8, 1.0 - normalized_density * 0.2)  # 略微调整透明度
-                })
+                # 收集球员投篮坐标
+                for shot in player_shots:
+                    shot_result = shot.get('shot_result')
+                    if shot_outcome == "made_only" and shot_result != "Made":
+                        continue # 筛选未命中的投篮
+
+                    x = shot.get('x_legacy')
+                    y = shot.get('y_legacy')
+                    player_id = shot.get('player_id') # 球员投篮数据中应该包含 player_id
+                    if x is not None and y is not None and player_id is not None:
+                         x, y = float(x), float(y)
+                         all_shots_info.append({
+                            'player_id': player_id,
+                            'x': x, 'y': y,
+                            'size': 0.015 * self.config.portrait_scale_factor, # 球员图头像尺寸可以固定，或者根据区域微调
+                            'alpha': 1.0,
+                            'is_made': shot_result == "Made"
+                        })
+            else:
+                raise ValueError(f"无效的 data_type: {data_type}, 必须是 'team' 或 'player'")
+
 
             # 绘制所有头像
-            for shot in shots_info:
+            for shot in all_shots_info:
+                border_color = '#3A7711' if shot['is_made'] else '#C9082A' #  命中绿色边框，未命中红色
                 CourtRenderer.add_shot_marker_with_portrait(
                     ax, shot['x'], shot['y'],
                     shot['player_id'],
                     marker_size=shot['size'],
-                    alpha=shot['alpha'],
-                    config=self.config
+                    alpha=shot['alpha'] * (0.7 if not shot['is_made'] else 1.0), # 未命中降低透明度
+                    config=self.config,
+                    border_color=border_color
                 )
 
+            # 设置标题
             if title:
+                if shot_outcome == "all" and "投篮分布图" in title:
+                    title = title.replace("投篮分布图", "全部投篮分布图") #  根据 shot_outcome 调整标题
                 ax.set_title(title, pad=20, fontsize=12 * self.config.scale_factor)
+
+            # 保存图表
             if output_path:
                 self._save_figure(fig, output_path)
+
             return fig
+
         except Exception as e:
-            self.logger.error(f"绘制球队投篮图时出错: {str(e)}", exc_info=True)
+            self.logger.error(f"绘制投篮图时出错: {str(e)}", exc_info=True)
+            return None
+
+    def plot_player_impact(self,
+                           player_shots: List[Dict[str, Any]],
+                           assisted_shots: List[Dict[str, Any]],
+                           player_id: int,
+                           title: Optional[str] = None,
+                           output_path: Optional[str] = None,
+                           impact_type: str = "full_impact") -> Optional[plt.Figure]:
+        """绘制球员得分影响力图
+
+        显示球员自己的投篮和由其助攻的队友投篮，所有投篮点以球员头像显示。
+
+        Args:
+            player_shots: 球员自己的投篮数据
+            assisted_shots: 球员助攻的投篮数据
+            player_id: 球员ID
+            title: 图表标题
+            output_path: 输出路径
+            impact_type: 图表类型，可选 "scoring_only"(仅显示球员自己的投篮)
+                        或 "full_impact"(同时显示球员投篮和助攻队友投篮)
+
+        Returns:
+            Optional[plt.Figure]: 生成的图表对象
+        """
+        try:
+            # 验证impact_type参数
+            if impact_type not in ["scoring_only", "full_impact"]:
+                self.logger.warning(f"无效的impact_type值: {impact_type}，使用默认值 'full_impact'")
+                impact_type = "full_impact"
+
+            # 创建球场图
+            fig, ax = CourtRenderer.draw_court(self.config)
+
+            # 添加图例说明
+            from matplotlib.lines import Line2D
+            legend_elements = []
+
+            # 添加个人得分图例
+            legend_elements.append(
+                Line2D([0], [0], marker='o', color='w', markerfacecolor='#3A7711',
+                       markeredgecolor='#3A7711', markersize=10, label='个人得分')
+            )
+
+            # 如果是完整影响力图，添加助攻图例
+            if impact_type == "full_impact":
+                legend_elements.append(
+                    Line2D([0], [0], marker='o', color='w', markerfacecolor='#552583',
+                           markeredgecolor='#552583', markersize=10, label='助攻队友得分')
+                )
+
+            ax.legend(handles=legend_elements, loc='upper right')
+
+            # 添加球员自己的投篮
+            if player_shots:
+                for shot in player_shots:
+                    if shot.get('shot_result') == 'Made':  # 只显示命中的投篮
+                        x = shot.get('x_legacy')
+                        y = shot.get('y_legacy')
+                        if x is not None and y is not None:
+                            # 使用绿色边框表示球员自己的投篮
+                            border_color = '#3A7711'  # 绿色
+                            CourtRenderer.add_shot_marker_with_portrait(
+                                ax, float(x), float(y),
+                                player_id,
+                                marker_size=0.015,
+                                config=self.config,
+                                border_color=border_color
+                            )
+
+            # 添加队友通过助攻获得的得分（仅在full_impact模式下）
+            if impact_type == "full_impact" and assisted_shots:
+                for shot in assisted_shots:
+                    x = shot.get('x')
+                    y = shot.get('y')
+                    shooter_id = shot.get('shooter_id')
+                    if x is not None and y is not None and shooter_id:
+                        # 使用紫色边框表示助攻队友的投篮
+                        border_color = '#552583'  # 湖人紫色
+                        CourtRenderer.add_shot_marker_with_portrait(
+                            ax, float(x), float(y),
+                            int(shooter_id),  # 确保shooter_id是整数
+                            marker_size=0.015,
+                            config=self.config,
+                            border_color=border_color
+                        )
+
+            # 添加球员主头像
+            CourtRenderer.add_player_portrait(
+                ax,
+                player_id,
+                position=(0.85, 0.03),  # 右下角
+                size=0.15,
+                config=self.config
+            )
+
+            # 根据impact_type调整标题
+            if title:
+                if impact_type == "scoring_only" and "影响力图" in title:
+                    title = title.replace("影响力图", "投篮分布图")
+                ax.set_title(title, pad=20, fontsize=12 * self.config.scale_factor)
+
+            # 添加制作者水印
+            ax.text(-240, 400, 'Created by 微博@勒布朗bot',
+                    verticalalignment='top',
+                    horizontalalignment='left',
+                    fontsize=10 * self.config.scale_factor,
+                    color='gray',
+                    alpha=0.5)
+
+            # 保存图表
+            if output_path:
+                self._save_figure(fig, output_path)
+
+            return fig
+
+        except Exception as e:
+            self.logger.error(f"绘制球员影响力图时出错: {str(e)}", exc_info=True)
             return None

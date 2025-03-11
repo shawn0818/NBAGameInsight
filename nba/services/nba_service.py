@@ -453,6 +453,29 @@ class NBAService(BaseService):
     ## =============4.3 调用个各子模块服务=================
 
     ### 4.3.1视频功能API，调用gamevideo子模块==============
+    '''
+    文件命名规则与目录结构:
+    ============================
+    1. 视频文件命名规则:
+       - 事件视频: event_{事件ID}_game_{比赛ID}.mp4
+       - 球员集锦: player_{球员ID}_{game_id}.mp4
+       - 球队集锦: team_{球队ID}_{game_id}.mp4
+
+    2. GIF文件命名规则:
+       - 球员回合GIF: round_{事件ID}_{球员ID}.gif
+
+    3. 目录结构:
+       - 视频根目录 (VIDEO_DIR)
+         - /team_videos/team_{球队ID}_{game_id}/ - 球队视频目录
+         - /player_videos/player_{球员ID}_{game_id}/ - 球员视频目录
+       - GIF目录 (GIF_DIR)
+         - /player_{球员ID}_{game_id}_rounds/ - 球员回合GIF目录
+       - 图表目录 (PICTURES_DIR)
+         - 球员投篮图: scoring_impact_{game_id}_{player_id}.png
+         - 球队投篮图: team_shots_{game_id}_{team_id}.png
+    4.查找策略统一使用glob
+    '''
+
     def get_team_highlights(self,
                             team: Optional[str] = None,
                             merge: bool = True,
@@ -484,9 +507,10 @@ class NBAService(BaseService):
                 self.logger.error(f"未找到{team}的比赛数据")
                 return {}
 
-            # 创建球队特定的视频目录
+            # 创建球队特定的视频目录 - 确保符合规范的目录结构
             game_id = game.game_data.game_id
             if not output_dir:
+                # 修改为规范化的目录结构
                 team_video_dir = NBAConfig.PATHS.VIDEO_DIR / "team_videos" / f"team_{team_id}_{game_id}"
                 team_video_dir.mkdir(parents=True, exist_ok=True)
                 output_dir = team_video_dir
@@ -507,25 +531,37 @@ class NBAService(BaseService):
                 self.logger.error(f"未找到{team}的集锦视频")
                 return {}
 
-            # 使用内部处理方法
-            result = self._process_videos(
-                game_id=game_id,
+            # 1. 下载视频
+            videos_dict = self._download_videos(
+                video_service=video_service,
                 videos=videos,
-                output_dir=output_dir,
-                output_prefix=f"team_{team_id}",
-                output_format="video",  # 只需要视频
-                merge=merge,
-                remove_watermark=True,
-                keep_originals=False,  # 不保留原始短视频
+                game_id=game_id,
+                team_id=team_id,  # 传递team_id
                 force_reprocess=force_reprocess
             )
 
-            # 简化返回结果结构
-            if "video_merged" in result:
-                return {"merged": result["video_merged"]}
-            elif "videos" in result:
-                return result["videos"]
-            return {}
+            if not videos_dict:
+                self.logger.error("视频下载失败")
+                return {}
+
+            if not merge:
+                return  videos_dict
+
+            # 2. 合并视频
+            output_filename = f"team_{team_id}_{game_id}.mp4"
+            output_path = output_dir / output_filename
+
+            merged_video = self._merge_videos(
+                video_files=list(videos_dict.values()),
+                output_path=output_path,
+                remove_watermark=True,
+                force_reprocess=force_reprocess
+            )
+
+            if merged_video:
+                return {"merged": merged_video}
+            else:
+                return  videos_dict
 
         except Exception as e:
             self.logger.error(f"获取球队集锦失败: {str(e)}", exc_info=True)
@@ -572,9 +608,10 @@ class NBAService(BaseService):
                 self.logger.error("未找到比赛数据")
                 return {}
 
-            # 创建球员特定的视频目录
+            # 创建球员特定的视频目录 - 确保符合规范的目录结构
             game_id = game.game_data.game_id
             if not output_dir:
+                # 修改为规范化的目录结构
                 player_video_dir = NBAConfig.PATHS.VIDEO_DIR / "player_videos" / f"player_{player_id}_{game_id}"
                 player_video_dir.mkdir(parents=True, exist_ok=True)
                 output_dir = player_video_dir
@@ -591,7 +628,9 @@ class NBAService(BaseService):
                     ContextMeasure.FGM,
                     ContextMeasure.AST,
                     ContextMeasure.REB,
-                    ContextMeasure.STL
+                    ContextMeasure.STL,
+                    ContextMeasure.BLK
+
                 }
 
             # 获取并处理各类型视频
@@ -614,32 +653,70 @@ class NBAService(BaseService):
                         self.logger.info(f"等待 {request_delay} 秒后继续...")
 
             # 如果找到视频，处理它们
-            if all_videos:
-                result = self._process_videos(
-                    game_id=game.game_data.game_id,
-                    videos=all_videos,
-                    output_dir=output_dir,
-                    output_prefix=f"player_{player_id}",
-                    output_format=output_format,
-                    merge=merge,
+            if not all_videos:
+                self.logger.error(f"未找到球员{player_name}的任何集锦视频")
+                return {}
+
+            result = {}
+
+            # 1. 下载视频
+            videos_dict = self._download_videos(
+                video_service=video_service,
+                videos=all_videos,
+                game_id=game_id,
+                player_id=player_id,  # 确保传递player_id
+                force_reprocess=force_reprocess
+            )
+
+            if not videos_dict:
+                self.logger.error("视频下载失败")
+                return {}
+
+            # 保存原始视频
+            if keep_originals or not merge:
+                result["videos"] = videos_dict
+
+            # 2. 合并视频（如果需要）
+            if merge:
+                output_filename = f"player_{player_id}_{game_id}.mp4"
+                output_path = output_dir / output_filename
+
+                merged_video = self._merge_videos(
+                    video_files=list(videos_dict.values()),
+                    output_path=output_path,
                     remove_watermark=True,
-                    keep_originals=keep_originals,
                     force_reprocess=force_reprocess
                 )
 
-                return result
-            else:
-                self.logger.error(f"未找到球员{player_name}的任何集锦视频")
-                return {}
+                if merged_video:
+                    result["video_merged"] = merged_video
+
+            # 3. 生成GIF（如果需要）
+            if output_format == "gif" or output_format == "both":
+                gif_dir = NBAConfig.PATHS.GIF_DIR / f"player_{player_id}_{game_id}_rounds"
+                gif_dir.mkdir(parents=True, exist_ok=True)
+
+                gif_paths = self._create_gifs_from_videos(
+                    videos=videos_dict,
+                    output_dir=gif_dir,
+                    player_id=player_id,
+                    force_reprocess=force_reprocess
+                )
+
+                if gif_paths:
+                    result["gifs"] = gif_paths
+
+            return result
 
         except Exception as e:
             self.logger.error(f"获取球员集锦失败: {str(e)}", exc_info=True)
             return {}
 
-    def create_player_round_gifs(self, player_name: Optional[str] = None) -> Dict[str, Path]:
+    def get_player_round_gifs(self, player_name: Optional[str] = None) -> Dict[str, Path]:
         """从球员集锦视频创建每个回合的GIF动画
 
         为球员视频集锦的每个回合创建独立的GIF动画，便于在线分享和展示。
+        本质上是调用get_player_highlights方法并设置为仅生成GIF。
 
         Args:
             player_name: 球员名称，不提供则使用默认球员
@@ -647,287 +724,194 @@ class NBAService(BaseService):
         Returns:
             Dict[str, Path]: GIF路径字典，以事件ID为键
         """
-        import re
-        from pathlib import Path
-
-        # 明确指定类型为Dict[str, Path]
-        round_gifs: Dict[str, Path] = {}
-
-        if not player_name:
-            player_name = self.config.default_player
-
         try:
-            self.logger.info(f"正在为 {player_name} 的集锦视频创建回合GIF")
+            self.logger.info(f"正在为 {player_name or self.config.default_player} 的集锦视频创建回合GIF")
 
-            # 1. 获取球员ID和比赛数据
-            player_id = self.get_player_id_by_name(player_name)
-            if not player_id:
-                self.logger.error(f"未找到球员 {player_name} 的ID")
-                return round_gifs
+            # 设置特定的context_measures，包含进球和助攻
+            context_measures = {
+                ContextMeasure.FGM,  # 进球
+                ContextMeasure.AST,   # 助攻
+                ContextMeasure.BLK,   #盖帽
+            }
 
-            game = self.data_service.get_game(self.config.default_team)
-            if not game:
-                self.logger.error("未找到比赛数据")
-                return round_gifs
+            # 直接调用get_player_highlights方法，设置为只生成GIF
+            result = self.get_player_highlights(
+                player_name=player_name,
+                context_measures=context_measures,
+                output_format="gif",  # 只生成GIF，不生成视频
+                merge=False,          # 不需要合并视频
+                keep_originals=True   # 保留原始视频文件
+            )
 
-            # 2. 首先尝试从现有视频创建GIF
-            video_service = self._get_service('videodownloader')
-            if not video_service:
-                self.logger.error("视频服务不可用")
-                return round_gifs
-
-            video_dir = video_service.config.output_dir
-            video_files = list(video_dir.glob(f"*player{player_id}*.mp4"))
-
-            # 3. 如果没有找到现有视频，尝试获取新的视频
-            if not video_files:
-                self.logger.warning(f"未找到球员 {player_name} 的视频文件，尝试下载...")
-
-                # 使用优化后的get_player_highlights方法获取视频，只需要视频不合并
-                result = self.get_player_highlights(
-                    player_name=player_name,
-                    output_format="video",  # 只需要视频
-                    merge=False,  # 不合并视频
-                    keep_originals=True  # 保留原始视频
-                )
-
-                if not result or "videos" not in result:
-                    self.logger.error("下载视频失败")
-                    return round_gifs
-
-                # 重新检查视频文件
-                video_files = list(video_dir.glob(f"*player{player_id}*.mp4"))
-                if not video_files:
-                    self.logger.error(f"仍然未找到球员 {player_name} 的视频文件")
-                    return round_gifs
-
-            self.logger.info(f"找到 {len(video_files)} 个视频文件")
-
-            # 4. 创建GIF输出目录
-            game_id = game.game_data.game_id
-            gif_dir = NBAConfig.PATHS.GIF_DIR / f"player_{player_id}_{game_id}_rounds"
-            gif_dir.mkdir(parents=True, exist_ok=True)
-
-            # 5. 获取视频处理服务
-            processor = self._get_service('video_processor')
-            if not processor:
-                self.logger.error("视频处理器不可用")
-                return round_gifs
-
-            # 6. 为每个视频创建对应的GIF
-            for video_path in video_files:
-                try:
-                    # 从文件名中提取事件ID
-                    match = re.search(r'event_(\d+)_', video_path.name)
-                    if not match:
-                        continue  # 跳过无法提取事件ID的文件
-
-                    event_id = match.group(1).lstrip('0') or '0'  # 确保event_id是一个字符串
-
-                    # 创建GIF文件名
-                    gif_path = gif_dir / f"round_{event_id}_{player_id}.gif"
-
-                    # 检查GIF是否已存在
-                    if gif_path.exists():
-                        self.logger.info(f"GIF已存在: {gif_path}")
-                        round_gifs[event_id] = gif_path
-                        continue
-
-                    # 生成GIF
-                    self.logger.info(f"正在生成GIF: {video_path.name}")
-                    result = processor.convert_to_gif(video_path, gif_path)
-
-                    if result:
-                        # 确保result是Path类型
-                        path_result = Path(result) if not isinstance(result, Path) else result
-                        round_gifs[event_id] = path_result
-                        self.logger.info(f"GIF生成成功: {path_result}")
-                    else:
-                        self.logger.error(f"GIF生成失败")
-
-                except Exception as e:
-                    self.handle_error(e, f"处理视频 {video_path.name}")
-                    continue
-
-            self.logger.info(f"处理完成! 生成了 {len(round_gifs)} 个GIF")
-            return round_gifs
+            # 从结果中提取GIF路径
+            if result and "gifs" in result:
+                self.logger.info(f"处理完成! 生成了 {len(result['gifs'])} 个GIF")
+                return result["gifs"]
+            else:
+                self.logger.error("未能生成GIF，检查球员名称或视频可用性")
+                return {}
 
         except Exception as e:
             self.handle_error(e, "处理球员回合GIF")
-            return round_gifs
-
-    def _process_videos(self,
-                        game_id: str,
-                        videos: Dict[str, VideoAsset],
-                        output_dir: Optional[Path] = None,
-                        output_prefix: str = "highlight",
-                        output_format: str = "video",  # "video", "gif", "both"
-                        merge: bool = True,
-                        remove_watermark: bool = True,
-                        keep_originals: bool = False,
-                        force_reprocess: bool = False) -> Dict[str, Union[Path, Dict[str, Path]]]:
-        """内部通用视频处理方法
-
-        整合了下载、合并、处理和转换视频的通用逻辑。
-        该方法仅供内部使用，不对外暴露。
-
-        Args:
-            game_id: 比赛ID
-            videos: 视频资产字典
-            output_dir: 输出目录，默认根据前缀和game_id自动创建
-            output_prefix: 输出文件名前缀
-            output_format: 输出格式，可选 "video"(仅视频), "gif"(仅GIF), "both"(视频和GIF)
-            merge: 是否合并视频为单个文件
-            remove_watermark: 是否移除视频水印
-            keep_originals: 是否保留原始短视频（合并后）
-            force_reprocess: 是否强制重新处理已存在的文件
-
-        Returns:
-            Dict[str, Union[Path, Dict[str, Path]]]: 处理结果路径字典
-        """
-        video_service = self._get_service('videodownloader')
-        if not video_service:
             return {}
 
-        result = {}
+    # ==== 拆分后的辅助方法 ====
 
+    def _download_videos(self,
+                         video_service,
+                         videos: Dict[str, VideoAsset],
+                         game_id: str,
+                         player_id: Optional[int] = None,
+                         team_id: Optional[int] = None,
+                         context_measure: Optional[str] = None,
+                         force_reprocess: bool = False) -> Dict[str, Path]:
+        """下载视频辅助方法
+
+        从视频服务下载一组视频资产。
+
+        Args:
+            video_service: 视频服务实例
+            videos: 视频资产字典
+            game_id: 比赛ID
+            player_id: 球员ID (可选)
+            team_id: 球队ID (可选)
+            context_measure: 上下文类型 (可选)
+            force_reprocess: 是否强制重新处理
+
+        Returns:
+            Dict[str, Path]: 视频路径字典，以事件ID为键
+        """
         try:
-            # 处理输出目录
-            if output_dir is None:
-                # 根据前缀自动选择合适的目录
-                if output_prefix.startswith("team_"):
-                    team_id = output_prefix.split("_")[1]
-                    output_dir = NBAConfig.PATHS.VIDEO_DIR / "team_videos" / f"team_{team_id}_{game_id}"
-                elif output_prefix.startswith("player_"):
-                    player_id = output_prefix.split("_")[1]
-                    output_dir = NBAConfig.PATHS.VIDEO_DIR / "player_videos" / f"player_{player_id}_{game_id}"
-                else:
-                    output_dir = NBAConfig.PATHS.VIDEO_DIR / "game_highlights" / f"game_{game_id}"
+            # 调用视频服务批量下载视频，确保传递所有必要参数
+            video_paths = video_service.batch_download_videos(
+                videos,
+                game_id,
+                player_id=player_id,  # 确保传递player_id
+                team_id=team_id,  # 确保传递team_id
+                context_measure=context_measure,
+                force_reprocess=force_reprocess
+            )
 
-                # 确保目录存在
-                output_dir.mkdir(parents=True, exist_ok=True)
+            if not video_paths:
+                self.logger.error("下载视频失败")
 
-            # 1. 处理视频文件
-
-            # 检查是否已存在最终合并文件
-            final_video_path = None
-            if merge:
-                final_video_path = output_dir / f"{output_prefix}_{game_id}.mp4"
-                if not force_reprocess and final_video_path.exists():
-                    self.logger.info(f"检测到已存在的处理结果: {final_video_path}")
-                    result["video_merged"] = final_video_path
-
-                    # 如果只需要视频且已存在，直接返回
-                    if output_format == "video":
-                        return result
-
-            # 下载原始视频（如果需要）
-            video_paths = {}
-            if not final_video_path or output_format == "gif" or output_format == "both" or keep_originals:
-                video_paths = video_service.batch_download_videos(
-                    videos,
-                    game_id,
-                    force_reprocess=force_reprocess
-                )
-
-                if not video_paths:
-                    self.logger.error("下载视频失败")
-                    return result
-
-                if not merge:
-                    result["videos"] = video_paths
-
-            # 2. 合并视频（如果需要）
-            if merge and (not final_video_path or not final_video_path.exists() or force_reprocess):
-                if not self.video_processor:
-                    self.logger.error("视频处理器不可用")
-                    if video_paths:
-                        result["videos"] = video_paths
-                    return result
-
-                # 获取所有视频路径
-                video_files = list(video_paths.values())
-
-                # 按事件ID排序
-                video_files.sort(key=self._extract_event_id)
-
-                # 合并视频
-                merged = self.video_processor.merge_videos(
-                    video_files,
-                    final_video_path,
-                    remove_watermark=remove_watermark,
-                    force_reprocess=force_reprocess
-                )
-
-                if merged:
-                    result["video_merged"] = merged
-
-                # 如果不需要保留原始视频且格式不是gif
-                if not keep_originals and output_format != "gif" and output_format != "both":
-                    # 删除原始视频文件
-                    for path in video_paths.values():
-                        try:
-                            path.unlink()
-                            self.logger.debug(f"已删除原始视频: {path}")
-                        except Exception as e:
-                            self.logger.warning(f"删除原始视频失败: {e}")
-
-            # 3. 处理GIF（如果需要）
-            if output_format == "gif" or output_format == "both":
-                if not self.video_processor:
-                    self.logger.error("视频处理器不可用，无法创建GIF")
-                    return result
-
-                gif_result = {}
-
-                # 创建合适的GIF输出目录
-                if output_prefix.startswith("team_"):
-                    team_id = output_prefix.split("_")[1]
-                    gif_dir = NBAConfig.PATHS.GIF_DIR / f"team_{team_id}_{game_id}"
-                elif output_prefix.startswith("player_"):
-                    player_id = output_prefix.split("_")[1]
-                    gif_dir = NBAConfig.PATHS.GIF_DIR / f"player_{player_id}_{game_id}"
-                else:
-                    gif_dir = NBAConfig.PATHS.GIF_DIR / f"game_{game_id}"
-
-                gif_dir.mkdir(parents=True, exist_ok=True)
-
-                # 确定用于创建GIF的视频源
-                source_videos = []
-                if keep_originals or not merge:
-                    # 使用原始视频创建GIF
-                    source_videos = [(event_id, path) for event_id, path in video_paths.items()]
-                else:
-                    # 使用合并后的视频创建GIF（较少见的场景）
-                    if "video_merged" in result:
-                        source_videos = [("merged", result["video_merged"])]
-
-                # 为每个视频创建GIF
-                for event_id, video_path in source_videos:
-                    gif_path = gif_dir / f"{output_prefix}_{event_id}.gif"
-
-                    # 检查GIF是否已存在
-                    if not force_reprocess and gif_path.exists():
-                        self.logger.info(f"GIF已存在: {gif_path}")
-                        gif_result[event_id] = gif_path
-                        continue
-
-                    # 创建GIF
-                    self.logger.info(f"正在创建GIF: {gif_path}")
-                    gif = self.video_processor.convert_to_gif(video_path, gif_path)
-
-                    if gif:
-                        gif_result[event_id] = gif
-                        self.logger.info(f"GIF创建成功: {gif}")
-
-                if gif_result:
-                    result["gifs"] = gif_result
-
-            return result
+            return video_paths
 
         except Exception as e:
-            self.logger.error(f"处理视频时发生错误: {str(e)}", exc_info=True)
-            return result
+            self.logger.error(f"视频下载失败: {str(e)}", exc_info=True)
+            return {}
+
+    def _merge_videos(self,
+                      video_files: List[Path],
+                      output_path: Path,
+                      remove_watermark: bool = True,
+                      force_reprocess: bool = False) -> Optional[Path]:
+        """合并视频辅助方法
+
+        将多个视频文件合并为一个视频文件。
+
+        Args:
+            video_files: 视频文件路径列表
+            output_path: 输出文件路径
+            remove_watermark: 是否移除水印
+            force_reprocess: 是否强制重新处理
+
+        Returns:
+            Optional[Path]: 合并后的视频路径，失败则返回None
+        """
+        try:
+            # 检查输出文件是否已存在
+            if not force_reprocess and output_path.exists():
+                self.logger.info(f"合并视频已存在: {output_path}")
+                return output_path
+
+            # 获取视频处理器
+            processor = self._get_service('video_processor')
+            if not processor:
+                self.logger.error("视频处理器不可用")
+                return None
+
+            # 按事件ID排序
+            video_files.sort(key=self._extract_event_id)
+
+            # 合并视频
+            merged = processor.merge_videos(
+                video_files,
+                output_path,
+                remove_watermark=remove_watermark,
+                force_reprocess=force_reprocess
+            )
+
+            if merged:
+                self.logger.info(f"视频合并成功: {merged}")
+                return merged
+            else:
+                self.logger.error("视频合并失败")
+                return None
+
+        except Exception as e:
+            self.logger.error(f"合并视频失败: {str(e)}", exc_info=True)
+            return None
+
+    def _create_gifs_from_videos(self,
+                                 videos: Dict[str, Path],
+                                 output_dir: Path,
+                                 player_id: Optional[int] = None,
+                                 force_reprocess: bool = False) -> Dict[str, Path]:
+        """从视频创建GIF辅助方法
+
+        为一组视频创建对应的GIF文件。
+
+        Args:
+            videos: 视频路径字典，以事件ID为键
+            output_dir: GIF输出目录
+            player_id: 球员ID (可选)
+            force_reprocess: 是否强制重新处理
+
+        Returns:
+            Dict[str, Path]: GIF路径字典，以事件ID为键
+        """
+        try:
+            # 确保输出目录存在
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            # 获取视频处理器
+            processor = self._get_service('video_processor')
+            if not processor:
+                self.logger.error("视频处理器不可用")
+                return {}
+
+            gif_result = {}
+
+            # 为每个视频创建GIF
+            for event_id, video_path in videos.items():
+                # 创建GIF文件名
+                if player_id:
+                    gif_path = output_dir / f"round_{event_id}_{player_id}.gif"
+                else:
+                    gif_path = output_dir / f"event_{event_id}.gif"
+
+                # 检查GIF是否已存在
+                if not force_reprocess and gif_path.exists():
+                    self.logger.info(f"GIF已存在: {gif_path}")
+                    gif_result[event_id] = gif_path
+                    continue
+
+                # 生成GIF
+                self.logger.info(f"正在创建GIF: {gif_path}")
+                gif = processor.convert_to_gif(video_path, gif_path)
+
+                if gif:
+                    gif_result[event_id] = gif
+                    self.logger.info(f"GIF创建成功: {gif}")
+                else:
+                    self.logger.error(f"GIF创建失败: {video_path}")
+
+            return gif_result
+
+        except Exception as e:
+            self.logger.error(f"创建GIF失败: {str(e)}", exc_info=True)
+            return {}
 
     def _extract_event_id(self, path: Path) -> int:
         """从文件名中提取事件ID
@@ -939,7 +923,7 @@ class NBAService(BaseService):
             int: 事件ID，如果无法提取则返回0
         """
         try:
-            # 从文件名 "event_0123_game_xxxx.mp4" 中提取事件ID
+            # 从文件名 "event_0123_game_xxxx.mp4" 中提取事件ID - 符合命名规范
             filename = path.name
             parts = filename.split('_')
             if len(parts) >= 2 and parts[0] == "event":
@@ -950,43 +934,54 @@ class NBAService(BaseService):
             return 0
 
     ### 4.3.2 图表可视化功能API，调用gamecharts子模块===============
-    def plot_player_scoring_impact(self,
-                                   team: Optional[str] = None,
-                                   player_name: Optional[str] = None,
-                                   title: Optional[str] = None,
-                                   output_dir: Optional[Path] = None,
-                                   force_reprocess: bool = False) -> Dict[str, Path]:
-        """绘制球员得分影响力图
+    '''
+        文件命名规则与目录结构:
+           - 图表目录 (PICTURES_DIR)
+             - 球员投篮图: scoring_impact_{game_id}_{player_id}.png
+             - 球队投篮图: team_shots_{game_id}_{team_id}.png
+             -查找策略统一使用glob
+    '''
 
-        生成显示球员投篮分布和效率的可视化图表。
+    def generate_player_scoring_impact_charts(self,
+                                              player_name: str,
+                                              team: Optional[str] = None,
+                                              output_dir: Optional[Path] = None,
+                                              force_reprocess: bool = False,
+                                              impact_type: str = "full_impact") -> Dict[str, Path]:
+        """生成球员得分影响力图
+
+        展示球员自己的投篮和由其助攻的队友投篮，以球员头像方式显示。
 
         Args:
+            player_name: 球员名称
             team: 球队名称，不提供则使用默认球队
-            player_name: 球员名称，不提供则使用默认球员
-            title: 图表标题，不提供则自动生成
             output_dir: 输出目录，默认使用配置中的图片目录
             force_reprocess: 是否强制重新处理已存在的文件
+            impact_type: 图表类型，可选 "scoring_only"(仅显示球员自己的投篮)
+                        或 "full_impact"(同时显示球员投篮和助攻队友投篮)
 
         Returns:
-            Dict[str, Path]: 包含生成图表路径的字典，键为"player_chart"
+            Dict[str, Path]: 图表路径字典，键包含"impact_chart"或"scoring_chart"
         """
         result = {}
-        chart_service = self._get_service('chart')
-        data_service = self._get_service('data')
-
-        if not (chart_service and data_service):
-            self.logger.error("服务不可用")
-            return result
 
         try:
+            # 验证impact_type参数
+            if impact_type not in ["scoring_only", "full_impact"]:
+                self.logger.warning(f"无效的impact_type值: {impact_type}，使用默认值 'full_impact'")
+                impact_type = "full_impact"
+
             # 获取基础信息
             team = team or self.config.default_team
-            player_name = player_name or self.config.default_player
+            if not player_name:
+                player_name = self.config.default_player
 
-            # 获取比赛数据
-            game = data_service.get_game(team)
-            if not game:
-                self.logger.error("未找到比赛数据")
+            # 获取服务实例
+            data_service = self._get_service('data')
+            chart_service = self._get_service('chart')
+
+            if not (data_service and chart_service):
+                self.logger.error("服务不可用")
                 return result
 
             # 获取球员ID
@@ -995,182 +990,276 @@ class NBAService(BaseService):
                 self.logger.error(f"未找到球员: {player_name}")
                 return result
 
-            # 获取投篮数据
-            shots = game.get_shot_data(player_id)
-            if not shots:
-                self.logger.error("未找到投篮数据")
-                return result
-
-            # 构建标题
-            if not title:
-                formatted_date = game.game_data.game_time_beijing.strftime("%Y年%m月%d日")
-                title = f"{player_name} 投篮分布图\n{formatted_date}"
-
-            # 准备输出路径
-            output_filename = f"scoring_impact_{game.game_data.game_id}_{player_id}.png"
-            output_path = (output_dir or NBAConfig.PATHS.PICTURES_DIR) / output_filename
-
-            # 检查文件是否已存在
-            if not force_reprocess and output_path.exists():
-                self.logger.info(f"检测到已存在的处理结果: {output_path}")
-                result["player_chart"] = output_path
-                return result
-
-            # 调用图表服务绘制投篮图
-            fig, _ = chart_service.plot_player_scoring_impact(
-                shots=shots,
-                player_id=player_id,
-                title=title,
-                output_path=str(output_path)
-            )
-
-            if fig:
-                self.logger.info(f"已生成得分影响力图: {output_path}")
-                result["player_chart"] = output_path
-            else:
-                self.logger.error("图表生成失败")
-
-            return result
-
-        except Exception as e:
-            self.logger.error(f"绘制得分影响力图失败: {str(e)}", exc_info=True)
-            self._update_service_status('chart', ServiceStatus.DEGRADED, str(e))
-            return result
-
-    def plot_team_shots(self,
-                        team: Optional[str] = None,
-                        title: Optional[str] = None,
-                        output_dir: Optional[Path] = None,
-                        force_reprocess: bool = False) -> Dict[str, Path]:
-        """绘制球队所有球员的投篮图
-
-        生成显示整个球队投篮分布和效率的可视化图表。
-
-        Args:
-            team: 球队名称，不提供则使用默认球队
-            title: 图表标题，不提供则自动生成
-            output_dir: 输出目录，默认使用配置中的图片目录
-            force_reprocess: 是否强制重新处理已存在的文件
-
-        Returns:
-            Dict[str, Path]: 包含生成图表路径的字典，键为"team_chart"
-        """
-        result = {}
-        chart_service = self._get_service('chart')
-        data_service = self._get_service('data')
-
-        if not (chart_service and data_service):
-            self.logger.error("服务不可用")
-            return result
-
-        try:
-            # 获取基础信息
-            team = team or self.config.default_team
-
             # 获取比赛数据
             game = data_service.get_game(team)
             if not game:
-                self.logger.error("未找到比赛数据")
+                self.logger.error(f"未找到{team}的比赛数据")
                 return result
 
-            # 获取球队ID
-            team_id = self.get_team_id_by_name(team)
-            if not team_id:
-                self.logger.error(f"未找到球队: {team}")
-                return result
+            # 1. 获取球员自己的投篮数据
+            player_shots = game.get_shot_data(player_id)
+            if not player_shots:
+                self.logger.warning(f"未找到{player_name}的投篮数据")
+                player_shots = []
 
-            # 构建默认标题
-            if not title:
-                formatted_date = game.game_data.game_time_beijing.strftime("%Y年%m月%d日")
-                title = f"{team} 球队投篮分布图\n{formatted_date}"
+            # 2. 获取由球员助攻的队友投篮数据（仅在full_impact模式下需要）
+            assisted_shots = []
+            if impact_type == "full_impact":
+                assisted_shots = game.get_assisted_shot_data(player_id)
+                if not assisted_shots:
+                    self.logger.warning(f"未找到{player_name}的助攻投篮数据")
 
-            # 准备输出路径
-            output_filename = f"team_shots_{game.game_data.game_id}_{team_id}.png"
+            # 3. 如果没有投篮数据，返回空结果
+            if not player_shots:
+                if impact_type == "full_impact" and not assisted_shots:
+                    self.logger.error(f"{player_name}没有投篮或助攻数据")
+                    return result
+                elif impact_type == "scoring_only":
+                    self.logger.error(f"{player_name}没有投篮数据")
+                    return result
+
+            # 4. 准备输出路径和标题
+            formatted_date = game.game_data.game_time_beijing.strftime("%Y年%m月%d日")
+
+            # 根据impact_type选择合适的标题和文件名
+            if impact_type == "full_impact":
+                title = f"{player_name} 得分影响力图\n{formatted_date}"
+                output_filename = f"player_impact_{game.game_data.game_id}_{player_id}.png"
+                result_key = "impact_chart"
+            else:  # scoring_only
+                title = f"{player_name} 投篮分布图\n{formatted_date}"
+                output_filename = f"player_scoring_{game.game_data.game_id}_{player_id}.png"
+                result_key = "scoring_chart"
+
             output_path = (output_dir or NBAConfig.PATHS.PICTURES_DIR) / output_filename
 
-            # 检查文件是否已存在
-            if not force_reprocess and output_path.exists():
-                self.logger.info(f"检测到已存在的处理结果: {output_path}")
-                result["team_chart"] = output_path
+            # 5. 检查是否已存在
+            existing_files = list((output_dir or NBAConfig.PATHS.PICTURES_DIR).glob(output_filename))
+            if not force_reprocess and existing_files:
+                self.logger.info(f"检测到已存在的处理结果: {existing_files[0]}")
+                result[result_key] = existing_files[0]
                 return result
 
-            # 调用图表服务绘制球队投篮图
-            fig = chart_service.plot_team_shots(
-                game=game,
-                team_id=team_id,
+            # 6. 调用图表服务绘制图表
+            fig = chart_service.plot_player_impact(
+                player_shots=player_shots,
+                assisted_shots=assisted_shots,
+                player_id=player_id,
                 title=title,
-                output_path=str(output_path)
+                output_path=str(output_path),
+                impact_type=impact_type
             )
 
             if fig:
-                self.logger.info(f"已生成球队投篮图: {output_path}")
-                result["team_chart"] = output_path
+                self.logger.info(f"球员{impact_type}图已生成: {output_path}")
+                result[result_key] = output_path
             else:
-                self.logger.error("球队投篮图生成失败")
+                self.logger.error(f"球员{impact_type}图生成失败")
 
             return result
 
         except Exception as e:
-            self.logger.error(f"绘制球队投篮图失败: {str(e)}", exc_info=True)
-            self._update_service_status('chart', ServiceStatus.DEGRADED, str(e))
+            self.handle_error(e, "生成球员图表")
             return result
 
     def generate_shot_charts(self,
                              team: Optional[str] = None,
                              player_name: Optional[str] = None,
+                             chart_type: str = "both",  # "team", "player", "both"
                              output_dir: Optional[Path] = None,
-                             force_reprocess: bool = False) -> Dict[str, Path]:
-        """同时生成球员和球队的投篮图表
-
-        整合了个人投篮图和球队投篮图的生成，返回所有生成图表的路径。
-
-        Args:
-            team: 球队名称，不提供则使用默认球队
-            player_name: 可选的球员名称，用于生成特定球员的投篮图
-            output_dir: 输出目录，默认使用配置中的图片目录
-            force_reprocess: 是否强制重新处理已存在的文件
-
-        Returns:
-            Dict[str, Path]: 图表路径字典，包含player_chart和team_chart键
-        """
+                             force_reprocess: bool = False,
+                             shot_outcome: str = "made_only",  # "made_only", "all"
+                             impact_type: str = "full_impact") -> Dict[str, Path]:
+        """生成投篮分布图"""
         chart_paths = {}
 
         try:
+            # 验证参数
             team = team or self.config.default_team
 
-            # 生成单个球员的投篮图
-            if player_name:
-                self.logger.info(f"正在生成 {player_name} 的个人投篮图")
-                player_result = self.plot_player_scoring_impact(
+            if chart_type not in ["team", "player", "both"]:
+                self.logger.error(f"无效的图表类型: {chart_type}")
+                return chart_paths
+
+            if shot_outcome not in ["made_only", "all"]:
+                self.logger.warning(f"无效的shot_outcome值: {shot_outcome}，使用默认值 'made_only'")
+                shot_outcome = "made_only"
+
+            if impact_type not in ["scoring_only", "full_impact"]:
+                self.logger.warning(f"无效的impact_type值: {impact_type}，使用默认值 'scoring_only'")
+                impact_type = "scoring_only"
+
+            # 检查当指定chart_type为"player"或"both"时是否提供了player_name
+            if (chart_type in ["player", "both"]) and not player_name:
+                player_name = self.config.default_player
+                self.logger.info(f"未指定球员名称，使用默认球员: {player_name}")
+
+            # 获取数据服务和图表服务
+            data_service = self._get_service('data')
+            chart_service = self._get_service('chart')
+
+            if not (data_service and chart_service):
+                self.logger.error("服务不可用")
+                return chart_paths
+
+            # 获取比赛数据
+            game = data_service.get_game(team)
+            if not game:
+                self.logger.error(f"未找到{team}的比赛数据")
+                return chart_paths
+
+            # 1. 生成球员投篮图
+            if chart_type in ["player", "both"] and player_name:
+                player_chart = self._generate_player_chart(
                     player_name=player_name,
                     team=team,
+                    game=game,
+                    chart_service=chart_service,
                     output_dir=output_dir,
+                    shot_outcome=shot_outcome,
+                    impact_type=impact_type,
                     force_reprocess=force_reprocess
                 )
-                if player_result and "player_chart" in player_result:
-                    self.logger.info(f"个人投篮图已生成: {player_result['player_chart']}")
-                    chart_paths["player_chart"] = player_result["player_chart"]
-                else:
-                    self.logger.error("个人投篮图生成失败")
+                if player_chart:
+                    chart_paths["player_chart"] = player_chart
 
-            # 生成球队整体投篮图
-            self.logger.info(f"正在生成 {team} 的球队投篮图")
-            team_result = self.plot_team_shots(
-                team=team,
-                output_dir=output_dir,
-                force_reprocess=force_reprocess
-            )
-            if team_result and "team_chart" in team_result:
-                self.logger.info(f"球队投篮图已生成: {team_result['team_chart']}")
-                chart_paths["team_chart"] = team_result["team_chart"]
-            else:
-                self.logger.error("球队投篮图生成失败")
+            # 2. 生成球队投篮图
+            if chart_type in ["team", "both"]:
+                team_chart = self._generate_team_chart(
+                    team=team,
+                    game=game,
+                    chart_service=chart_service,
+                    output_dir=output_dir,
+                    shot_outcome=shot_outcome,
+                    force_reprocess=force_reprocess
+                )
+                if team_chart:
+                    chart_paths["team_chart"] = team_chart
 
             return chart_paths
 
         except Exception as e:
             self.handle_error(e, "生成投篮图")
             return chart_paths
+
+    def _generate_player_chart(self,
+                               player_name: str,
+                               team: str,
+                               game,
+                               chart_service,
+                               output_dir: Optional[Path] = None,
+                               shot_outcome: str = "made_only",
+                               impact_type: str = "full_impact",
+                               force_reprocess: bool = False) -> Optional[Path]:
+        """生成球员投篮图的辅助方法"""
+        self.logger.info(f"正在生成 {player_name} 的投篮图")
+
+        # 选择生成方法：如果是full_impact则使用generate_player_scoring_impact_charts
+        if impact_type == "full_impact":
+            impact_charts = self.generate_player_scoring_impact_charts(
+                player_name=player_name,
+                team=team,
+                output_dir=output_dir,
+                force_reprocess=force_reprocess,
+                impact_type=impact_type
+            )
+            if impact_charts and "impact_chart" in impact_charts:
+                self.logger.info(f"球员得分影响力图已生成: {impact_charts['impact_chart']}")
+                return impact_charts["impact_chart"]
+            return None
+
+        # 球员单独投篮图生成逻辑
+        player_id = self.get_player_id_by_name(player_name)
+        if not player_id:
+            self.logger.error(f"未找到球员: {player_name}")
+            return None
+
+        # 获取球员投篮数据
+        shots = game.get_shot_data(player_id)
+        if not shots:
+            self.logger.warning(f"未找到{player_name}的投篮数据")
+            return None
+
+        # 准备输出路径和文件名
+        formatted_date = game.game_data.game_time_beijing.strftime("%Y年%m月%d日")
+        title_prefix = "所有" if shot_outcome == "all" else ""
+        title = f"{player_name} {title_prefix}投篮分布图\n{formatted_date}"
+
+        filename_prefix = "all_shots" if shot_outcome == "all" else "scoring"
+        output_filename = f"{filename_prefix}_{game.game_data.game_id}_{player_id}.png"
+        output_path = (output_dir or NBAConfig.PATHS.PICTURES_DIR) / output_filename
+
+        # 检查是否已存在
+        existing_files = list((output_dir or NBAConfig.PATHS.PICTURES_DIR).glob(output_filename))
+        if not force_reprocess and existing_files:
+            self.logger.info(f"检测到已存在的处理结果: {existing_files[0]}")
+            return existing_files[0]
+
+        # 使用plot_shots方法绘制球员投篮图
+        fig = chart_service.plot_shots(
+            shots_data=shots,
+            title=title,
+            output_path=str(output_path),
+            shot_outcome=shot_outcome,
+            data_type="player"
+        )
+
+        if fig:
+            self.logger.info(f"球员投篮图已生成: {output_path}")
+            return output_path
+        else:
+            self.logger.error("球员投篮图生成失败")
+            return None
+
+    def _generate_team_chart(self,
+                             team: str,
+                             game,
+                             chart_service,
+                             output_dir: Optional[Path] = None,
+                             shot_outcome: str = "made_only",
+                             force_reprocess: bool = False) -> Optional[Path]:
+        """生成球队投篮图的辅助方法"""
+        self.logger.info(f"正在生成 {team} 的球队投篮图")
+
+        # 获取球队ID
+        team_id = self.get_team_id_by_name(team)
+        if not team_id:
+            self.logger.error(f"未找到球队: {team}")
+            return None
+
+        # 准备输出路径和文件名
+        formatted_date = game.game_data.game_time_beijing.strftime("%Y年%m月%d日")
+        title_prefix = "所有" if shot_outcome == "all" else ""
+        title = f"{team} {title_prefix}球队投篮分布图\n{formatted_date}"
+
+        filename_prefix = "all_shots" if shot_outcome == "all" else "team_shots"
+        output_filename = f"{filename_prefix}_{game.game_data.game_id}_{team_id}.png"
+        output_path = (output_dir or NBAConfig.PATHS.PICTURES_DIR) / output_filename
+
+        # 检查是否已存在
+        existing_files = list((output_dir or NBAConfig.PATHS.PICTURES_DIR).glob(output_filename))
+        if not force_reprocess and existing_files:
+            self.logger.info(f"检测到已存在的处理结果: {existing_files[0]}")
+            return existing_files[0]
+
+        # 获取球队投篮数据 - 修正：传递 team_id 参数
+        team_shots = game.get_team_shot_data(team_id)
+
+        # 调用图表服务绘制球队投篮图
+        fig = chart_service.plot_shots(
+            shots_data=team_shots,
+            title=title,
+            output_path=str(output_path),
+            shot_outcome=shot_outcome,
+            data_type="team"
+        )
+
+        if fig:
+            self.logger.info(f"球队投篮图已生成: {output_path}")
+            return output_path
+        else:
+            self.logger.error("球队投篮图生成失败")
+            return None
 
 
     ## 4.4资源管理 ==============
