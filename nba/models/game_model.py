@@ -245,6 +245,71 @@ class PlayerInGame(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+    class PlayerInGame(BaseModel):
+        """球员比赛数据模型"""
+        status: PlayerStatus = Field(..., description="球员状态")
+        order: conint(ge=0) = Field(..., description="球员顺序")
+        person_id: conint(ge=0) = Field(..., description="球员ID", alias="personId")
+        jersey_num: str = Field(..., description="球衣号码", alias="jerseyNum")
+        position: Optional[str] = Field(None, description="位置")
+        starter: str = Field("0", description="是否首发")
+        on_court: str = Field("0", description="是否在场上", alias="oncourt")
+        played: str = Field("0", description="是否参与比赛")
+        statistics: PlayerStatistics = Field(default_factory=PlayerStatistics, description="球员统计数据")
+        name: str = Field(..., description="球员姓名")
+        name_i: str = Field(..., description="球员姓名缩写", alias="nameI")
+        first_name: str = Field(..., description="球员名", alias="firstName")
+        family_name: str = Field(..., description="球员姓", alias="familyName")
+        not_playing_reason: Optional[NotPlayingReason] = Field(None, description="不参赛原因", alias="notPlayingReason")
+        not_playing_description: Optional[str] = Field(None, description="不参赛具体描述",
+                                                       alias="notPlayingDescription")
+
+        model_config = ConfigDict(from_attributes=True)
+
+        @property
+        def has_played(self) -> bool:
+            """判断球员是否参与过本场比赛
+
+            Returns:
+                bool: 参与比赛返回True，否则返回False
+            """
+            return self.played == "1"
+
+        @property
+        def is_on_court(self) -> bool:
+            """判断球员是否当前在场上
+
+            Returns:
+                bool: 在场上返回True，否则返回False
+            """
+            return self.on_court == "1"
+
+        @property
+        def is_starter(self) -> bool:
+            """判断球员是否是首发
+
+            Returns:
+                bool: 是首发返回True，否则返回False
+            """
+            return self.starter == "1"
+
+        @property
+        def playing_status(self) -> str:
+            """获取球员上场状态的描述
+
+            Returns:
+                str: 球员上场状态的中文描述
+            """
+            if not self.has_played:
+                if self.not_playing_reason:
+                    reason = self.not_playing_reason.value
+                    return f"未上场 - {reason}"
+                return "未上场"
+            elif self.is_starter:
+                return "首发" + ("，场上" if self.is_on_court else "，场下")
+            else:
+                return "替补" + ("，场上" if self.is_on_court else "，场下")
+
 
 class TeamStatistics(BaseModel):
     """球队统计数据模型"""
@@ -719,51 +784,6 @@ class Game(BaseModel):
 
     #=====model层提供清晰的数据访问接口,类似于数据库的功能，service层可以直接调用这些接口，代码更简洁=========
 
-    ## 1.获取比赛基本信息
-    def get_game_status(self) -> Dict[str, Any]:
-        """
-        获取比赛状态信息，返回字典
-
-        Returns:
-            Dict[str, Any]: 包含比赛状态信息的字典
-        """
-        game_data = self.game_data
-        status_text = game_data.game_status_text
-        period_name = f"Period {game_data.period}"  # 简化节数名称
-        current_period = game_data.period
-        time_remaining_str = str(game_data.game_clock)
-
-        # 尝试解析时间，处理 'PT' 开头的 ISO 格式时间
-        try:
-            time_remaining = TimeHandler.parse_duration(time_remaining_str)
-            minutes = time_remaining // 60
-            seconds = time_remaining % 60
-            time_remaining = f"{minutes:02d}:{seconds:02d}"  # 格式化为 MM:SS
-        except ValueError:
-            time_remaining = time_remaining_str  # 无法解析则直接使用原始字符串
-
-        away_score = int(game_data.away_team.score)
-        home_score = int(game_data.home_team.score)
-        away_timeouts = game_data.away_team.timeouts_remaining
-        home_timeouts = game_data.home_team.timeouts_remaining
-        home_bonus = game_data.home_team.in_bonus == "1"  # 转换为布尔值
-        away_bonus = game_data.away_team.in_bonus == "1"  # 转换为布尔值
-
-        return {
-            "status_text": status_text,
-            "period_name": period_name,
-            "current_period": current_period,
-            "time_remaining": time_remaining,
-            "away_score": away_score,
-            "home_score": home_score,
-            "away_timeouts": away_timeouts,
-            "home_timeouts": home_timeouts,
-            "home_bonus": home_bonus,
-            "away_bonus": away_bonus
-        }
-
-
-
     def get_current_lineup(self) -> Dict[str, List[Dict[str, Any]]]:
         """获取当前场上阵容"""
         return {
@@ -1006,6 +1026,54 @@ class Game(BaseModel):
         # 比赛基本信息上下文
         basic_context = f"{home_team_full}主场迎战{away_team_full}，比赛于北京时间{context['dates']['beijing']['date']} {context['dates']['beijing']['time']}在{arena_info['name']}进行"
 
+        # 获取首发阵容信息
+        starters_info = {
+            "home": [],
+            "away": []
+        }
+
+        for player in game_data.home_team.players:
+            if player.starter == "1":
+                starters_info["home"].append({
+                    "name": player.name,
+                    "player_id": player.person_id,
+                    "position": player.position or "N/A",
+                    "jersey_num": player.jersey_num
+                })
+
+        for player in game_data.away_team.players:
+            if player.starter == "1":
+                starters_info["away"].append({
+                    "name": player.name,
+                    "player_id": player.person_id,
+                    "position": player.position or "N/A",
+                    "jersey_num": player.jersey_num
+                })
+
+        # 获取伤病名单
+        injuries_info = {
+            "home": [],
+            "away": []
+        }
+
+        for player in game_data.home_team.players:
+            if player.played == "0" and player.not_playing_reason:
+                injuries_info["home"].append({
+                    "name": player.name,
+                    "player_id": player.person_id,
+                    "reason": player.not_playing_reason.value if player.not_playing_reason else "Unknown",
+                    "description": player.not_playing_description or ""
+                })
+
+        for player in game_data.away_team.players:
+            if player.played == "0" and player.not_playing_reason:
+                injuries_info["away"].append({
+                    "name": player.name,
+                    "player_id": player.person_id,
+                    "reason": player.not_playing_reason.value if player.not_playing_reason else "Unknown",
+                    "description": player.not_playing_description or ""
+                })
+
         # 直接使用字典字面量返回合并的信息
         return {
             "basic": {
@@ -1051,7 +1119,9 @@ class Game(BaseModel):
                     "away": game_data.away_team.timeouts_remaining
                 },
                 "context": status_context
-            }
+            },
+            "starters": starters_info,
+            "injuries": injuries_info
         }
 
     def _prepare_ai_game_result(self, context: Dict[str, Any]) -> Dict[str, Any]:
@@ -1237,26 +1307,88 @@ class Game(BaseModel):
 
         # 如果指定了球员ID
         if player_id:
-            player = self.get_player_stats(player_id)
-            if player and player.played == "1":
-                is_home = player in game_data.home_team.players
-                team_type = "home" if is_home else "away"
-                player_data = self._prepare_single_player_ai_stats(player)
-                result[team_type].append(player_data)
-        else:
-            # 处理主队球员
+            # 直接在home_team和away_team中查找指定球员
+            found_player = None
+            is_home = False
+
+            # 查找主队中的球员
             for player in game_data.home_team.players:
-                if player.played == "1":  # 只处理参与比赛的球员
+                if player.person_id == player_id:
+                    found_player = player
+                    is_home = True
+                    break
+
+            # 如果在主队中没找到，则查找客队
+            if not found_player:
+                for player in game_data.away_team.players:
+                    if player.person_id == player_id:
+                        found_player = player
+                        is_home = False
+                        break
+
+            # 如果找到了指定球员，检查是否参与比赛
+            if found_player:
+                team_type = "home" if is_home else "away"
+                if found_player.played == "1":  # 只处理参与比赛的球员
+                    player_data = self._prepare_single_player_ai_stats(found_player)
+                    result[team_type].append(player_data)
+                else:
+                    # 添加基本信息但标记为未上场
+                    result[team_type].append({
+                        "basic": {
+                            "name": found_player.name,
+                            "player_id": found_player.person_id,
+                            "jersey_num": found_player.jersey_num,
+                            "position": found_player.position or "N/A",
+                            "played": False,
+                            "not_playing_reason": found_player.not_playing_reason.value if found_player.not_playing_reason else None,
+                            "not_playing_description": found_player.not_playing_description
+                        }
+                    })
+        else:
+            # 处理所有球员，现在包括已上场和未上场的球员
+            for player in game_data.home_team.players:
+                if player.played == "1":  # 上场的球员包含完整统计
                     result["home"].append(self._prepare_single_player_ai_stats(player))
+                else:  # 未上场的球员只包含基本信息
+                    result["home"].append({
+                        "basic": {
+                            "name": player.name,
+                            "player_id": player.person_id,
+                            "jersey_num": player.jersey_num,
+                            "position": player.position or "N/A",
+                            "played": False,
+                            "not_playing_reason": player.not_playing_reason.value if player.not_playing_reason else None,
+                            "not_playing_description": player.not_playing_description
+                        }
+                    })
 
-            # 处理客队球员
+            # 处理客队球员，与上面逻辑相同
             for player in game_data.away_team.players:
-                if player.played == "1":  # 只处理参与比赛的球员
+                if player.played == "1":
                     result["away"].append(self._prepare_single_player_ai_stats(player))
+                else:
+                    result["away"].append({
+                        "basic": {
+                            "name": player.name,
+                            "player_id": player.person_id,
+                            "jersey_num": player.jersey_num,
+                            "position": player.position or "N/A",
+                            "played": False,
+                            "not_playing_reason": player.not_playing_reason.value if player.not_playing_reason else None,
+                            "not_playing_description": player.not_playing_description
+                        }
+                    })
 
-            # 按得分排序
-            result["home"] = sorted(result["home"], key=lambda x: x["basic"]["points"], reverse=True)
-            result["away"] = sorted(result["away"], key=lambda x: x["basic"]["points"], reverse=True)
+            # 按得分排序（只对上场球员）
+            result["home"] = sorted(result["home"],
+                                    key=lambda x: x.get("basic", {}).get("points", 0) if "points" in x.get("basic",
+                                                                                                           {}) else -1,
+                                    reverse=True)
+            result["away"] = sorted(result["away"],
+                                    key=lambda x: x.get("basic", {}).get("points", 0) if "points" in x.get("basic",
+                                                                                                           {}) else -1,
+                                    reverse=True)
 
         return result
 
