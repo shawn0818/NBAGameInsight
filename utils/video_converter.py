@@ -18,9 +18,15 @@ class VideoProcessConfig:
     retry_delay: float = 1.0
 
     # GIF配置
-    gif_fps: int = 12  # 提高帧率到 15fps，更流畅
-    gif_scale: str = "960:-1"  # 保持宽度 1280，最佳清晰度
-    gif_quality: int = 8  # 质量设置为 5，高清晰度
+    gif_fps: int = 12  # 提高帧率到 12fps，较流畅
+    gif_scale: str = "960:-1"  # 保持宽度 960，较好清晰度
+    gif_quality: int = 5  # 质量设置为 5，高清晰度
+
+    # GIF大小限制（微博上传限制）
+    gif_max_size_mb: float = 30.0  # 最大30MB
+    gif_min_quality: int = 18  # 最低接受质量值
+    gif_min_fps: int = 5  # 最低接受帧率
+    gif_min_width: int = 450  # 最低接受宽度
 
 
 class VideoProcessor:
@@ -182,7 +188,12 @@ class VideoProcessor:
                     return video_path.stem, output_path
 
                 # 这里将原来的变量名 result 改为 gif_result
-                gif_result = self.convert_to_gif(video_path, output_path, **kwargs)
+                gif_result = self._convert_to_gif_internal(
+                    video_path,
+                    output_path,
+                    force_reprocess=force_reprocess,
+                    **kwargs
+                )
                 if gif_result:
                     return video_path.stem, gif_result
                 return None
@@ -213,19 +224,28 @@ class VideoProcessor:
             force_reprocess: bool = False,
             **kwargs
     ) -> Optional[Path]:
-        """同步转换单个视频到GIF"""
-        if not output_path:
-            output_path = video_path.with_suffix('.gif')
+        """同步转换单个视频到GIF
 
-        task_id = f"gif_{output_path.stem}"
+        此方法是公共API，内部调用_convert_to_gif_internal以保持向后兼容性
+        同时支持大小限制功能
+        """
+        return self._convert_to_gif_internal(
+            video_path,
+            output_path,
+            force_reprocess=force_reprocess,
+            **kwargs
+        )
 
-        # 增量处理: 检查是否已存在
-        if not force_reprocess and output_path.exists():
-            self.logger.info(f"GIF已存在，跳过转换: {output_path}")
-            return output_path
-
+    def _convert_to_gif_basic(
+            self,
+            video_path: Path,
+            output_path: Path,
+            task_id: str,
+            **kwargs
+    ) -> bool:
+        """最基本的GIF转换实现，不包含文件大小检查"""
         try:
-            cmd = [self.config.ffmpeg_path, '-i', str(video_path)]
+            cmd = [self.config.ffmpeg_path, '-y', '-i', str(video_path)]
 
             # 添加可选参数
             if kwargs.get('start_time'):
@@ -245,12 +265,176 @@ class VideoProcessor:
                 str(output_path)
             ])
 
-            success = self._run_ffmpeg(cmd, task_id)
-            return output_path if success else None
+            return self._run_ffmpeg(cmd, task_id)
 
         except Exception as e:
-            self.logger.error(f"GIF转换失败[{task_id}]: {str(e)}")
-            return None
+            self.logger.error(f"GIF基本转换失败[{task_id}]: {str(e)}")
+            return False
+
+    def _convert_to_gif_internal(
+            self,
+            video_path: Path,
+            output_path: Optional[Path] = None,
+            force_reprocess: bool = False,
+            **kwargs
+    ) -> Optional[Path]:
+        """内部GIF转换方法，包含大小限制功能"""
+        if not output_path:
+            output_path = video_path.with_suffix('.gif')
+
+        task_id = f"gif_{output_path.stem}"
+
+        # 增量处理: 检查是否已存在
+        if not force_reprocess and output_path.exists():
+            file_size = output_path.stat().st_size
+            max_size_mb = kwargs.get('max_size_mb', self.config.gif_max_size_mb)
+            max_size_bytes = max_size_mb * 1024 * 1024
+
+            if file_size <= max_size_bytes:
+                self.logger.info(
+                    f"GIF已存在，大小适合 ({file_size / 1024 / 1024:.2f}MB < {max_size_mb}MB): {output_path}")
+                return output_path
+            else:
+                self.logger.info(
+                    f"GIF已存在但超出大小限制 ({file_size / 1024 / 1024:.2f}MB > {max_size_mb}MB)，重新生成")
+
+        # 尝试自适应大小转换
+        return self._convert_to_gif_with_size_limit(
+            video_path,
+            output_path,
+            task_id=task_id,  # 传递task_id参数
+            force_reprocess=force_reprocess,
+            **kwargs
+        )
+
+    def _convert_to_gif_with_size_limit(
+            self,
+            video_path: Path,
+            output_path: Path,
+            max_tries: int = 5,
+            force_reprocess: bool = False,
+            task_id: str = None,  # 添加task_id参数
+            **kwargs
+    ) -> Optional[Path]:
+        """生成不超过指定大小的GIF文件
+
+        先尝试以最高质量生成，如果超出大小限制，逐步调整参数：
+        1. 首先降低帧率到10fps
+        2. 然后调整质量参数
+        3. 最后才调整分辨率
+        """
+        # 获取大小限制参数
+        max_size_mb = kwargs.pop('max_size_mb', self.config.gif_max_size_mb)
+        max_size_bytes = max_size_mb * 1024 * 1024
+
+        # 如果没有提供task_id，则创建一个
+        if not task_id:
+            task_id = f"gif_{output_path.stem}"
+
+        # 初始参数
+        params = {
+            'fps': kwargs.get('fps', self.config.gif_fps),
+            'scale': kwargs.get('scale', self.config.gif_scale),
+            'quality': kwargs.get('quality', self.config.gif_quality),
+            'start_time': kwargs.get('start_time'),
+            'duration': kwargs.get('duration')
+        }
+
+        # 临时输出文件
+        temp_output = output_path.parent / f"temp_{output_path.name}"
+
+        # 如果启用force_reprocess并且临时文件存在，则删除临时文件
+        if force_reprocess and temp_output.exists():
+            temp_output.unlink()
+
+        # 尝试不同参数组合直到文件大小符合要求
+        tries = 0
+        last_result_path = None
+        last_file_size_mb = 0
+        min_quality = self.config.gif_min_quality
+        min_fps = self.config.gif_min_fps
+        min_width = self.config.gif_min_width
+
+        self.logger.info(f"开始转换GIF (大小限制: {max_size_mb}MB): {output_path}")
+
+        success = False
+        while tries < max_tries:
+            tries += 1
+            current_params = params.copy()
+
+            # 生成GIF
+            success = self._convert_to_gif_basic(
+                video_path,
+                temp_output,
+                task_id,  # 使用task_id参数
+                **current_params
+            )
+
+            if not success or not temp_output.exists():
+                self.logger.error(f"GIF转换失败，尝试 {tries}/{max_tries}")
+                continue
+
+            # 检查文件大小
+            file_size = temp_output.stat().st_size
+            file_size_mb = file_size / 1024 / 1024
+            last_file_size_mb = file_size_mb
+
+            self.logger.info(f"尝试 {tries}/{max_tries}: 生成GIF大小 {file_size_mb:.2f}MB, "
+                             f"参数: fps={current_params['fps']}, quality={current_params['quality']}, "
+                             f"scale={current_params['scale']}")
+
+            if file_size <= max_size_bytes:
+                # 大小符合要求，保存结果
+                if temp_output.exists():
+                    if output_path.exists():
+                        output_path.unlink()
+                    temp_output.rename(output_path)
+                self.logger.info(f"成功生成符合大小要求的GIF: {output_path} ({file_size_mb:.2f}MB)")
+                success = True
+                break
+            else:
+                # 记录上一次结果路径用于清理
+                last_result_path = temp_output
+
+                # 调整参数策略 - 优化后的顺序
+                # 1. 首先降低帧率到10fps
+                if tries == 1:
+                    current_params['fps'] = 10  # 第一次尝试时直接降低到10fps
+                    params = current_params
+                    continue
+
+                # 2. 然后调整质量参数 (quality)
+                elif tries == 2 or tries == 3:
+                    # 较大幅度增加质量值(降低画质)
+                    current_params['quality'] += 5
+                    params = current_params
+                    continue
+
+                # 3. 最后才调整分辨率 (scale)
+                else:
+                    try:
+                        current_width = int(current_params['scale'].split(':')[0])
+                        new_width = max(min_width, int(current_width * 0.75))
+
+                        # 重置质量到初始值，确保分辨率的效果明显
+                        current_params['quality'] = self.config.gif_quality
+                        current_params['scale'] = f"{new_width}:-1"
+                        params = current_params
+                    except Exception as e:
+                        self.logger.error(f"解析或调整分辨率失败: {e}")
+                        break
+
+        # 清理临时文件
+        if not success and last_result_path and last_result_path.exists():
+            self.logger.warning(f"无法生成符合大小限制的GIF ({max_size_mb}MB)，"
+                                f"最后尝试生成大小: {last_file_size_mb:.2f}MB")
+            # 如果用户愿意接受大一点的文件，可以保留最后生成的结果
+            if output_path.exists():
+                output_path.unlink()
+            last_result_path.rename(output_path)
+            return output_path
+
+        return output_path if success else None
 
     def process_videos(
             self,

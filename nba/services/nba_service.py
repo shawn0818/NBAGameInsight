@@ -453,28 +453,6 @@ class NBAService(BaseService):
     ## =============4.3 调用个各子模块服务=================
 
     ### 4.3.1视频功能API，调用gamevideo子模块==============
-    '''
-    文件命名规则与目录结构:
-    ============================
-    1. 视频文件命名规则:
-       - 事件视频: event_{事件ID}_game_{比赛ID}.mp4
-       - 球员集锦: player_{球员ID}_{game_id}.mp4
-       - 球队集锦: team_{球队ID}_{game_id}.mp4
-
-    2. GIF文件命名规则:
-       - 球员回合GIF: round_{事件ID}_{球员ID}.gif
-
-    3. 目录结构:
-       - 视频根目录 (VIDEO_DIR)
-         - /team_videos/team_{球队ID}_{game_id}/ - 球队视频目录
-         - /player_videos/player_{球员ID}_{game_id}/ - 球员视频目录
-       - GIF目录 (GIF_DIR)
-         - /player_{球员ID}_{game_id}_rounds/ - 球员回合GIF目录
-       - 图表目录 (PICTURES_DIR)
-         - 球员投篮图: scoring_impact_{game_id}_{player_id}.png
-         - 球队投篮图: team_shots_{game_id}_{team_id}.png
-    4.查找策略统一使用glob
-    '''
 
     def get_team_highlights(self,
                             team: Optional[str] = None,
@@ -484,6 +462,12 @@ class NBAService(BaseService):
         """获取球队集锦视频
 
         下载并处理指定球队的比赛集锦。默认会合并视频、去除水印并删除原始短视频。
+
+        球队视频文件命名规则:
+        - 球队事件视频: event_{事件ID}_game_{比赛ID}.mp4
+        - 球队集锦: team_{球队ID}_{game_id}.mp4
+        - 视频根目录 (VIDEO_DIR)
+            - /team_videos/team_{球队ID}_{game_id}/ - 球队视频目录
 
         Args:
             team: 球队名称，不提供则使用默认球队
@@ -580,6 +564,12 @@ class NBAService(BaseService):
 
         下载并处理指定球员的比赛集锦。默认会同时生成视频和GIF，并保留原始短视频。
 
+        球员视频文件命名规则:
+        - 球员事件视频: event_{事件ID}_game_{比赛ID}_{ContextMeasure}.mp4
+        - 球员集锦: player_{球员ID}_{game_id}.mp4
+        - 视频根目录 (VIDEO_DIR)
+            - /player_videos/player_{球员ID}_{game_id}/ - 球员视频目录
+
         Args:
             player_name: 球员名称，不提供则使用默认球员
             context_measures: 上下文度量集合，如{FGM, AST}
@@ -630,11 +620,11 @@ class NBAService(BaseService):
                     ContextMeasure.REB,
                     ContextMeasure.STL,
                     ContextMeasure.BLK
-
                 }
 
             # 获取并处理各类型视频
             all_videos = {}
+            videos_type_map = {}  # 新增：保存视频ID到类型的映射
 
             for measure in context_measures:
                 # 获取视频资源
@@ -645,6 +635,10 @@ class NBAService(BaseService):
                 )
 
                 if videos:
+                    # 保存每个视频的类型信息
+                    for event_id in videos.keys():
+                        videos_type_map[event_id] = measure.value
+
                     all_videos.update(videos)
 
                     # 添加请求间隔
@@ -659,12 +653,13 @@ class NBAService(BaseService):
 
             result = {}
 
-            # 1. 下载视频
+            # 1. 下载视频 - 传递类型映射
             videos_dict = self._download_videos(
                 video_service=video_service,
                 videos=all_videos,
                 game_id=game_id,
-                player_id=player_id,  # 确保传递player_id
+                player_id=player_id,
+                videos_type_map=videos_type_map,  # 新增：传递类型映射
                 force_reprocess=force_reprocess
             )
 
@@ -718,6 +713,9 @@ class NBAService(BaseService):
         为球员视频集锦的每个回合创建独立的GIF动画，便于在线分享和展示。
         本质上是调用get_player_highlights方法并设置为仅生成GIF。
 
+        GIF文件命名规则:
+       - 球员回合GIF: round_{事件ID}_{球员ID}.gif
+
         Args:
             player_name: 球员名称，不提供则使用默认球员
 
@@ -764,6 +762,7 @@ class NBAService(BaseService):
                          player_id: Optional[int] = None,
                          team_id: Optional[int] = None,
                          context_measure: Optional[str] = None,
+                         videos_type_map: Optional[Dict[str, str]] = None,  # 新增：类型映射参数
                          force_reprocess: bool = False) -> Dict[str, Path]:
         """下载视频辅助方法
 
@@ -776,26 +775,41 @@ class NBAService(BaseService):
             player_id: 球员ID (可选)
             team_id: 球队ID (可选)
             context_measure: 上下文类型 (可选)
+            videos_type_map: 视频ID到类型的映射 (可选)
             force_reprocess: 是否强制重新处理
 
         Returns:
             Dict[str, Path]: 视频路径字典，以事件ID为键
         """
         try:
-            # 调用视频服务批量下载视频，确保传递所有必要参数
-            video_paths = video_service.batch_download_videos(
-                videos,
-                game_id,
-                player_id=player_id,  # 确保传递player_id
-                team_id=team_id,  # 确保传递team_id
-                context_measure=context_measure,
-                force_reprocess=force_reprocess
-            )
+            # 如果提供了类型映射，使用单独下载
+            if videos_type_map:
+                video_paths = {}
+                for event_id, video in videos.items():
+                    # 从映射中获取该视频的类型
+                    video_type = videos_type_map.get(event_id)
+                    # 单独下载每个视频，传递其类型
+                    path = video_service.downloader.download_video(
+                        video, game_id, player_id, video_type, force_reprocess
+                    )
+                    if path:
+                        video_paths[event_id] = path
+                        self.logger.info(f"视频 {event_id} 下载成功: {path}")
+                return video_paths
+            else:
+                # 原有的批量下载
+                video_paths = video_service.batch_download_videos(
+                    videos,
+                    game_id,
+                    player_id=player_id,
+                    context_measure=context_measure,
+                    force_reprocess=force_reprocess
+                )
 
-            if not video_paths:
-                self.logger.error("下载视频失败")
+                if not video_paths:
+                    self.logger.error("下载视频失败")
 
-            return video_paths
+                return video_paths
 
         except Exception as e:
             self.logger.error(f"视频下载失败: {str(e)}", exc_info=True)
