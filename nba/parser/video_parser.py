@@ -74,7 +74,7 @@ class VideoParser:
                     self.logger.error(f"处理第{idx}个视频时出错: {e}")
                     invalid_count += 1
 
-            self.logger.info(f"成功解析视频资产: {valid_count}个有效, {invalid_count}个无效")
+            self.logger.info(f"成功解析视频资产: {valid_count}个有效")
 
             return VideoResponse(
                 resource=resource,

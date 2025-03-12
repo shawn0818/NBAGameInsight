@@ -57,7 +57,7 @@ class GameDataParser:
                 # 2. 处理字典类型数据
                 if not isinstance(data, dict):
                     self.logger.error(f"数据类型错误: {type(data)}")
-                    raise ValueError("Invalid game data format")
+                    raise ValueError("Invalid game data output_format")
 
                 processed_data = data
 

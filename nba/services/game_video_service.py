@@ -30,19 +30,18 @@ class VideoConfig:
             raise ValueError("quality must be one of: sd, md, hd")
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    def get_output_path(self, game_id: str, event_id: str, player_id: Optional[int] = None,
-                        context_measure: Optional[str] = None) -> Path:
-        """获取输出路径"""
-        # 确保event_id是整数，并用4位前导零填充
-        try:
-            event_id_int = int(event_id)
-            # 使用4位数字前导零，足够覆盖一场比赛的所有事件
-            formatted_event_id = f"{event_id_int:04d}"
-        except ValueError:
-            formatted_event_id = event_id
+    def get_random_delay(self) -> float:
+        """获取随机延迟时间"""
+        return random.uniform(self.min_download_delay, self.max_download_delay)
 
-        # 文件名格式: event_0123_game_xxxx.mp4
-        filename = f"event_{formatted_event_id}_game_{game_id}"
+    def get_output_path(self, game_id: str, video_asset: VideoAsset, player_id: Optional[int] = None,
+                        context_measure: Optional[str] = None) -> Path:
+
+        # 从 VideoAsset 对象中获取 event_id
+        event_id = video_asset.event_id
+
+        # 文件名格式: event_xxx_game_xxxx.mp4
+        filename = f"event_{event_id}_game_{game_id}"
 
         # 如果有player_id，添加到文件名
         if player_id is not None:
@@ -56,10 +55,6 @@ class VideoConfig:
         filename += ".mp4"
 
         return self.output_dir / filename
-
-    def get_random_delay(self) -> float:
-        """获取随机延迟时间"""
-        return random.uniform(self.min_download_delay, self.max_download_delay)
 
 
 class VideoDownloader:
@@ -110,7 +105,7 @@ class VideoDownloader:
                 return None
 
             # 确定输出路径，传入可选参数
-            output_path = self.config.get_output_path(game_id, video_asset.event_id, player_id, context_measure)
+            output_path = self.config.get_output_path(game_id, video_asset, player_id, context_measure)
 
             # 增量处理: 检查文件是否已存在且有效，除非强制重新处理
             if not force_reprocess and output_path.exists():
@@ -280,6 +275,7 @@ class GameVideoService:
             videos: Dict[str, VideoAsset],
             game_id: str,
             player_id: Optional[int] = None,
+            team_id: Optional[int] = None,  # 添加team_id参数保持API一致性
             context_measure: Optional[str] = None,
             max_videos: Optional[int] = None,
             force_reprocess: bool = False
@@ -290,6 +286,7 @@ class GameVideoService:
             videos: 视频资源字典
             game_id: 比赛ID
             player_id: 球员ID (可选)
+            team_id: 球队ID (可选) - 添加此参数保持API一致性
             context_measure: 上下文指标 (可选)
             max_videos: 最大下载视频数量 (可选)
             force_reprocess: 是否强制重新处理
