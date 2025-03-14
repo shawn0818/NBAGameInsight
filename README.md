@@ -1,56 +1,51 @@
-# NBA 数据服务平台
+# NBAGameInsight: NBA 数据洞察平台
 
 [![Python Version](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**一个强大的 Python 库，用于获取、解析、分析和展示 NBA 比赛的各种数据。**
+**一个强大且智能的 Python 工具，用于获取、解析、分析和展示 NBA 比赛的各类数据。**
 
-本项目旨在为 NBA 爱好者、数据分析师和开发者提供一个全面且易于使用的平台，以访问和利用丰富的 NBA 比赛数据。它集成了数据抓取、解析、缓存、可视化、AI 分析以及社交媒体发布等功能，帮助用户深入了解 NBA 赛事，并进行数据驱动的应用开发。
+NBAGameInsight 专注于为 NBA 爱好者、数据分析师和开发者提供全方位的数据服务。项目整合了数据抓取、结构化解析、可视化展示、智能 AI 分析和社交媒体发布等功能，旨在让用户深入洞察 NBA 赛事，并基于数据驱动开发各种应用。
+
+---
 
 ## 主要特性
 
-### 全面的数据获取
+### 全面数据获取
+- **实时与历史数据：** 支持获取比赛的 Boxscore、PlayByPlay、赛程、联盟排名、球员与球队信息、视频集锦等。
+- **权威数据源：** 数据源自 NBA 官方及 Stats API，确保数据准确性。
 
-* 支持获取比赛的实时和历史数据，包括比赛 Boxscore、PlayByPlay、赛程、联盟排名、球员信息、球队信息和视频集锦等
-* 数据源自 NBA 官方网站和 Stats API，保证数据的权威性和准确性
+### 高效数据处理
+- **结构化数据：** 基于 Pydantic v2 模型进行数据验证和转换，确保数据质量。
+- **智能解析：** 强大的解析器将原始数据转换为易用的 Python 对象，并内置缓存机制以提升响应速度。
 
-### 高效的数据处理
+### 丰富数据展示
+- **多格式输出：** 支持 JSON、文本、Markdown 等多种输出格式。
+- **可视化图表：** 绘制投篮点图、得分影响力图等，让比赛数据一目了然。
+- **视频与 GIF 集锦：** 生成比赛精彩瞬间的视频集锦和 GIF 动画，捕捉关键时刻。
 
-* 使用 Pydantic v2 模型进行数据结构化和验证，确保数据质量
-* 强大的数据解析器，将原始 API 数据转换为易于使用和分析的 Python 对象
-* 内置缓存机制，支持动态缓存时长，减少 API 请求，提高数据访问速度
+### 智能 AI 分析
+- **AI 助力：** 集成 AI 服务，实现比赛事件深度分析、摘要生成和球员表现评估，提供更深入的赛事洞察。
 
-### 丰富的数据展示
-
-* 提供多种数据格式化输出，包括 JSON、文本和 Markdown
-* 集成 AI 服务（可选），支持比赛事件分析和摘要生成，提供更深入的赛事解读
-* 强大的图表生成功能，可以绘制球员投篮点图、助攻分布图和得分影响力图，直观展示比赛数据
-* 支持生成比赛精彩瞬间的 GIF 动画和 MP4 视频集锦
-
-### 灵活的配置选项
-
-* 通过 `NBAServiceConfig` 类提供统一的配置管理，可以自定义 API 密钥、存储路径、缓存策略、显示语言等
-* 模块化设计，各个子服务（数据服务、显示服务、图表服务、视频服务、AI 服务）可独立配置和使用
+### 灵活的命令行工具
+- **多模式支持：** 提供 Info、Chart、Video、Weibo、AI、New Season 等多种运行模式，满足不同场景需求。
+- **命令组合：** 内置组合命令，可一次性执行多个任务，提升工作效率。
 
 ### 社交媒体集成
+- **微博发布：** 支持将比赛分析、图表、视频等内容自动发布到微博平台（需配置微博 API）。
 
-* 集成微博发布功能，可以将比赛分析、精彩瞬间等内容自动发布到微博平台（需要配置微博 API）
-
-### 易于扩展和定制
-
-* 模块化架构和清晰的代码结构，方便用户进行二次开发和功能扩展
-* 提供丰富的 API 接口，方便用户在自己的项目中使用 NBA 数据服务
+---
 
 ## 快速开始
 
 ### 1. 环境准备
 
-* Python 版本：Python 3.8 或更高版本
-* 安装依赖：
+- **Python 版本：** Python 3.8 或更高版本  
+- **安装依赖：**
 
-```bash
-pip install -r requirements.txt
-```
+  ```bash
+  pip install -r requirements.txt
+  ```
 
 ### 2. 配置
 
@@ -63,76 +58,98 @@ cp .env.example .env
 * 配置项说明（部分重要配置）：
   * `WB_COOKIES`：微博 Cookies，用于微博发布功能（可选）
   * `AI_API_KEY`：AI 服务 API 密钥（可选，用于 AI 分析功能）
-  * `AI_BASE_URL`：AI 服务 API 基础 URL（可选，用于 AI 分析功能）
 
-### 3. 运行示例
+### 3. 命令行使用方法
 
-以下是一些基本的使用示例，更多用法请参考代码和文档。
+项目提供了灵活的命令行工具，可以通过不同的运行模式满足各种需求。
 
-#### 获取今日湖人队比赛的基本信息
-
-```python
-from nba.services.nba_service import NBAService
-
-with NBAService() as nba_service:
-    game_info = nba_service.format_basic_game_info(team="Lakers", date="today")
-    if game_info:
-        print(game_info)
-    else:
-        print("未找到比赛信息")
+```bash
+python main.py [--team TEAM] [--player PLAYER] [--date DATE] [--mode MODE] [--no-weibo] [--debug] [--config CONFIG] [--new-season NEW_SEASON]
 ```
 
-#### 获取勇士队最近一场比赛的所有球员统计数据
+#### 参数说明：
 
-```python
-from nba.services.nba_service import NBAService
+- `--team`：指定球队，默认为 "Lakers"
+- `--player`：指定球员，默认为 "LeBron James"
+- `--date`：指定日期，默认为 "last"（最近一场比赛）
+- `--mode`：运行模式，选项包括：
+  - `info`：只显示比赛信息
+  - `chart`：只生成图表
+  - `video`：处理所有视频
+  - `video-team`：只处理球队视频
+  - `video-player`：只处理球员视频
+  - `video-rounds`：处理球员视频的回合GIF
+  - `weibo`：执行所有微博发布功能
+  - `weibo-team`：只发布球队集锦视频
+  - `weibo-player`：只发布球员集锦视频
+  - `weibo-chart`：只发布球员投篮图
+  - `weibo-team-chart`：只发布球队投篮图
+  - `weibo-round`：只发布球员回合解说和GIF
+  - `ai`：只运行AI分析
+  - `all`：执行所有功能（默认）
+  - `new_season`：新赛季同步更新数据库
+- `--no-weibo`：不发布到微博
+- `--debug`：启用调试模式，输出详细日志
+- `--config`：指定配置文件
+- `--new-season`：指定新赛季标识，例如 '2025-26'，用于更新数据库新赛季数据
 
-with NBAService() as nba_service:
-    player_stats = nba_service.format_player_stats(team="Warriors", date="last")
-    if player_stats:
-        for stat in player_stats:
-            print(stat)
-    else:
-        print("未找到球员统计数据")
+#### 示例：
+
+```bash
+# 获取湖人队最近一场比赛的信息
+python main.py --team Lakers --mode info
+
+# 获取LeBron James最近一场比赛的统计并生成投篮图
+python main.py --team Lakers --player "LeBron James" --mode chart
+
+# 生成Warriors最近一场比赛的视频集锦
+python main.py --team Warriors --mode video-team
+
+# 生成Stephen Curry最近一场比赛的集锦视频并发布到微博
+python main.py --team Warriors --player "Stephen Curry" --mode weibo-player
+
+# 执行对Durant最近一场比赛的AI分析
+python main.py --team Suns --player "Kevin Durant" --mode ai
+
+# 更新2025-26赛季数据
+python main.py --mode new_season --new-season "2025-26"
 ```
 
-#### 绘制 LeBron James 在最近一场比赛的得分影响力图
+### 4. 程序化使用示例
+
+除了命令行工具，您还可以在自己的Python程序中使用该库：
 
 ```python
-from nba.services.nba_service import NBAService
+from nba.services.nba_service import NBAService, NBAServiceConfig
 
-with NBAService() as nba_service:
-    chart_path = nba_service.plot_player_scoring_impact(
-        team="Lakers", 
-        player_name="LeBron James", 
-        title="LeBron James 得分影响力图"
+# 创建配置
+config = NBAServiceConfig(
+    default_team="Lakers",
+    default_player="LeBron James",
+    date_str="last"
+)
+
+# 使用上下文管理器确保资源正确关闭
+with NBAService(config=config) as nba_service:
+    # 获取比赛基本信息
+    game = nba_service.data_service.get_game("Lakers")
+    if game:
+        print(f"比赛ID: {game.game_data.game_id}")
+        print(f"主队: {game.game_data.home_team.team_city} {game.game_data.home_team.team_name}")
+        print(f"客队: {game.game_data.away_team.team_city} {game.game_data.away_team.team_name}")
+        
+    # 生成球员投篮图
+    chart_paths = nba_service.generate_shot_charts(
+        player_name="LeBron James",
+        chart_type="both",
+        shot_outcome="made_only"
     )
-    if chart_path:
-        print(f"图表已保存到: {chart_path}")
-    else:
-        print("图表生成失败")
-```
-
-#### 获取最近一场湖人队比赛的投篮命中视频集锦
-
-```python
-import asyncio
-from nba.services.nba_service import NBAService
-from nba.models.video_model import ContextMeasure
-
-async def get_videos():
-    with NBAService() as nba_service:
-        video_paths = nba_service.get_game_videos(
-            team="Lakers",
-            context_measure=ContextMeasure.FGM
-        )
-        if video_paths:
-            for event_id, path in video_paths.items():
-                print(f"Event ID: {event_id}, 视频保存路径: {path}")
-        else:
-            print("未找到视频集锦")
-
-asyncio.run(get_videos())
+    
+    # 获取球员集锦视频
+    player_videos = nba_service.get_player_highlights(
+        player_name="LeBron James",
+        merge=True
+    )
 ```
 
 ## 配置详解
@@ -141,8 +158,8 @@ asyncio.run(get_videos())
 
 ### 基础配置
 
-* `team`：默认球队名称，用于在未指定球队时获取默认球队的数据
-* `player`：默认球员名称，用于在未指定球员时获取默认球员的数据
+* `default_team`：默认球队名称，用于在未指定球队时获取默认球队的数据
+* `default_player`：默认球员名称，用于在未指定球员时获取默认球员的数据
 * `date_str`：默认日期字符串，用于在未指定日期时获取默认日期的比赛数据
 * `language`：显示语言，目前支持 "zh_CN"（中文）和 "en_US"（英文）
 
@@ -172,21 +189,29 @@ asyncio.run(get_videos())
 * `auto_refresh`：是否自动刷新数据，默认为 `False`
 * `use_pydantic_v2`：是否使用 Pydantic v2 版本，默认为 `True`
 
-## 模块结构
+## 项目结构
+
+主要模块和组件如下：
 
 ```
-nba-data-service/
-├── config/                # 配置文件和路径配置
-├── nba/                   # NBA 数据服务核心模块
-│   ├── fetcher/          # 数据抓取模块
-│   ├── models/           # 数据模型定义
-│   ├── parser/           # 数据解析模块
-│   ├── services/         # 服务层模块
-├── utils/                 # 工具模块
-├── weibo/                # 微博发布模块
-├── .env.example          # 环境变量配置文件示例
-├── requirements.txt      # Python 依赖文件
-└── README.md             # 项目 README 文件
+NBAGameInsight/
+├── config/ # 配置模块
+│   └── nba_config.py # NBA数据服务配置
+├── nba/ # 核心功能模块
+│   ├── models/ # 数据模型
+│   └── services/ # 服务模块
+│       ├── data_service.py # 数据服务
+│       ├── game_video_service.py # 视频服务
+│       ├── nba_service.py # 主服务
+│       └── shot_chart_service.py # 投篮图服务
+├── utils/ # 工具模块
+│   ├── ai_processor.py # AI处理
+│   ├── logger_handler.py # 日志处理
+│   └── video_converter.py # 视频转换
+├── weibo/ # 微博集成模块
+│   ├── weibo_content_generator.py # 微博内容生成
+│   └── weibo_post_service.py # 微博发布服务
+└── main.py # 主程序入口
 ```
 
 ## 贡献
