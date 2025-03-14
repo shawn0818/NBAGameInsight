@@ -4,7 +4,6 @@ import numpy as np
 from scipy.stats import gaussian_kde
 
 from config.nba_config import NBAConfig
-from nba.services.game_data_service import GameDataProvider
 from utils.logger_handler import AppLogger
 import time
 from typing import Optional, Dict, Any, Tuple, Union, List
@@ -347,11 +346,9 @@ class CourtRenderer:
 class GameChartsService:
     """NBA比赛数据可视化服务"""
 
-    def __init__(self, game_data_service: GameDataProvider,
-                 config: Optional[ChartConfig] = None):
+    def __init__(self, config: Optional[ChartConfig] = None):
         """初始化服务"""
         self.logger = AppLogger.get_logger(__name__, app_name='nba')
-        self.game_data_service = game_data_service
         self.config = config or ChartConfig()
 
     def _save_figure(self, fig: plt.Figure, output_path: str) -> None:

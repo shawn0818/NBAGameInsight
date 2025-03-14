@@ -33,6 +33,7 @@ class NotPlayingReason(str, Enum):
     DNP_INJURY = "DNP_INJURY"  # 添加 DNP_INJURY
     GLEAGUE_ASSIGNMENT = "INACTIVE_GLEAGUE_ON_ASSIGNMENT"
     COACH = "INACTIVE_COACH"  # 添加这一行
+    LEAGUE_SUSPENSION = "INACTIVE_LEAGUE_SUSPENSION"
 
 
 class ShotResult(str, Enum):

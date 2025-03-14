@@ -16,7 +16,7 @@ import sys
 import logging
 from pathlib import Path
 from enum import Enum
-from typing import Dict, List, Optional, Any, Union
+from typing import  List
 from abc import ABC, abstractmethod
 from dotenv import load_dotenv
 
@@ -26,7 +26,7 @@ from nba.services.nba_service import NBAService, NBAServiceConfig, ServiceStatus
 from nba.services.game_video_service import VideoConfig
 from utils.video_converter import VideoProcessConfig
 from utils.logger_handler import AppLogger
-from utils.ai_processor import AIProcessor, AIConfig, AIProvider, AIModel
+from utils.ai_processor import AIProcessor, AIConfig
 from weibo.weibo_post_service import WeiboPostService
 from weibo.weibo_content_generator import WeiboContentGenerator
 
@@ -48,6 +48,7 @@ class RunMode(Enum):
     WEIBO_ROUND = "weibo-round"  # 只发布球员回合解说和GIF
     AI = "ai"  # 只运行AI分析
     ALL = "all"  # 执行所有功能
+    NEW_SEASON = "new_season"  # 新赛季同步更新数据库
 
 
 # 命令模式的基类
@@ -720,6 +721,20 @@ class AICommand(NBACommand):
             app.logger.error(f"AI分析功能执行失败: {e}", exc_info=True)
             print(f"  × AI分析失败: {e}")
 
+class NewSeasonCommand(NBACommand):
+    """新赛季数据同步命令"""
+    def execute(self, app: 'NBACommandLineApp') -> None:
+        new_season = app.args.new_season
+        if not new_season:
+            print("× 未指定新赛季标识，请使用 --new-season 参数指定，例如 '2025-26'")
+            return
+        print("\n=== 新赛季数据同步 ===")
+        if app.nba_service.data_service.sync_new_season(season=new_season, force_update=True):
+            print(f"✓ 新赛季({new_season})数据同步成功！")
+        else:
+            print(f"× 新赛季({new_season})数据同步失败。")
+
+
 
 class CompositeCommand(NBACommand):
     """组合命令，执行多个命令"""
@@ -751,7 +766,9 @@ class NBACommandFactory:
             RunMode.WEIBO_CHART: WeiboChartCommand(),
             RunMode.WEIBO_TEAM_CHART: WeiboTeamChartCommand(),
             RunMode.WEIBO_ROUND: WeiboRoundCommand(),
-            RunMode.AI: AICommand()
+            RunMode.AI: AICommand(),
+            RunMode.NEW_SEASON: NewSeasonCommand()
+
         }
 
         # ALL模式组合所有命令
@@ -810,6 +827,7 @@ class NBACommandLineApp:
         parser.add_argument("--no-weibo", action="store_true", help="不发布到微博")
         parser.add_argument("--debug", action="store_true", help="启用调试模式，输出详细日志")
         parser.add_argument("--config", help="指定配置文件")
+        parser.add_argument("--new-season", default="", help="指定新赛季标识，例如 '2025-26'，用于更新数据库新赛季数据")
 
         return parser.parse_args()
 

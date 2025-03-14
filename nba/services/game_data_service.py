@@ -1,17 +1,14 @@
-from typing import  Optional, Any
+# game_data_service.py
+from typing import Optional, Any
 from functools import lru_cache
 from pathlib import Path
 from dataclasses import dataclass
 
-import pandas as pd
-
+from nba.database.db_service import DatabaseService
 from nba.fetcher.game_fetcher import GameFetcher
 from nba.parser.game_parser import GameDataParser
-from nba.fetcher.schedule_fetcher import ScheduleFetcher
-from nba.parser.schedule_parser import ScheduleParser
-from nba.parser.league_parser import LeagueDataProvider
-
 from nba.models.game_model import Game
+
 from config.nba_config import NBAConfig
 from utils.logger_handler import AppLogger
 
@@ -24,6 +21,7 @@ class ServiceNotReadyError(Exception):
 class InitializationError(Exception):
     """初始化失败异常"""
     pass
+
 
 @dataclass
 class GameDataConfig:
@@ -50,16 +48,10 @@ class GameDataConfig:
 
 
 class GameDataProvider:
-    """NBA比赛数据获取入口:
-    GameDataService 的核心职责是：数据获取和解析。客户端或 NBAService 需要获取 NBA 比赛数据时，首先会找到 GameDataService。
-    GameDataService 负责协调 GameFetcher 和 GameParser，从外部数据源获取和解析数据。
-    在数据获取层面，GameDataService 确实是入口。它的任务是从外部数据源（例如 NBA API）获取原始数据，
-    并将其解析成我们系统内部可以理解和操作的 GameModel 对象。
-     一旦 GameDataService 完成了这个任务，它就应该把 解析后的 Game 对象 交给系统的其他部分使用，
-     而不是继续作为数据源直接服务于所有模块。GameDataService 更专注于 数据生产。
-      它就像一个数据工厂，负责从原料 (外部数据源) 中生产出成品 ( GameModel 对象)。
-       一旦成品生产出来，就交给系统的其他部分 (例如 NBAService, GameDisplayService) 去使用和加工。
-        GameDataService 本身不再直接负责数据的分发和使用，而是专注于 高效、稳定地生产高质量的数据成品。
+    """
+    GameDataService的核心职责是：数据获取和解析。负责协调 GameFetcher和 GameParser从外部数据源
+    （例如 NBA API）获取原始数据，并将其解析成我们系统内部可以理解和操作的 GameModel对象，交给系统的
+    其他部分 (例如 NBAService, GameDisplayService) 去使用和加工。
     """
 
     def __init__(
@@ -67,9 +59,7 @@ class GameDataProvider:
             config: Optional[GameDataConfig] = None,
             game_fetcher: Optional[GameFetcher] = None,
             game_parser: Optional[GameDataParser] = None,
-            schedule_fetcher: Optional[ScheduleFetcher] = None,
-            schedule_parser: Optional[ScheduleParser] = None,
-            league_provider: Optional[LeagueDataProvider] = None, # 只注入 LeagueDataProvider
+            database_service: Optional[DatabaseService] = None,
     ):
         """初始化NBA比赛数据服务"""
         # 基础配置
@@ -78,107 +68,67 @@ class GameDataProvider:
 
         # 初始化状态
         self._initialized = False
-        self._schedule_df: Optional[pd.DataFrame] = None
 
-        # 组件注入或初始化
-        self.schedule_fetcher = schedule_fetcher or ScheduleFetcher()
-        self.schedule_parser = schedule_parser or ScheduleParser()
-        self.league_provider = league_provider or LeagueDataProvider() # 用来映射球队以及球员的名称与ID
+        # 数据库服务初始化
+        self.db_service = database_service or DatabaseService()
 
+        #比赛的获取与解析实例化
         self.game_fetcher = game_fetcher or GameFetcher()
-        # 验证 game_fetcher 是否正确初始化
-        if not hasattr(self.game_fetcher, 'get_game_data'):
-            raise InitializationError("GameFetcher 实例未正确初始化")
         self.game_parser = game_parser or GameDataParser()
 
         # 启动初始化
         self._init_service()
 
-
-    ## ===============以下是赛程数据，球队映射数据，球员映射数据的数据加载============
-
     def _init_service(self) -> None:
-        """服务初始化"""
+        """服务初始化 - 初始化数据库"""
         try:
+            # 初始化数据库并确保数据同步
+            self.db_service.initialize(force_sync=self.config.auto_refresh)
 
-            # 1. 初始化联盟数据(球队和球员映射)
-            self._init_league_data()
-
-            # 2. 初始化赛程数据
-            self._init_schedule_data()
+            # 验证数据库是否包含必要数据
+            self._verify_database()
 
             # 初始化成功
             self._initialized = True
             self.logger.info("GameData服务初始化成功")
-            return
 
-        except InitializationError as e:
+        except Exception as e:
             self.logger.error(f"GameData服务初始化失败: {e}")
-            raise
-        except Exception as e:
-            self.logger.error(f"GameData服务初始化过程中发生未预期的错误: {e}")
-            raise InitializationError(f"GameData服务初始化过程中发生未预期的错误: {e}")
+            raise InitializationError(f"GameData服务初始化失败: {e}")
 
-    def _init_league_data(self) -> None:  # 修改为不返回 bool，失败直接抛出异常
-        """初始化联盟数据(球队和球员映射)"""
+    def _verify_database(self) -> None:
+        """验证数据库是否包含必要数据"""
         try:
-            # 验证球队映射服务 (Check Team Mapping Service)
-            test_team_id = self.league_provider.get_team_id_by_name(self.config.default_team)
+            # 验证球队和球员数据
+            team_repo = self.db_service.get_team_repository()
+            player_repo = self.db_service.get_player_repository()
+
+            test_team_id = team_repo.get_team_id_by_name(self.config.default_team)
             if not test_team_id:
-                self.logger.error("球队映射服务验证失败")
-                raise InitializationError("球队映射服务验证失败")
+                self.logger.error(f"未找到默认球队: {self.config.default_team}")
+                raise InitializationError(f"数据库中未找到默认球队")
 
-            # 验证球员映射服务 (Check Player Mapping Service)
-            test_player_id = self.league_provider.get_player_id_by_name(self.config.default_player)
+            test_player_id = player_repo.get_player_id_by_name(self.config.default_player)
             if not test_player_id:
-                self.logger.error("球员映射服务验证失败")
-                raise InitializationError("球员映射服务验证失败")
+                self.logger.error(f"未找到默认球员: {self.config.default_player}")
+                raise InitializationError(f"数据库中未找到默认球员")
 
-            self.logger.info("联盟球队/球员名字-ID映射初始化成功")
+            self.logger.info("数据库验证成功")
 
         except Exception as e:
-            self.logger.error(f"联盟球队/球员名字-ID映射初始化时出错: {e}")
-            raise InitializationError(f"联盟球队/球员名字-ID映射初始化失败: {e}")  # 抛出 InitializationError
-
-    def _init_schedule_data(self) -> None: # 修改为不返回 bool，失败直接抛出异常
-        """初始化赛程数据"""
-        try:
-            # 获取赛程数据
-            schedule_data = self.schedule_fetcher.get_schedule(
-                force_update=self.config.auto_refresh
-            )
-            if not schedule_data:
-                raise InitializationError("无法获取赛程数据")
-
-            # 解析赛程数据
-            self._schedule_df = self.schedule_parser.parse_raw_schedule(schedule_data)
-            if self._schedule_df.empty:
-                raise InitializationError("赛程数据解析失败或为空")
-
-            self.logger.info(f"成功加载赛程数据，包含本赛季 {len(self._schedule_df)} 场比赛")
-
-        except InitializationError as e:
-            self.logger.error(f"初始化赛程数据时出错: {e}")
-            raise e # 抛出 InitializationError
-        except Exception as e:
-            self.logger.error(f"初始化赛程数据时出错: {e}")
-            raise InitializationError(f"初始化赛程数据失败: {e}") # 捕捉其他异常并抛出 InitializationError
+            self.logger.error(f"数据库验证失败: {e}")
+            raise InitializationError(f"数据库验证失败: {e}")
 
     def _ensure_initialized(self) -> None:
         """确保服务已初始化"""
         if not self._initialized:
-            raise ServiceNotReadyError("服务尚未完成初始化")
-
-
-    ## ===========================
-    ## 3.获取到某一个GAME的完整数据，
-    ## ===========================
+            raise ServiceNotReadyError("GameData服务未完成初始化")
 
     def get_game(self, team: Optional[str] = None, date: Optional[str] = None) -> Optional[Game]:
         """获取完整的比赛数据
         数据流：数据源 -> GameFetcher -> GameParser -> GameModel -> GameDataService接口（get_game）。
-         """
-        self._ensure_initialized() # 确保服务已初始化
+        """
+        self._ensure_initialized()  # 确保服务已初始化
         try:
             team_name = team or self.config.default_team
             if not team_name:
@@ -199,7 +149,7 @@ class GameDataProvider:
     def _fetch_game_data_sync(self, game_id: str) -> Optional[Game]:
         """同步获取比赛数据（包括boxscore和playbyplay）"""
         try:
-            # 使用新的 get_game_data 方法获取完整比赛数据
+            # 使用get_game_data方法获取完整比赛数据
             game_data = self.game_fetcher.get_game_data(
                 game_id,
                 force_update=self.config.auto_refresh
@@ -230,22 +180,17 @@ class GameDataProvider:
     def _find_game_id(self, team_name: str, date_str: str) -> Optional[str]:
         """查找指定球队在特定日期的比赛ID"""
         try:
-            # 使用 LeagueDataProvider 获取球队ID
-            team_id = self.league_provider.get_team_id_by_name(team_name)
+            # 获取球队ID
+            team_id = self.db_service.get_team_id_by_name(team_name)
             if not team_id:
                 self.logger.warning(f"未找到球队: {team_name}")
                 return None
 
-            # 直接使用已经初始化好的赛程数据
-            if self._schedule_df is None:
-                self.logger.error("赛程数据未初始化")
-                return None
-
-            # 使用 schedule_parser 直接从现有的 DataFrame 获取比赛ID
-            game_id = self.schedule_parser.get_game_id(self._schedule_df, team_id, date_str)
+            # 直接使用数据库服务获取比赛ID
+            game_id = self.db_service.get_game_id(team_id, date_str)
 
             if game_id:
-                self.logger.info(f"找到 {team_name} 的在{date_str}比赛: {game_id}")
+                self.logger.info(f"找到 {team_name} 的比赛: {game_id}")
             else:
                 self.logger.warning(f"未找到 {team_name} 的比赛")
 
@@ -254,10 +199,6 @@ class GameDataProvider:
         except Exception as e:
             self.logger.error(f"查找比赛ID时出错: {e}", exc_info=True)
             return None
-
-    ## ===========================
-    ## 4.辅助方法
-    ## ===========================
 
     def clear_cache(self) -> None:
         """清理缓存数据"""
@@ -275,3 +216,13 @@ class GameDataProvider:
     def __exit__(self, exc_type: Optional[type], exc_val: Optional[Exception], exc_tb: Optional[Any]) -> None:
         """上下文管理器退出"""
         self.clear_cache()
+
+    def close(self):
+        """关闭资源"""
+        try:
+            self.clear_cache()
+            if hasattr(self.db_service, 'close'):
+                self.db_service.close()
+                self.logger.info("数据库服务已关闭")
+        except Exception as e:
+            self.logger.error(f"关闭资源时出错: {e}", exc_info=True)
