@@ -1,13 +1,11 @@
 import sqlite3
-from datetime import datetime
 from typing import Dict, List, Optional
 from utils.logger_handler import AppLogger
 
 
 class TeamRepository:
     """
-    球队数据访问对象
-    负责team表的CRUD操作
+    球队数据访问对象 - 专注于查询操作
     """
 
     def __init__(self, db_manager):
@@ -15,92 +13,126 @@ class TeamRepository:
         self.db_manager = db_manager
         self.logger = AppLogger.get_logger(__name__, app_name='nba')
 
-    def save_team(self, team_data: Dict) -> bool:
+    def get_team_id_by_name(self, name: str) -> Optional[int]:
         """
-        保存或更新球队信息
+        通过名称、缩写或slug获取球队ID(支持模糊匹配)
 
         Args:
-            team_data: 包含球队信息的字典，字段与API返回的TeamBackground保持一致
-                {
-                    'TEAM_ID': int,
-                    'ABBREVIATION': str,
-                    'NICKNAME': str,
-                    'YEARFOUNDED': int,
-                    'CITY': str,
-                    'ARENA': str,
-                    'ARENACAPACITY': str,
-                    'OWNER': str,
-                    'GENERALMANAGER': str,
-                    'HEADCOACH': str,
-                    'DLEAGUEAFFILIATION': str,
-                    'team_slug': str,  # 额外的URL友好标识符
-                }
+            name: 球队名称、缩写或slug
 
         Returns:
-            bool: 操作是否成功
+            Optional[int]: 球队ID，未找到时返回None
         """
+        if not name:
+            return None
+
         try:
-            conn = self.db_manager.conn
-            cursor = conn.cursor()
+            # 标准化输入
+            normalized_name = name.lower().strip()
+            cursor = self.db_manager.conn.cursor()
 
-            # 准备数据
-            team_id = team_data.get('TEAM_ID')
-            updated_at = datetime.now().isoformat()
+            # 1. 精确匹配 - 首先尝试精确匹配
+            cursor.execute("""
+            SELECT team_id FROM team 
+            WHERE LOWER(nickname) = ? OR 
+                  LOWER(city) = ? OR 
+                  LOWER(abbreviation) = ? OR 
+                  LOWER(team_slug) = ?
+            LIMIT 1
+            """, (normalized_name, normalized_name, normalized_name, normalized_name))
 
-            # 为team_slug字段生成值（如果不存在）
-            if 'team_slug' not in team_data and 'NICKNAME' in team_data:
-                team_data['team_slug'] = team_data['NICKNAME'].lower().replace(' ', '-')
+            result = cursor.fetchone()
+            if result:
+                return result['team_id']
 
-            # 检查是否已存在该球队
-            cursor.execute("SELECT TEAM_ID FROM team WHERE TEAM_ID = ?", (team_id,))
-            exists = cursor.fetchone()
+            # 2. 模糊匹配 - 如果精确匹配失败，尝试模糊匹配
+            name_pattern = f"%{normalized_name}%"
+            cursor.execute("""
+            SELECT team_id, nickname, city, abbreviation, team_slug FROM team 
+            WHERE LOWER(nickname) LIKE ? OR 
+                  LOWER(city) LIKE ? OR 
+                  LOWER(abbreviation) LIKE ? OR 
+                  LOWER(team_slug) LIKE ?
+            """, (name_pattern, name_pattern, name_pattern, name_pattern))
 
-            if exists:
-                # 更新现有记录
-                set_clause = ", ".join(
-                    [f"{key} = ?" for key in team_data.keys() if key != 'TEAM_ID']) + ", updated_at = ?"
-                values = [team_data[key] for key in team_data.keys() if key != 'TEAM_ID'] + [updated_at, team_id]
+            matches = cursor.fetchall()
+            if not matches:
+                return None
 
-                query = f"UPDATE team SET {set_clause} WHERE TEAM_ID = ?"
-                cursor.execute(query, values)
+            # 如果只有一个匹配，直接返回
+            if len(matches) == 1:
+                return matches[0]['team_id']
 
-                self.logger.debug(f"更新球队: {team_data.get('NICKNAME')} (ID: {team_id})")
-            else:
-                # 插入新记录
-                fields = list(team_data.keys()) + ['updated_at']
-                placeholders = ", ".join(["?"] * (len(fields)))
-                values = [team_data[key] for key in team_data.keys()] + [updated_at]
+            # 3. 如果有多个匹配，使用fuzzywuzzy进一步确定最佳匹配
+            from fuzzywuzzy import process
 
-                query = f"INSERT INTO team ({', '.join(fields)}) VALUES ({placeholders})"
-                cursor.execute(query, values)
+            # 为每个匹配创建一个包含所有可能匹配字段的组合字符串
+            match_strings = []
+            for match in matches:
+                # 组合所有字段，确保不是None
+                nickname = match['nickname'] or ""
+                city = match['city'] or ""
+                abbr = match['abbreviation'] or ""
+                slug = match['team_slug'] or ""
+                # 创建完整名称，如"Los Angeles Lakers"
+                full_name = f"{city} {nickname}".strip()
+                # 组合所有可能的匹配字符串
+                match_str = f"{full_name} {nickname} {city} {abbr} {slug}".lower()
+                match_strings.append((match_str, match['team_id']))
 
-                self.logger.info(f"新增球队: {team_data.get('NICKNAME')} (ID: {team_id})")
+            # 使用fuzzywuzzy找出最佳匹配
+            best_match = process.extractOne(normalized_name, [m[0] for m in match_strings])
+            if best_match and best_match[1] >= 50:  # 设置一个合理的匹配阈值
+                idx = [m[0] for m in match_strings].index(best_match[0])
+                return match_strings[idx][1]
 
-            conn.commit()
-            return True
+            # 如果没有找到合适的匹配
+            return None
 
         except sqlite3.Error as e:
-            self.logger.error(f"保存球队数据失败: {e}")
-            self.db_manager.conn.rollback()  # 直接使用db_manager的连接
-            return False
+            self.logger.error(f"通过名称查询球队ID失败: {e}")
+            return None
 
-    def batch_save_teams(self, teams_data: List[Dict]) -> int:
+    def get_team_name_by_id(self, team_id: int, name_type: str = 'full') -> Optional[str]:
         """
-        批量保存球队信息
+        通过ID获取球队名称
 
         Args:
-            teams_data: 球队数据列表
+            team_id: 球队ID
+            name_type: 返回的名称类型，可选值包括:
+                      'full' - 完整名称 (城市+昵称)
+                      'nickname' - 仅球队昵称
+                      'city' - 仅城市名
+                      'abbr' - 球队缩写
 
         Returns:
-            int: 成功插入/更新的记录数
+            Optional[str]: 球队名称，未找到时返回None
         """
-        success_count = 0
-        for team_data in teams_data:
-            if self.save_team(team_data):
-                success_count += 1
+        try:
+            cursor = self.db_manager.conn.cursor()
+            cursor.execute("""
+            SELECT nickname, city, abbreviation
+            FROM team
+            WHERE team_id = ?
+            """, (team_id,))
 
-        self.logger.info(f"批量保存球队数据: {success_count}/{len(teams_data)} 成功")
-        return success_count
+            team = cursor.fetchone()
+            if not team:
+                return None
+
+            # 根据请求的名称类型返回不同格式
+            if name_type.lower() == 'nickname':
+                return team['nickname']
+            elif name_type.lower() == 'city':
+                return team['city']
+            elif name_type.lower() == 'abbr':
+                return team['abbreviation']
+            else:  # 默认返回完整名称
+                return f"{team['city']} {team['nickname']}"
+
+        except sqlite3.Error as e:
+            self.logger.error(f"通过ID获取球队名称失败: {e}")
+            return None
 
     def get_team_by_id(self, team_id: int) -> Optional[Dict]:
         """
@@ -114,7 +146,7 @@ class TeamRepository:
         """
         try:
             cursor = self.db_manager.conn.cursor()
-            cursor.execute("SELECT * FROM team WHERE TEAM_ID = ?", (team_id,))
+            cursor.execute("SELECT * FROM team WHERE team_id = ?", (team_id,))
             team = cursor.fetchone()
 
             if team:
@@ -137,7 +169,7 @@ class TeamRepository:
         """
         try:
             cursor = self.db_manager.conn.cursor()
-            cursor.execute("SELECT * FROM team WHERE ABBREVIATION = ? COLLATE NOCASE", (abbr,))
+            cursor.execute("SELECT * FROM team WHERE abbreviation = ? COLLATE NOCASE", (abbr,))
             team = cursor.fetchone()
 
             if team:
@@ -164,8 +196,8 @@ class TeamRepository:
 
             cursor.execute('''
             SELECT * FROM team 
-            WHERE NICKNAME LIKE ? COLLATE NOCASE 
-               OR CITY LIKE ? COLLATE NOCASE
+            WHERE nickname LIKE ? COLLATE NOCASE 
+               OR city LIKE ? COLLATE NOCASE
             LIMIT 1
             ''', (name_pattern, name_pattern))
 
@@ -188,7 +220,7 @@ class TeamRepository:
         """
         try:
             cursor = self.db_manager.conn.cursor()
-            cursor.execute("SELECT * FROM team ORDER BY CITY, NICKNAME")
+            cursor.execute("SELECT * FROM team ORDER BY city, nickname")
 
             teams = cursor.fetchall()
             return [dict(team) for team in teams]
@@ -196,29 +228,6 @@ class TeamRepository:
         except sqlite3.Error as e:
             self.logger.error(f"获取所有球队数据失败: {e}")
             return []
-
-    def save_team_logo(self, team_id: int, logo_data: bytes) -> bool:
-        """
-        保存球队logo的二进制数据
-
-        Args:
-            team_id: 球队ID
-            logo_data: 二进制图像数据
-
-        Returns:
-            bool: 操作是否成功
-        """
-        try:
-            cursor = self.db_manager.conn.cursor()
-            cursor.execute("UPDATE team SET logo = ? WHERE TEAM_ID = ?",
-                           (logo_data, team_id))
-            self.db_manager.conn.commit()
-            self.logger.debug(f"保存球队(ID:{team_id})logo成功")
-            return True
-        except sqlite3.Error as e:
-            self.logger.error(f"保存球队logo失败: {e}")
-            self.db_manager.conn.rollback()
-            return False
 
     def get_team_logo(self, team_id: int) -> Optional[bytes]:
         """
@@ -232,47 +241,12 @@ class TeamRepository:
         """
         try:
             cursor = self.db_manager.conn.cursor()
-            cursor.execute("SELECT logo FROM team WHERE TEAM_ID = ?", (team_id,))
+            cursor.execute("SELECT logo FROM team WHERE team_id = ?", (team_id,))
             result = cursor.fetchone()
             return result['logo'] if result else None
         except sqlite3.Error as e:
             self.logger.error(f"获取球队logo失败: {e}")
             return None
-
-    def sync_team_logos(self) -> int:
-        """
-        同步所有球队的logo
-
-        Returns:
-            int: 成功同步的logo数量
-        """
-        import requests
-
-        success_count = 0
-        teams = self.get_all_teams()
-        for team in teams:
-            team_id = team['TEAM_ID']
-
-            # 尝试不同的logo格式
-            logo_urls = [
-                f"https://cdn.nba.com/logos/nba/{team_id}/global/L/logo.svg",
-                f"https://cdn.nba.com/logos/nba/{team_id}/global/L/logo.png"
-            ]
-
-            for url in logo_urls:
-                try:
-                    response = requests.get(url, timeout=10)
-                    if response.status_code == 200:
-                        # 成功获取logo
-                        logo_data = response.content
-                        if self.save_team_logo(team_id, logo_data):
-                            success_count += 1
-                            self.logger.info(f"同步球队(ID:{team_id})logo成功")
-                            break  # 成功获取一个格式后跳出内循环
-                except Exception as e:
-                    self.logger.error(f"获取球队(ID:{team_id})logo失败: {e}")
-
-        return success_count
 
     def has_team_details(self, team_id: int) -> bool:
         """
@@ -286,9 +260,9 @@ class TeamRepository:
         """
         try:
             cursor = self.db_manager.conn.cursor()
-            cursor.execute("SELECT ARENA FROM team WHERE TEAM_ID = ?", (team_id,))
+            cursor.execute("SELECT arena FROM team WHERE team_id = ?", (team_id,))
             result = cursor.fetchone()
-            return result is not None and result['ARENA'] is not None
+            return result is not None and result['arena'] is not None
         except sqlite3.Error as e:
             self.logger.error(f"检查球队详细信息失败: {e}")
             return False

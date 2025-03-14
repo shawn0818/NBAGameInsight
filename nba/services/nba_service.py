@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 import time
 
+from nba.database.db_service import DatabaseService
 from nba.services.game_data_service import GameDataProvider, InitializationError, GameDataConfig
 from nba.services.game_video_service import GameVideoService, VideoConfig
 from nba.services.game_charts_service import GameChartsService, ChartConfig
@@ -39,8 +40,8 @@ class NBAServiceConfig:
         """配置验证与初始化"""
         # 验证缓存大小
         if not (32 <= self.cache_size <= 512):
-            raise ValueError("Cache size must be between 32 and 512")     
-        # 验证必填参数
+            raise ValueError("Cache size must be between 32 and 512")
+            # 验证必填参数
         if not self.default_team:
             raise ValueError("default_team cannot be empty")
         if not self.default_player:
@@ -118,12 +119,12 @@ class ServiceHealth:
             bool: 服务状态为AVAILABLE时返回True，否则返回False
         """
         return self.status == ServiceStatus.AVAILABLE
-    
+
     def update_status(self, new_status: ServiceStatus, error_message: Optional[str] = None) -> None:
         """更新服务状态
-        
+
         更新服务状态并刷新最后检查时间。如果提供了错误信息，则同时更新错误信息。
-        
+
         Args:
             new_status: 新的服务状态
             error_message: 可选的错误信息
@@ -215,13 +216,16 @@ class NBAService(BaseService):
             data_config: 数据服务配置
             video_config: 视频服务配置
             chart_config: 图表服务配置
+            video_process_config: 视频处理器配置
 
         Raises:
             InitializationError: 当核心服务初始化失败时抛出
         """
         try:
+            # 初始化数据库服务 - 将在GameDataProvider中使用
+            database_service = DatabaseService()
 
-            # 初始化GameData服务配置（核心服务）
+            # 初始化GameData服务配置
             data_config = data_config or GameDataConfig(
                 default_team=self.config.default_team,
                 default_player=self.config.default_player,
@@ -230,10 +234,10 @@ class NBAService(BaseService):
                 auto_refresh=self.config.auto_refresh
             )
 
-            #初始化视频下载配置
+            # 初始化视频下载配置
             video_config = video_config or VideoConfig()
 
-            #初始化chartservice配置
+            # 初始化chart服务配置
             chart_config = chart_config or ChartConfig()
 
             # 初始化视频合并转化处理器
@@ -241,37 +245,52 @@ class NBAService(BaseService):
                 self._services['video_processor'] = VideoProcessor(video_process_config)
                 self._update_service_status('video_processor', ServiceStatus.AVAILABLE)
 
-            # 服务初始化映射
-            service_configs = {
-                'data': (GameDataProvider, data_config),
-                'chart': (GameChartsService, chart_config),
-                'videodownloader': (GameVideoService, video_config),
-                'video_processor': (VideoProcessor, video_process_config)
-            }
+            # 首先初始化数据服务，因为其他服务可能依赖它
+            try:
+                self._services['data'] = GameDataProvider(
+                    config=data_config,
+                    database_service=database_service
+                )
+                self._update_service_status('data', ServiceStatus.AVAILABLE)
+            except Exception as e:
+                self.logger.error(f"数据服务初始化失败: {str(e)}")
+                self._update_service_status('data', ServiceStatus.ERROR, str(e))
+                # 如果数据服务初始化失败，可能需要提前结束
+                raise InitializationError(f"核心数据服务初始化失败: {str(e)}")
 
-            # 按照预定义顺序初始化服务
-            for service_name, (service_class, service_config) in service_configs.items():
-                self._init_service(service_name, service_class, service_config)
+            # 初始化图表服务 -
+            try:
+                self._services['chart'] = GameChartsService(chart_config)
+                self._update_service_status('chart', ServiceStatus.AVAILABLE)
+            except Exception as e:
+                self.logger.error(f"图表服务初始化失败: {str(e)}")
+                self._update_service_status('chart', ServiceStatus.ERROR, str(e))
+
+            # 初始化视频下载服务
+            try:
+                self._services['videodownloader'] = GameVideoService(video_config)
+                self._update_service_status('videodownloader', ServiceStatus.AVAILABLE)
+            except Exception as e:
+                self.logger.error(f"视频下载服务初始化失败: {str(e)}")
+                self._update_service_status('videodownloader', ServiceStatus.ERROR, str(e))
 
         except Exception as e:
             self.logger.error(f"服务初始化失败: {str(e)}")
             raise InitializationError(f"服务初始化失败: {str(e)}")
 
-
     @property
     def data_service(self) -> Optional[GameDataProvider]:
         """获取数据服务实例
-        
+
         Returns:
             Optional[GameDataProvider]: 数据服务实例，如果服务不可用则返回None
         """
         return self._get_service('data')
 
-
     @property
     def chart_service(self) -> Optional[GameChartsService]:
         """获取图表服务实例
-        
+
         Returns:
             Optional[GameChartsService]: 图表服务实例，如果服务不可用则返回None
         """
@@ -280,7 +299,7 @@ class NBAService(BaseService):
     @property
     def video_service(self) -> Optional[GameVideoService]:
         """获取视频服务实例
-        
+
         Returns:
             Optional[GameVideoService]: 视频服务实例，如果服务不可用则返回None
         """
@@ -289,12 +308,11 @@ class NBAService(BaseService):
     @property
     def video_processor(self) -> Optional[VideoProcessor]:
         """获取视频处理器实例
-        
+
         Returns:
             Optional[VideoProcessor]: 视频处理器实例，如果服务不可用则返回None
         """
         return self._get_service('video_processor')
-
 
     def _init_service(self,
                       name: str,
@@ -314,7 +332,7 @@ class NBAService(BaseService):
         """
         try:
             # 处理不需要配置的服务
-            if service_config is None :
+            if service_config is None:
                 self._services[name] = service_class()
             else:
                 self._services[name] = service_class(service_config)
@@ -380,7 +398,8 @@ class NBAService(BaseService):
             return None
 
         try:
-            return data_service.league_provider.get_team_id_by_name(team_name)
+            # 通过数据库服务获取球队ID
+            return data_service.db_service.get_team_id_by_name(team_name)
         except Exception as e:
             self.logger.error(f"获取球队ID失败: {str(e)}")
             return None
@@ -402,7 +421,8 @@ class NBAService(BaseService):
             return None
 
         try:
-            return data_service.league_provider.get_player_id_by_name(player_name)
+            # 通过数据库服务获取球员ID
+            return data_service.db_service.get_player_id_by_name(player_name)
         except Exception as e:
             self.logger.error(f"获取球员ID失败: {str(e)}")
             return None
@@ -529,7 +549,7 @@ class NBAService(BaseService):
                 return {}
 
             if not merge:
-                return  videos_dict
+                return videos_dict
 
             # 2. 合并视频
             output_filename = f"team_{team_id}_{game_id}.mp4"
@@ -545,7 +565,7 @@ class NBAService(BaseService):
             if merged_video:
                 return {"merged": merged_video}
             else:
-                return  videos_dict
+                return videos_dict
 
         except Exception as e:
             self.logger.error(f"获取球队集锦失败: {str(e)}", exc_info=True)
@@ -728,8 +748,8 @@ class NBAService(BaseService):
             # 设置特定的context_measures，包含进球和助攻
             context_measures = {
                 ContextMeasure.FGM,  # 进球
-                ContextMeasure.AST,   # 助攻
-                ContextMeasure.BLK,   #盖帽
+                ContextMeasure.AST,  # 助攻
+                ContextMeasure.BLK,  # 盖帽
             }
 
             # 直接调用get_player_highlights方法，设置为只生成GIF
@@ -737,8 +757,8 @@ class NBAService(BaseService):
                 player_name=player_name,
                 context_measures=context_measures,
                 output_format="gif",  # 只生成GIF，不生成视频
-                merge=False,          # 不需要合并视频
-                keep_originals=True   # 保留原始视频文件
+                merge=False,  # 不需要合并视频
+                keep_originals=True  # 保留原始视频文件
             )
 
             # 从结果中提取GIF路径
@@ -760,7 +780,7 @@ class NBAService(BaseService):
                          videos: Dict[str, VideoAsset],
                          game_id: str,
                          player_id: Optional[int] = None,
-                         team_id: Optional[int] = None,
+                         team_id: Optional[int] = None,  # 保留用于API一致性，当前实现未直接使用
                          context_measure: Optional[str] = None,
                          videos_type_map: Optional[Dict[str, str]] = None,  # 新增：类型映射参数
                          force_reprocess: bool = False) -> Dict[str, Path]:
@@ -1256,7 +1276,7 @@ class NBAService(BaseService):
             self.logger.info(f"检测到已存在的处理结果: {existing_files[0]}")
             return existing_files[0]
 
-        # 获取球队投篮数据 - 修正：传递 team_id 参数
+        # 获取球队投篮数据 - 传递 team_id 参数
         team_shots = game.get_team_shot_data(team_id)
 
         # 调用图表服务绘制球队投篮图
@@ -1275,7 +1295,6 @@ class NBAService(BaseService):
             self.logger.error("球队投篮图生成失败")
             return None
 
-
     ## 4.4资源管理 ==============
     def clear_cache(self) -> None:
         """清理所有服务的缓存"""
@@ -1289,9 +1308,13 @@ class NBAService(BaseService):
     def close(self) -> None:
         """关闭服务并清理资源"""
         self.clear_cache()
-        for service in self._services.values():
-            if hasattr(service, 'close'):
-                service.close()
+        for service_name, service in self._services.items():
+            try:
+                if hasattr(service, 'close'):
+                    service.close()
+                    self.logger.info(f"{service_name}服务已关闭")
+            except Exception as e:
+                self.logger.error(f"关闭{service_name}服务失败: {str(e)}")
 
     def __enter__(self) -> 'NBAService':
         """上下文管理器入口
