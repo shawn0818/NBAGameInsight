@@ -11,7 +11,7 @@ from nba.services.game_data_service import GameDataProvider, InitializationError
 from nba.services.game_video_service import GameVideoService, VideoConfig
 from nba.services.game_charts_service import GameChartsService, ChartConfig
 from nba.models.video_model import ContextMeasure, VideoAsset
-from config.nba_config import NBAConfig
+from config import NBAConfig
 from utils.logger_handler import AppLogger
 from utils.video_converter import VideoProcessConfig, VideoProcessor
 
@@ -231,7 +231,7 @@ class NBAService(BaseService):
                 default_player=self.config.default_player,
                 date_str=self.config.date_str,
                 cache_size=self.config.cache_size,
-                auto_refresh=self.config.auto_refresh
+                auto_refresh=False  # 强制设置为False，除非显式指定
             )
 
             # 初始化视频下载配置

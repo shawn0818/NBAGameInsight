@@ -1,10 +1,10 @@
 import sqlite3
-import requests
 from datetime import datetime
 from typing import Dict, List, Optional
 from nba.fetcher.league_fetcher import LeagueFetcher
 from nba.fetcher.team_fetcher import TeamFetcher
 from utils.logger_handler import AppLogger
+from utils.http_handler import  HTTPRequestManager
 
 
 class TeamSync:
@@ -201,17 +201,13 @@ class TeamSync:
     def _sync_logos_to_db(self, teams: List[Dict]) -> int:
         """
         同步所有球队的logo到数据库
-
-        Args:
-            teams: 球队列表
-
-        Returns:
-            int: 成功同步的logo数量
         """
         success_count = 0
 
+        # 创建HTTPRequestManager实例
+        http_manager = HTTPRequestManager(timeout=10)
+
         for team in teams:
-            # 修改为使用小写键 "team_id"
             team_id = team.get('team_id')
             if not team_id:
                 continue
@@ -224,14 +220,13 @@ class TeamSync:
 
             for url in logo_urls:
                 try:
-                    response = requests.get(url, timeout=10)
-                    if response.status_code == 200:
-                        # 成功获取logo
-                        logo_data = response.content
+                    # 使用实例调用方法
+                    logo_data = http_manager.make_binary_request(url)
+                    if logo_data:
                         if self._import_team_logo(team_id, logo_data):
                             success_count += 1
                             self.logger.info(f"同步球队(ID:{team_id})logo成功")
-                            break  # 成功获取一个格式后跳出内循环
+                            break
                 except Exception as e:
                     self.logger.error(f"获取球队(ID:{team_id})logo失败: {e}")
 

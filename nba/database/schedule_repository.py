@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from typing import Dict, List, Optional, Union
 from utils.logger_handler import AppLogger
 
@@ -180,7 +180,8 @@ class ScheduleRepository:
         """
         try:
             cursor = self.db_manager.conn.cursor()
-            now = datetime.utcnow().isoformat()
+            # 使用 datetime.now(timezone.utc) 替代 datetime.utcnow()
+            now = datetime.now(timezone.utc).isoformat()
 
             cursor.execute('''
             SELECT * FROM schedule 
@@ -210,7 +211,8 @@ class ScheduleRepository:
         """
         try:
             cursor = self.db_manager.conn.cursor()
-            now = datetime.utcnow().isoformat()
+            # 使用 datetime.now(timezone.utc) 替代 datetime.utcnow()
+            now = datetime.now(timezone.utc).isoformat()
 
             cursor.execute('''
             SELECT * FROM schedule 

@@ -9,7 +9,7 @@ from nba.fetcher.game_fetcher import GameFetcher
 from nba.parser.game_parser import GameDataParser
 from nba.models.game_model import Game
 
-from config.nba_config import NBAConfig
+from config import NBAConfig
 from utils.logger_handler import AppLogger
 
 
@@ -43,7 +43,7 @@ class GameDataConfig:
     date_str: str = "last"
     cache_size: int = 128
     cache_dir: Path = NBAConfig.PATHS.CACHE_DIR
-    auto_refresh: bool = True
+    auto_refresh: bool = False  # 默认不自动刷新数据
     use_pydantic_v2: bool = True
 
 
@@ -72,63 +72,21 @@ class GameDataProvider:
         # 数据库服务初始化
         self.db_service = database_service or DatabaseService()
 
-        #比赛的获取与解析实例化
+        # 初始化数据库 - 不传递force_sync参数，让数据库服务自己判断是否是首次运行
+        self.db_service.initialize()
+
+        # 比赛的获取与解析实例化
         self.game_fetcher = game_fetcher or GameFetcher()
         self.game_parser = game_parser or GameDataParser()
 
-        # 启动初始化
-        self._init_service()
-
-    def _init_service(self) -> None:
-        """服务初始化 - 初始化数据库"""
-        try:
-            # 初始化数据库并确保数据同步
-            self.db_service.initialize(force_sync=self.config.auto_refresh)
-
-            # 验证数据库是否包含必要数据
-            self._verify_database()
-
-            # 初始化成功
-            self._initialized = True
-            self.logger.info("GameData服务初始化成功")
-
-        except Exception as e:
-            self.logger.error(f"GameData服务初始化失败: {e}")
-            raise InitializationError(f"GameData服务初始化失败: {e}")
-
-    def _verify_database(self) -> None:
-        """验证数据库是否包含必要数据"""
-        try:
-            # 验证球队和球员数据
-            team_repo = self.db_service.get_team_repository()
-            player_repo = self.db_service.get_player_repository()
-
-            test_team_id = team_repo.get_team_id_by_name(self.config.default_team)
-            if not test_team_id:
-                self.logger.error(f"未找到默认球队: {self.config.default_team}")
-                raise InitializationError(f"数据库中未找到默认球队")
-
-            test_player_id = player_repo.get_player_id_by_name(self.config.default_player)
-            if not test_player_id:
-                self.logger.error(f"未找到默认球员: {self.config.default_player}")
-                raise InitializationError(f"数据库中未找到默认球员")
-
-            self.logger.info("数据库验证成功")
-
-        except Exception as e:
-            self.logger.error(f"数据库验证失败: {e}")
-            raise InitializationError(f"数据库验证失败: {e}")
-
-    def _ensure_initialized(self) -> None:
-        """确保服务已初始化"""
-        if not self._initialized:
-            raise ServiceNotReadyError("GameData服务未完成初始化")
+        # 标记初始化成功
+        self._initialized = True
+        self.logger.info("GameData服务初始化成功")
 
     def get_game(self, team: Optional[str] = None, date: Optional[str] = None) -> Optional[Game]:
         """获取完整的比赛数据
         数据流：数据源 -> GameFetcher -> GameParser -> GameModel -> GameDataService接口（get_game）。
         """
-        self._ensure_initialized()  # 确保服务已初始化
         try:
             team_name = team or self.config.default_team
             if not team_name:

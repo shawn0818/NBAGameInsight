@@ -20,7 +20,7 @@ from typing import  List
 from abc import ABC, abstractmethod
 from dotenv import load_dotenv
 
-from config.nba_config import NBAConfig
+from config import NBAConfig
 # 导入业务逻辑函数和服务
 from nba.services.nba_service import NBAService, NBAServiceConfig, ServiceStatus
 from nba.services.game_video_service import VideoConfig

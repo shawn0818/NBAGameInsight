@@ -19,7 +19,7 @@ class DatabaseService:
 
         # 如果未提供db_path，则使用配置中的路径
         if db_path is None:
-            from config.nba_config import NBAConfig
+            from config import NBAConfig
             db_path = str(NBAConfig.DATABASE.get_db_path(env))
 
         # 导入并创建数据库管理器
@@ -69,20 +69,20 @@ class DatabaseService:
             self.logger.error(f"同步当前赛季赛程数据失败: {e}")
             return False
 
-    def sync_new_season(self, season: Optional[str] = None, force_update: bool = False) -> bool:
+    def sync_new_season(self, season: Optional[str] = None, force_update: bool = True) -> bool:
         """
         新赛季开始时更新所有数据（球队、球员、赛程）
         建议频率：一年调用1-2次，通常在赛季初或交易截止日之后
 
         Args:
             season: 赛季标识，如"2024-25"，默认使用当前赛季
-            force_update: 是否强制更新
+            force_update: 是否强制更新，默认为True以确保全量更新
 
         Returns:
             bool: 同步是否成功
         """
         try:
-            result = self.sync_manager.new_season_sync(season=season)
+            result = self.sync_manager.new_season_sync(season=season, force_update=force_update)
             return result.get("status") == "success"
         except Exception as e:
             self.logger.error(f"同步新赛季数据失败: {e}")
@@ -104,7 +104,6 @@ class DatabaseService:
             bool: 同步是否成功
         """
         try:
-            result = {"status": "failed"}
 
             if data_type.lower() == 'teams':
                 result = self.sync_manager.sync_teams(force_update=force_update)

@@ -3,7 +3,7 @@ import random
 import time
 from datetime import timedelta
 from .base_fetcher import BaseNBAFetcher, BaseRequestConfig, BaseCacheConfig
-from config.nba_config import NBAConfig
+from config import NBAConfig
 
 
 class ScheduleConfig:

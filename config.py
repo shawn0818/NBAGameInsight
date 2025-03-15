@@ -1,11 +1,22 @@
-# config/nba_config.py
+# ./config.py
 
 from pathlib import Path
 
 
 def get_project_root() -> Path:
-    """获取项目根目录"""
-    return Path(__file__).parent.parent
+    """获取项目根目录（查找包含.git/.env/pyproject.toml等标记文件的目录）"""
+    current = Path(__file__).parent.resolve()
+
+    # 向上查找直到找到标记文件
+    marker_files = ['.gitignore', '.env', 'main.py']
+
+    while current != current.parent:  # 防止到达文件系统根目录
+        if any((current / marker).exists() for marker in marker_files):
+            return current
+        current = current.parent
+
+    # 如果没找到标记文件，返回默认目录
+    return Path(__file__).parent.resolve()
 
 
 class NBAConfig:
