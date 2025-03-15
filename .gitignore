@@ -5,6 +5,7 @@
 
 # 忽略目录 build/
 .vscode/
+.idea/
 pictures/
 video_gif/
 data/
