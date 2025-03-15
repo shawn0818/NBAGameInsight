@@ -9,9 +9,9 @@ pictures/
 video_gif/
 data/
 storage/
-/test/
 __pycache__/
 
-# 忽略特定文件 foo.txt
-test.py
-
+# 忽略所有test开头的文件和目录
+test*
+**/test*/
+**/Test*/
