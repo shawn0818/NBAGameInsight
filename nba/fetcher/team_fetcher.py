@@ -1,8 +1,9 @@
+import time
 from typing import Dict, Optional, Any
 from datetime import timedelta
 import requests
 from .base_fetcher import BaseNBAFetcher, BaseRequestConfig, BaseCacheConfig
-from config.nba_config import NBAConfig
+from config import NBAConfig
 
 
 class TeamConfig:

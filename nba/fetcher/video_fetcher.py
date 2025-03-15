@@ -1,10 +1,8 @@
 from datetime import timedelta
-from typing import Optional, Dict, Any, List
-import json
-import logging
-from config.nba_config import NBAConfig
+from typing import Optional, Dict, Any
+from config import NBAConfig
 from .base_fetcher import BaseNBAFetcher, BaseRequestConfig, BaseCacheConfig
-from nba.models.video_model import ContextMeasure, VideoResponse
+from nba.models.video_model import ContextMeasure
 
 
 class VideoConfig:

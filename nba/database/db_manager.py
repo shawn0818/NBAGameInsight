@@ -1,7 +1,7 @@
 import sqlite3
 import os
 from utils.logger_handler import AppLogger
-from config.nba_config import NBAConfig
+from config import NBAConfig
 
 
 class DBManager:
@@ -93,8 +93,7 @@ class DBManager:
                 roster_status INTEGER,             -- 对应API中的ROSTERSTATUS
                 from_year TEXT,                    -- 对应API中的FROM_YEAR
                 to_year TEXT,                      -- 对应API中的TO_YEAR
-                player_code TEXT,                  -- 对应API中的PLAYERCODE
-                player_slug TEXT,                  -- 对应API中的PLAYER_SLUG
+                player_slug TEXT,                  -- 对应API中的PLAYERCODE
                 team_id INTEGER,                   -- 对应API中的TEAM_ID
                 games_played_flag TEXT,            -- 对应API中的GAMES_PLAYED_FLAG
                 updated_at TIMESTAMP,

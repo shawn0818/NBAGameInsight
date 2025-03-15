@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from scipy.stats import gaussian_kde
 
-from config.nba_config import NBAConfig
+from config import NBAConfig
 from utils.logger_handler import AppLogger
 import time
 from typing import Optional, Dict, Any, Tuple, Union, List

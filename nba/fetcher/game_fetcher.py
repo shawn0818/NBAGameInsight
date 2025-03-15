@@ -3,7 +3,7 @@ from typing import Dict, Optional, Any, Tuple
 from datetime import timedelta
 from enum import Enum
 from .base_fetcher import BaseNBAFetcher, BaseRequestConfig, BaseCacheConfig
-from config.nba_config import  NBAConfig
+from config import  NBAConfig
 
 
 class GameStatusEnum(Enum):

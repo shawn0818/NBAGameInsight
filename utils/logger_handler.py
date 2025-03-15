@@ -4,7 +4,7 @@ from pathlib import Path
 from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
 from typing import Optional, Union
 from functools import lru_cache
-from config.nba_config import NBAConfig  # 这里仍然导入 NBAConfig 作为默认配置
+from config import NBAConfig  # 这里仍然导入 NBAConfig 作为默认配置
 
 
 class AppLogger:
@@ -151,7 +151,7 @@ class AppLogger:
         return logger
 
     @classmethod
-    def set_debug_mode(cls, debug: bool = True) -> None:
+    def set_debug_mode(cls) -> None:
         """设置调试模式"""
         cls.get_logger.cache_clear()
 

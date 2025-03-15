@@ -7,7 +7,7 @@ import random
 from nba.fetcher.video_fetcher import VideoFetcher
 from nba.models.video_model import VideoAsset, ContextMeasure
 from nba.parser.video_parser import VideoParser
-from config.nba_config import NBAConfig
+from config import NBAConfig
 from utils.logger_handler import AppLogger
 from utils.http_handler import HTTPRequestManager
 

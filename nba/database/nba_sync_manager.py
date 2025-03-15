@@ -389,13 +389,14 @@ class NBASyncManager:
                 "results": results
             }
 
-    def new_season_sync(self, season=None):
+    def new_season_sync(self, season=None, force_update=True):
         """
         新赛季开始时的同步操作
         更新球队和球员数据
 
         Args:
             season: 赛季标识，如"2024-25"，默认使用当前赛季
+            force_update: 是否强制更新，默认为True以确保全量更新
         """
         season = season or self.schedule_sync.schedule_fetcher.schedule_config.CURRENT_SEASON
         start_time = datetime.now().isoformat()
@@ -410,19 +411,19 @@ class NBASyncManager:
         try:
             # 1. 更新球队数据（相对稳定，但可能有变更）
             self.logger.info("更新球队数据...")
-            team_result = self.sync_teams(force_update=True)  # 强制更新以确保数据为最新
+            team_result = self.sync_teams(force_update=force_update)
             results["teams"] = team_result.get("result", team_result)
 
             time.sleep(2)  # 防止API限流
 
             # 2. 更新球员数据（新秀加入，球员转会等）
             self.logger.info("更新球员数据...")
-            player_result = self.sync_players(force_update=True)  # 强制更新以包含新球员
+            player_result = self.sync_players(force_update=force_update)
             results["players"] = player_result.get("result", player_result)
 
             # 3. 同步新赛季赛程
             self.logger.info(f"同步 {season} 赛季赛程...")
-            schedule_result = self.sync_current_season(force_update=True)
+            schedule_result = self.sync_current_season(force_update=force_update)
             results["schedule"] = schedule_result.get("result", schedule_result)
 
             # 计算总体状态
@@ -789,8 +790,16 @@ class NBASyncManager:
                 cursor.execute("DELETE FROM sync_progress WHERE sync_type = ?", (sync_type,))
                 self.logger.info(f"已重置同步进度: {sync_type}")
             else:
-                cursor.execute("DELETE FROM sync_progress")
-                self.logger.info("已重置所有同步进度")
+                # 先检查表中的记录数量
+                cursor.execute("SELECT COUNT(*) FROM sync_progress")
+                count = cursor.fetchone()[0]
+
+                # 记录将要删除的记录数量
+                self.logger.warning(f"准备删除所有同步进度记录，共 {count} 条")
+
+                # 执行删除操作 - 这是有意清空整个表的行为
+                cursor.execute("DELETE FROM sync_progress")  # 警告: 有意清空表的操作
+                self.logger.info(f"已重置所有同步进度，共删除 {count} 条记录")
 
             self.db_manager.conn.commit()
             return True

@@ -17,6 +17,7 @@ class PlayerRepository:
     def get_player_id_by_name(self, name: str) -> Optional[int]:
         """
         通过球员名称查询ID，支持模糊匹配
+        增强了单个名字或姓氏的匹配能力
 
         Args:
             name: 球员名称(全名、姓、名、slug等)
@@ -32,7 +33,7 @@ class PlayerRepository:
             normalized_name = name.lower().strip()
             cursor = self.db_manager.conn.cursor()
 
-            # 1. 精确匹配 - 首先尝试精确匹配
+            # 1. 精确匹配 - 首先尝试精确匹配全名
             cursor.execute("""
             SELECT person_id FROM player 
             WHERE LOWER(display_first_last) = ? OR 
@@ -45,7 +46,37 @@ class PlayerRepository:
             if result:
                 return result['person_id']
 
-            # 2. 模糊匹配 - 如果精确匹配失败，尝试模糊匹配
+            # 2. 如果输入是单个词（可能是姓或名），尝试单独匹配
+            name_parts = normalized_name.split()
+            if len(name_parts) == 1:
+                single_term = name_parts[0]
+
+                # 尝试匹配姓氏或名字（作为单独一部分）
+                cursor.execute("""
+                SELECT person_id, display_first_last 
+                FROM player
+                WHERE 
+                    LOWER(display_first_last) LIKE ? OR
+                    LOWER(display_last_comma_first) LIKE ?
+                """, (f"% {single_term}", f"{single_term},%"))
+
+                matches = cursor.fetchall()
+                if matches:
+                    # 如果只有一个匹配结果，直接返回
+                    if len(matches) == 1:
+                        return matches[0]['person_id']
+
+                    # 对于知名球员，可以设置优先级
+                    for match in matches:
+                        full_name = match['display_first_last'].lower()
+                        # 检查是否是知名球员（这里可以添加更多知名球员）
+                        if (single_term == 'curry' and 'stephen curry' in full_name) or \
+                                (single_term == 'james' and 'lebron james' in full_name) or \
+                                (single_term == 'durant' and 'kevin durant' in full_name) or \
+                                (single_term == 'antetokounmpo' and 'giannis antetokounmpo' in full_name):
+                            return match['person_id']
+
+            # 3. 常规模糊匹配 - 如果前面的匹配都失败，尝试模糊匹配
             name_pattern = f"%{normalized_name}%"
             cursor.execute("""
             SELECT person_id, display_first_last, display_last_comma_first, player_slug FROM player 
@@ -62,7 +93,7 @@ class PlayerRepository:
             if len(matches) == 1:
                 return matches[0]['person_id']
 
-            # 3. 如果有多个匹配，使用fuzzywuzzy进一步确定最佳匹配
+            # 4. 如果有多个匹配，使用fuzzywuzzy进一步确定最佳匹配
             from fuzzywuzzy import process
 
             # 为每个匹配创建一个包含所有可能匹配字段的组合字符串

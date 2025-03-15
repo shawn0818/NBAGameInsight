@@ -202,6 +202,56 @@ class HTTPRequestManager:
             self.logger.error(f"请求失败: {str(e)}")
             return None
 
+    # 在http_handler.py中添加新方法
+    def make_binary_request(self, url: str, method: str = 'GET') -> Optional[bytes]:
+        """发送HTTP请求并返回二进制响应内容"""
+        if not url:
+            raise ValueError("URL cannot be empty")
+
+        try:
+            retry_count = 0
+            while True:
+                try:
+                    self._wait_for_rate_limit()
+
+                    response = self.session.request(
+                        method=method.upper(),
+                        url=url,
+                        timeout=self.timeout,
+                        headers=self.headers
+                    )
+
+                    if not response.ok:
+                        should_retry, wait_time = self.retry_strategy.should_retry(
+                            status_code=response.status_code,
+                            retry_count=retry_count
+                        )
+
+                        if should_retry:
+                            retry_count += 1
+                            time.sleep(wait_time)
+                            continue
+
+                        response.raise_for_status()
+
+                    return response.content
+
+                except requests.RequestException as e:
+                    should_retry, wait_time = self.retry_strategy.should_retry(
+                        error=e,
+                        retry_count=retry_count
+                    )
+
+                    if should_retry:
+                        retry_count += 1
+                        time.sleep(wait_time)
+                        continue
+                    raise
+
+        except Exception as e:
+            self.logger.error(f"请求失败: {str(e)}")
+            return None
+
     def _wait_for_rate_limit(self):
         """等待请求间隔"""
         elapsed = time.time() - self.last_request_time

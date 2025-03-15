@@ -146,8 +146,7 @@ class PlayerSync:
                     'roster_status': player[headers.get('ROSTERSTATUS')],
                     'from_year': player[headers.get('FROM_YEAR')],
                     'to_year': player[headers.get('TO_YEAR')],
-                    'player_code': player[headers.get('PLAYERCODE', '')],
-                    'player_slug': player[headers.get('PLAYER_SLUG', '')],
+                    'player_slug': player[headers.get('PLAYERCODE', '')],
                     'team_id': player[headers.get('TEAM_ID')],
                     'games_played_flag': player[headers.get('GAMES_PLAYED_FLAG', '')]
                 }
