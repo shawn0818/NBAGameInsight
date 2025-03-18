@@ -24,9 +24,25 @@ class ScheduleSync:
         self.logger = AppLogger.get_logger(__name__, app_name='nba')
         self.time_handler = TimeHandler()
 
+    def _get_existing_count(self, season: str) -> int:
+        """获取数据库中指定赛季的比赛数量"""
+        existing_count = 0
+        if self.schedule_repository:
+            existing_count = self.schedule_repository.get_schedules_count_by_season(season)
+        else:
+            # 如果没有提供 repository，直接查询数据库
+            try:
+                cursor = self.db_manager.conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM schedule WHERE season_year = ?", (season,))
+                result = cursor.fetchone()
+                existing_count = result[0] if result else 0
+            except Exception as e:
+                self.logger.error(f"查询赛季数据数量失败: {e}")
+        return existing_count
+
     def sync_all_seasons(self, start_from_season: Optional[str] = None, force_update: bool = False) -> Dict[str, int]:
         """
-        同步所有赛季的赛程数据
+        同步所有赛季的赛程数据，支持断点续传
 
         Args:
             start_from_season: 从哪个赛季开始同步，None表示从最早赛季开始
@@ -46,33 +62,55 @@ class ScheduleSync:
             except ValueError:
                 self.logger.error(f"找不到指定的起始赛季: {start_from_season}")
 
-        total_seasons = len(seasons)
+        if not force_update:
+            # 过滤掉数据库中已有数据的赛季
+            filtered_seasons = []
+            for season in seasons:
+                existing_count = self._get_existing_count(season)
+                if existing_count > 0:
+                    self.logger.info(f"赛季 {season} 已有 {existing_count} 场比赛数据，跳过同步")
+                    results[season] = existing_count
+                else:
+                    filtered_seasons.append(season)
+
+            seasons = filtered_seasons
+            if not seasons:
+                self.logger.info("所有赛季数据已存在，无需同步")
+                return results
+
+        # 直接使用批量获取功能，内部已实现断点续传和请求间隔控制
+        self.logger.info(f"开始批量获取 {len(seasons)} 个赛季的数据...")
+        schedule_data = self.schedule_fetcher.get_schedules_for_seasons(
+            seasons=seasons,
+            force_update=force_update
+        )
+
         for i, season in enumerate(seasons):
-            self.logger.info(f"正在同步赛季 {season} 的数据... ({i + 1}/{total_seasons})")
+            self.logger.info(f"正在处理赛季 {season} 的数据... ({i + 1}/{len(seasons)})")
 
-            # 检查数据库中该赛季的数据量
-            existing_count = 0
-            if self.schedule_repository:
-                existing_count = self.schedule_repository.get_schedules_count_by_season(season)
-            else:
-                # 如果没有提供 repository，直接查询数据库
-                try:
-                    cursor = self.db_manager.conn.cursor()
-                    cursor.execute("SELECT COUNT(*) FROM schedule WHERE season_year = ?", (season,))
-                    result = cursor.fetchone()
-                    existing_count = result[0] if result else 0
-                except Exception as e:
-                    self.logger.error(f"查询赛季数据数量失败: {e}")
-
-            if existing_count > 0 and not force_update:
-                self.logger.info(f"赛季 {season} 已有 {existing_count} 场比赛数据，跳过同步")
-                results[season] = existing_count
+            # 检查批量获取的结果
+            if season not in schedule_data or not schedule_data[season]:
+                self.logger.warning(f"赛季 {season} 数据获取失败或为空")
+                # 检查数据库中是否已有该赛季数据
+                existing_count = self._get_existing_count(season)
+                if existing_count > 0:
+                    results[season] = existing_count
+                    self.logger.info(f"赛季 {season} 已有 {existing_count} 场比赛数据")
+                else:
+                    results[season] = 0
                 continue
 
-            # 同步单个赛季，最后一个赛季不应用延迟
-            apply_delay = (i < total_seasons - 1)
-            result_count = self.sync_season(season, force_update, apply_delay)
-            results[season] = result_count
+            # 解析并导入数据
+            games_data = self._parse_schedule_data(schedule_data[season])
+            if not games_data:
+                self.logger.error(f"解析赛季 {season} 赛程数据失败")
+                results[season] = 0
+                continue
+
+            # 将数据写入数据库
+            success_count = self._import_schedules(games_data)
+            results[season] = success_count
+            self.logger.info(f"赛季 {season}: 成功同步 {success_count} 场比赛数据")
 
         return results
 
@@ -88,37 +126,33 @@ class ScheduleSync:
         """
         current_season = self.schedule_fetcher.schedule_config.CURRENT_SEASON
         self.logger.info(f"开始同步当前赛季 {current_season} 的数据...")
-        result_count = self.sync_season(current_season, force_update, apply_delay=False)
+        result_count = self.sync_season(current_season, force_update)
+
         # 如果返回 0，但数据已存在，则查询现有记录数
         if result_count == 0:
-            try:
-                cursor = self.db_manager.conn.cursor()
-                cursor.execute("SELECT COUNT(*) FROM schedule WHERE season_year = ?", (current_season,))
-                result = cursor.fetchone()
-                existing_count = result[0] if result else 0
-                if existing_count > 0:
-                    self.logger.info(f"赛季 {current_season} 数据已存在，无需更新")
-                    return existing_count
-            except Exception as e:
-                self.logger.error(f"获取赛季数据数量失败: {e}")
+            existing_count = self._get_existing_count(current_season)
+            if existing_count > 0:
+                self.logger.info(f"赛季 {current_season} 数据已存在，无需更新")
+                return existing_count
+
         return result_count
 
-    def sync_season(self, season: str, force_update: bool = False, apply_delay: bool = True) -> int:
+    def sync_season(self, season: str, force_update: bool = False) -> int:
         """
         同步指定赛季的赛程数据
 
         Args:
             season: 赛季字符串
             force_update: 是否强制更新
-            apply_delay: 是否应用随机延迟
+
 
         Returns:
             int: 成功同步的比赛数量
         """
         try:
-            # 获取赛程数据，传递 apply_delay 参数
+            # 获取赛程数据，HTTPRequestManager 内部已实现自适应请求间隔
             schedule_data = self.schedule_fetcher.get_schedule_by_season(
-                season, force_update=force_update, apply_delay=apply_delay
+                season, force_update=force_update
             )
             if not schedule_data:
                 self.logger.error(f"获取赛季 {season} 赛程数据失败")
@@ -135,16 +169,10 @@ class ScheduleSync:
 
             # 如果没有处理任何记录，但数据可能已存在，则查询现有记录数
             if success_count == 0:
-                try:
-                    cursor = self.db_manager.conn.cursor()
-                    cursor.execute("SELECT COUNT(*) FROM schedule WHERE season_year = ?", (season,))
-                    result = cursor.fetchone()
-                    existing_count = result[0] if result else 0
-                    if existing_count > 0:
-                        self.logger.info(f"赛季 {season} 数据已存在，无需更新")
-                        return existing_count
-                except Exception as e:
-                    self.logger.error(f"获取赛季数据数量失败: {e}")
+                existing_count = self._get_existing_count(season)
+                if existing_count > 0:
+                    self.logger.info(f"赛季 {season} 数据已存在，无需更新")
+                    return existing_count
 
             self.logger.info(f"赛季 {season}: 成功同步 {success_count} 场比赛数据")
             return success_count
@@ -396,4 +424,3 @@ class ScheduleSync:
         except Exception as e:
             self.logger.error(f"解析赛程数据失败: {e}", exc_info=True)
             return games_data  # 返回空列表或已解析的数据
-

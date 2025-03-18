@@ -29,7 +29,7 @@ class GameConfig:
     CACHE_DURATION: Dict[GameStatusEnum, timedelta] = {
         GameStatusEnum.NOT_STARTED: timedelta(minutes=1),
         GameStatusEnum.IN_PROGRESS: timedelta(seconds=0),
-        GameStatusEnum.FINISHED: timedelta(days=365)
+        GameStatusEnum.FINISHED: timedelta(days=1)
     }
 
 @dataclass
@@ -116,7 +116,7 @@ class GameFetcher(BaseNBAFetcher):
             self,
             game_id: str,
             data_type: str,
-            force_update: bool,
+            force_update: bool = True,
             game_status: Optional[GameStatusEnum] = None
     ) -> Tuple[Optional[Dict[str, Any]], GameStatusEnum]:
         """获取数据并返回比赛状态"""

@@ -22,8 +22,7 @@ class TeamSync:
         self.logger = AppLogger.get_logger(__name__, app_name='nba')
 
     def sync_team_details(self, force_update: bool = False) -> bool:
-        """
-        同步所有球队的详细信息
+        """同步所有球队的详细信息
 
         Args:
             force_update: 是否强制更新所有数据
@@ -38,40 +37,30 @@ class TeamSync:
                 self.logger.error("无法获取球队ID列表")
                 return False
 
-            success_count = 0
-            total_count = len(team_ids)
+            self.logger.info(f"开始同步 {len(team_ids)} 支球队的详细信息")
+
+            # 使用批量获取方法获取多个球队的详情
+            teams_details = self.team_fetcher.get_multiple_teams_details(team_ids, force_update)
+
+            # 处理获取的结果
+            if not teams_details:
+                self.logger.warning("未获取到任何球队详情")
+                return False
+
             teams_data = []
-
-            # 遍历获取每个球队的详细信息
-            for team_id in team_ids:
-                # 如果不强制更新，检查数据库中是否已有详细信息
-                has_details = False
-                if self.team_repository:
-                    has_details = self.team_repository.has_team_details(team_id)
-
-                if not force_update and has_details:
-                    self.logger.debug(f"球队(ID:{team_id})已有详细信息，跳过更新")
-                    success_count += 1
-                    continue
-
-                # 获取球队详细信息
-                team_details = self.team_fetcher.get_team_details(team_id, force_update=force_update)
-                if not team_details:
-                    self.logger.warning(f"获取球队(ID:{team_id})详细信息失败")
+            for team_id, details in teams_details.items():
+                if not details:
                     continue
 
                 # 解析球队详细信息
-                team_data = self._parse_team_details(team_details, team_id)
-                if not team_data:
-                    continue
-
-                teams_data.append(team_data)
+                team_data = self._parse_team_details(details, team_id)
+                if team_data:
+                    teams_data.append(team_data)
 
             # 批量导入数据库
-            if teams_data:
-                success_count = self._import_teams(teams_data)
+            success_count = self._import_teams(teams_data) if teams_data else 0
 
-            self.logger.info(f"成功同步{success_count}/{total_count}支球队的详细信息")
+            self.logger.info(f"成功同步 {success_count}/{len(team_ids)} 支球队的详细信息")
             return success_count > 0
 
         except Exception as e:
@@ -199,18 +188,19 @@ class TeamSync:
             return False
 
     def _sync_logos_to_db(self, teams: List[Dict]) -> int:
-        """
-        同步所有球队的logo到数据库
-        """
+        """同步所有球队的logo到数据库，考虑请求速率限制"""
         success_count = 0
+        total_count = len(teams)
 
         # 创建HTTPRequestManager实例
         http_manager = HTTPRequestManager(timeout=10)
 
-        for team in teams:
+        for i, team in enumerate(teams):
             team_id = team.get('team_id')
             if not team_id:
                 continue
+
+            self.logger.debug(f"同步球队Logo: {i + 1}/{total_count}, ID: {team_id}")
 
             # 尝试不同的logo格式
             logo_urls = [
@@ -220,7 +210,7 @@ class TeamSync:
 
             for url in logo_urls:
                 try:
-                    # 使用实例调用方法
+                    # http_manager已内置请求间隔控制，无需额外添加延迟
                     logo_data = http_manager.make_binary_request(url)
                     if logo_data:
                         if self._import_team_logo(team_id, logo_data):

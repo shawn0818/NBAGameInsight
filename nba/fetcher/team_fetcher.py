@@ -1,5 +1,5 @@
 import time
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, List
 from datetime import timedelta
 import requests
 from .base_fetcher import BaseNBAFetcher, BaseRequestConfig, BaseCacheConfig
@@ -87,6 +87,26 @@ class TeamFetcher(BaseNBAFetcher):
         except Exception as e:
             self.logger.error(f"获取球队数据失败: {e}")
             return None
+
+    def get_multiple_teams_details(self, team_ids: List[int],
+                                   force_update: bool = False) -> Dict[int, Optional[Dict[str, Any]]]:
+        """批量获取多支球队详细信息，支持断点续传
+
+        Args:
+            team_ids: 球队ID列表
+            force_update: 是否强制更新
+
+        Returns:
+            Dict[int, Optional[Dict[str, Any]]]: 球队详情字典，key为球队ID
+        """
+        self.logger.info(f"批量获取{len(team_ids)}支球队详细信息")
+
+        return self.batch_fetch(
+            ids=team_ids,
+            fetch_func=lambda team_id: self.get_team_details(team_id, force_update),
+            task_name="multiple_teams_details",
+            batch_size=5  # 球队少，可以用小批量
+        )
 
     def cleanup_cache(self, team_id: Optional[int] = None, older_than: Optional[timedelta] = None) -> None:
         """清理缓存数据

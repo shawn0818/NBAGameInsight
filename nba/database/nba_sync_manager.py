@@ -497,12 +497,19 @@ class NBASyncManager:
         )
 
     def _sync_teams_internal(self, force_update=False):
-        """内部同步球队数据实现"""
+        """内部同步球队数据实现，适配断点续传功能"""
         try:
+            # 查询进度信息，但只记录日志，不影响执行逻辑
+            progress = self._get_sync_progress("team")
+            if progress and not force_update:
+                self.logger.info(f"发现球队同步进度记录，上次同步时间: {progress.get('last_synced')}")
+
             # 同步球队详细信息
+            self.logger.info("开始同步球队详细信息...")
             result = self.team_sync.sync_team_details(force_update)
 
             # 同步球队Logo
+            self.logger.info("开始同步球队Logo...")
             logo_result = self.team_sync.sync_team_logos()
 
             status = "success" if result else "failed"
@@ -592,40 +599,12 @@ class NBASyncManager:
             total_seasons = len(seasons_to_sync)
             self.logger.info(f"准备同步 {total_seasons} 个赛季")
 
-            season_results = {}
-            for i, season in enumerate(seasons_to_sync):
-                self.logger.info(f"正在同步赛季 {season} 的数据... ({i + 1}/{total_seasons})")
-
-                # 更新当前处理的赛季，以便中断后可以从这里继续
-                self._update_sync_progress("all_seasons", season)
-
-                # 检查数据库中该赛季的数据量
-                existing_count = 0
-                if self.schedule_repository:
-                    existing_count = self.schedule_repository.get_schedules_count_by_season(season)
-
-                if existing_count > 0 and not force_update:
-                    self.logger.info(f"赛季 {season} 已有 {existing_count} 场比赛数据，跳过同步")
-                    season_results[season] = existing_count
-                    continue
-
-                # 同步单个赛季，最后一个赛季不应用延迟
-                apply_delay = (i < total_seasons - 1)
-                try:
-                    result = self._with_retry(
-                        self.schedule_sync.sync_season,
-                        season, force_update, apply_delay
-                    )
-                    season_results[season] = result
-                except Exception as e:
-                    self.logger.error(f"同步赛季 {season} 失败: {e}")
-                    season_results[season] = 0
-
-                # 随机延迟，防止API限流
-                if apply_delay:
-                    delay = random.uniform(1.0, 3.0)
-                    self.logger.debug(f"赛季间延迟 {delay:.2f} 秒")
-                    time.sleep(delay)
+            # 直接使用修改后的 ScheduleSync.sync_all_seasons 方法
+            # 它内部已经利用了断点续传和自适应请求间隔
+            season_results = self.schedule_sync.sync_all_seasons(
+                start_from_season=start_from_season,
+                force_update=force_update
+            )
 
             total_games = sum(season_results.values())
             status = "success" if total_games > 0 else "failed"
