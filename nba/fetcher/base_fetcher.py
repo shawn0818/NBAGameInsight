@@ -2,7 +2,7 @@ import json
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, Optional, Any, Union
+from typing import Dict, Optional, Any, Union, List, Callable
 from urllib.parse import urlencode
 
 from utils.http_handler import HTTPRequestManager, RetryConfig
@@ -178,6 +178,93 @@ class BaseRequestConfig:
         self.request_timeout = request_timeout
 
 
+class BatchRequestTracker:
+    """批量请求进度跟踪器 - 内部使用，不暴露给外部"""
+
+    def __init__(self, task_name: str, cache_root: Path):
+        """初始化进度跟踪器"""
+        self.task_name = task_name
+        self.progress_file = cache_root / f"batch_{task_name}_progress.json"
+        self.completed_ids = set()
+        self.failed_ids = {}
+        self.metadata = {
+            "started_at": datetime.now().isoformat(),
+            "last_updated": datetime.now().isoformat()
+        }
+
+        # 加载已有进度
+        self._load_progress()
+
+    def _load_progress(self):
+        """从文件加载进度"""
+        if not self.progress_file.exists():
+            return
+
+        try:
+            with open(self.progress_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                self.completed_ids = set(data.get('completed_ids', []))
+                self.failed_ids = data.get('failed_ids', {})
+                self.metadata = data.get('metadata', {})
+
+        except Exception as e:
+            print(f"加载进度文件失败: {e}")
+
+    def save_progress(self):
+        """保存进度到文件"""
+        try:
+            # 更新时间戳
+            self.metadata["last_updated"] = datetime.now().isoformat()
+
+            # 准备数据
+            data = {
+                'completed_ids': list(self.completed_ids),
+                'failed_ids': self.failed_ids,
+                'metadata': self.metadata,
+                'stats': self.get_stats()
+            }
+
+            # 使用临时文件写入
+            temp_file = self.progress_file.with_suffix('.tmp')
+            with open(temp_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)  # type: ignore
+
+            # 原子替换
+            temp_file.replace(self.progress_file)
+        except Exception as e:
+            print(f"保存进度失败: {e}")
+
+    def mark_completed(self, item_id):
+        """标记ID为已完成"""
+        self.completed_ids.add(str(item_id))
+        if str(item_id) in self.failed_ids:
+            del self.failed_ids[str(item_id)]
+
+    def mark_failed(self, item_id, error):
+        """标记ID为失败"""
+        self.failed_ids[str(item_id)] = str(error)
+
+    def is_completed(self, item_id):
+        """检查ID是否已处理完成"""
+        return str(item_id) in self.completed_ids
+
+    def get_pending_ids(self, all_ids):
+        """获取待处理的ID"""
+        all_ids_set = set(str(item_id) for item_id in all_ids)
+        return list(all_ids_set - self.completed_ids)
+
+    def get_stats(self):
+        """获取进度统计"""
+        total = len(self.completed_ids) + len(self.failed_ids)
+        return {
+            'total': total,
+            'completed': len(self.completed_ids),
+            'failed': len(self.failed_ids),
+            'progress': f"{len(self.completed_ids)}/{total}" if total else "0/0",
+            'completion_percentage': round(len(self.completed_ids) / total * 100, 2) if total else 0
+        }
+
+
 class BaseNBAFetcher:
     """NBA数据获取基类"""
 
@@ -293,3 +380,102 @@ class BaseNBAFetcher:
             query_string = urlencode({k: v for k, v in params.items() if v is not None})
             return f"{base}/{clean_endpoint}?{query_string}"
         return f"{base}/{clean_endpoint}"
+
+    # 新增内部方法，不影响原有接口
+    def _batch_fetch_internal(self,
+                              ids: List[Any],
+                              fetch_func: Callable[[Any], Dict],
+                              task_name: str,
+                              batch_size: int = 20,
+                              save_interval: int = 50) -> Dict[str, Any]:
+        """
+        批量获取数据的内部实现，支持断点续传
+
+        Args:
+            ids: 要获取的ID列表
+            fetch_func: 获取单个ID数据的函数
+            task_name: 任务名称，用于区分不同任务的进度
+            batch_size: 批处理大小
+            save_interval: 保存进度的间隔
+
+        Returns:
+            Dict: 获取结果，key为ID，value为获取的数据
+        """
+        # 创建进度跟踪器
+        tracker = BatchRequestTracker(
+            task_name=task_name,
+            cache_root=self.config.cache_config.root_path
+        )
+
+        # 获取未处理的ID
+        pending_ids = tracker.get_pending_ids(ids)
+        self.logger.info(f"总共 {len(ids)} 个ID，其中 {len(pending_ids)} 个待处理")
+
+        results = {}
+        processed = 0
+
+        # 批量处理
+        for i in range(0, len(pending_ids), batch_size):
+            batch_ids = pending_ids[i:i + batch_size]
+            self.logger.info(
+                f"处理批次 {i // batch_size + 1}/{(len(pending_ids) - 1) // batch_size + 1}，包含 {len(batch_ids)} 个ID")
+
+            for item_id in batch_ids:
+                try:
+                    # 调用提供的获取函数
+                    data = fetch_func(item_id)
+
+                    if data:
+                        results[item_id] = data
+                        tracker.mark_completed(item_id)
+                    else:
+                        tracker.mark_failed(item_id, "返回数据为空")
+                except Exception as e:
+                    self.logger.error(f"处理ID {item_id} 时出错: {str(e)}")
+                    tracker.mark_failed(item_id, str(e))
+
+                processed += 1
+                # 定期保存进度
+                if processed % save_interval == 0:
+                    tracker.save_progress()
+                    stats = tracker.get_stats()
+                    self.logger.info(f"进度: {stats['completion_percentage']}% ({stats['progress']})")
+
+            # 每批次结束后保存进度
+            tracker.save_progress()
+
+        # 最终保存
+        tracker.save_progress()
+        final_stats = tracker.get_stats()
+        self.logger.info(
+            f"批量获取完成。总计: {final_stats['total']}, 成功: {final_stats['completed']}, 失败: {final_stats['failed']}")
+
+        return results
+
+    def batch_fetch(self,
+                    ids: List[Any],
+                    fetch_func: Callable,
+                    task_name: str = None,
+                    batch_size: int = 20) -> Dict[str, Any]:
+        """
+        批量获取数据，支持断点续传 - 对外公开方法，包装内部实现
+
+        Args:
+            ids: 要获取的ID列表
+            fetch_func: 获取单个ID数据的函数
+            task_name: 任务名称，默认使用当前类名
+            batch_size: 批处理大小
+
+        Returns:
+            Dict: 获取结果，key为ID，value为获取的数据
+        """
+        # 如果未提供任务名称，使用类名
+        if task_name is None:
+            task_name = self.__class__.__name__.lower()
+
+        return self._batch_fetch_internal(
+            ids=ids,
+            fetch_func=fetch_func,
+            task_name=task_name,
+            batch_size=batch_size
+        )
