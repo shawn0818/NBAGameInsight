@@ -49,7 +49,7 @@ class ScheduleSync:
             Dict[str, int]: 各赛季的同步结果，key为赛季，value为成功同步的比赛数
         """
         results = {}
-        seasons = self.schedule_fetcher._get_all_seasons()
+        seasons = self.schedule_fetcher.get_all_seasons()
 
         # 如果指定了起始赛季，则只同步该赛季及之后的
         if start_from_season:

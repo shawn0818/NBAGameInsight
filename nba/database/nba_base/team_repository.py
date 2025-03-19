@@ -33,7 +33,7 @@ class TeamRepository:
 
             # 1. 精确匹配 - 首先尝试精确匹配
             cursor.execute("""
-            SELECT team_id FROM team 
+            SELECT team_id FROM teams 
             WHERE LOWER(nickname) = ? OR 
                   LOWER(city) = ? OR 
                   LOWER(abbreviation) = ? OR 
@@ -48,7 +48,7 @@ class TeamRepository:
             # 2. 模糊匹配 - 如果精确匹配失败，尝试模糊匹配
             name_pattern = f"%{normalized_name}%"
             cursor.execute("""
-            SELECT team_id, nickname, city, abbreviation, team_slug FROM team 
+            SELECT team_id, nickname, city, abbreviation, team_slug FROM teams 
             WHERE LOWER(nickname) LIKE ? OR 
                   LOWER(city) LIKE ? OR 
                   LOWER(abbreviation) LIKE ? OR 
@@ -112,7 +112,7 @@ class TeamRepository:
             cursor = self.db_manager.conn.cursor()
             cursor.execute("""
             SELECT nickname, city, abbreviation
-            FROM team
+            FROM teams
             WHERE team_id = ?
             """, (team_id,))
 
@@ -146,7 +146,7 @@ class TeamRepository:
         """
         try:
             cursor = self.db_manager.conn.cursor()
-            cursor.execute("SELECT * FROM team WHERE team_id = ?", (team_id,))
+            cursor.execute("SELECT * FROM teams WHERE team_id = ?", (team_id,))
             team = cursor.fetchone()
 
             if team:
@@ -169,7 +169,7 @@ class TeamRepository:
         """
         try:
             cursor = self.db_manager.conn.cursor()
-            cursor.execute("SELECT * FROM team WHERE abbreviation = ? COLLATE NOCASE", (abbr,))
+            cursor.execute("SELECT * FROM teams WHERE abbreviation = ? COLLATE NOCASE", (abbr,))
             team = cursor.fetchone()
 
             if team:
@@ -195,7 +195,7 @@ class TeamRepository:
             name_pattern = f"%{name}%"
 
             cursor.execute('''
-            SELECT * FROM team 
+            SELECT * FROM teams 
             WHERE nickname LIKE ? COLLATE NOCASE 
                OR city LIKE ? COLLATE NOCASE
             LIMIT 1
@@ -220,7 +220,7 @@ class TeamRepository:
         """
         try:
             cursor = self.db_manager.conn.cursor()
-            cursor.execute("SELECT * FROM team ORDER BY city, nickname")
+            cursor.execute("SELECT * FROM teams ORDER BY city, nickname")
 
             teams = cursor.fetchall()
             return [dict(team) for team in teams]
@@ -241,7 +241,7 @@ class TeamRepository:
         """
         try:
             cursor = self.db_manager.conn.cursor()
-            cursor.execute("SELECT logo FROM team WHERE team_id = ?", (team_id,))
+            cursor.execute("SELECT logo FROM teams WHERE team_id = ?", (team_id,))
             result = cursor.fetchone()
             return result['logo'] if result else None
         except sqlite3.Error as e:
@@ -260,7 +260,7 @@ class TeamRepository:
         """
         try:
             cursor = self.db_manager.conn.cursor()
-            cursor.execute("SELECT arena FROM team WHERE team_id = ?", (team_id,))
+            cursor.execute("SELECT arena FROM teams WHERE team_id = ?", (team_id,))
             result = cursor.fetchone()
             return result is not None and result['arena'] is not None
         except sqlite3.Error as e:

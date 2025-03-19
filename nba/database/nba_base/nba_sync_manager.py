@@ -4,12 +4,12 @@ import random
 from datetime import datetime
 from typing import Dict,  Optional, Any, Callable
 
-from nba.database.player_repository import PlayerRepository
-from nba.database.team_repository import TeamRepository
-from nba.database.schedule_repository import ScheduleRepository
-from nba.database.player_sync import PlayerSync
-from nba.database.team_sync import TeamSync
-from nba.database.schedule_sync import ScheduleSync
+from nba.database.nba_base.player_repository import PlayerRepository
+from nba.database.nba_base.team_repository import TeamRepository
+from nba.database.nba_base.schedule_repository import ScheduleRepository
+from nba.database.nba_base.player_sync import PlayerSync
+from nba.database.nba_base.team_sync import TeamSync
+from nba.database.nba_base.schedule_sync import ScheduleSync
 from utils.logger_handler import AppLogger
 
 
@@ -575,7 +575,7 @@ class NBASyncManager:
         """内部同步所有赛季实现，支持断点续传"""
         try:
             # 获取所有赛季
-            all_seasons = self.schedule_sync.schedule_fetcher._get_all_seasons()
+            all_seasons = self.schedule_sync.schedule_fetcher.get_all_seasons()
             if not all_seasons:
                 raise Exception("无法获取赛季列表")
 
@@ -797,7 +797,7 @@ class NBASyncManager:
             # 检查球员-球队关系
             cursor.execute("""
             SELECT COUNT(*) as count FROM players
-            WHERE team_id IS NOT NULL AND team_id NOT IN (SELECT team_id FROM team)
+            WHERE team_id IS NOT NULL AND team_id NOT IN (SELECT team_id FROM teams)
             """)
             invalid_player_teams = cursor.fetchone()[0]
             if invalid_player_teams > 0:
@@ -810,8 +810,8 @@ class NBASyncManager:
             # 检查赛程-球队关系
             cursor.execute("""
             SELECT COUNT(*) as count FROM games
-            WHERE home_team_id NOT IN (SELECT team_id FROM team)
-            OR away_team_id NOT IN (SELECT team_id FROM team)
+            WHERE home_team_id NOT IN (SELECT team_id FROM teams)
+            OR away_team_id NOT IN (SELECT team_id FROM teams)
             """)
             invalid_schedule_teams = cursor.fetchone()[0]
             if invalid_schedule_teams > 0:

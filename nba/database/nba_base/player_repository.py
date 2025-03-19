@@ -6,7 +6,7 @@ from utils.logger_handler import AppLogger
 class PlayerRepository:
     """
     球员数据访问对象
-    负责player表的CRUD操作
+    负责players表的CRUD操作
     """
 
     def __init__(self, db_manager):
@@ -35,7 +35,7 @@ class PlayerRepository:
 
             # 1. 精确匹配 - 首先尝试精确匹配全名
             cursor.execute("""
-            SELECT person_id FROM player 
+            SELECT person_id FROM players 
             WHERE LOWER(display_first_last) = ? OR 
                   LOWER(display_last_comma_first) = ? OR 
                   LOWER(player_slug) = ?
@@ -54,7 +54,7 @@ class PlayerRepository:
                 # 尝试匹配姓氏或名字（作为单独一部分）
                 cursor.execute("""
                 SELECT person_id, display_first_last 
-                FROM player
+                FROM players
                 WHERE 
                     LOWER(display_first_last) LIKE ? OR
                     LOWER(display_last_comma_first) LIKE ?
@@ -79,7 +79,7 @@ class PlayerRepository:
             # 3. 常规模糊匹配 - 如果前面的匹配都失败，尝试模糊匹配
             name_pattern = f"%{normalized_name}%"
             cursor.execute("""
-            SELECT person_id, display_first_last, display_last_comma_first, player_slug FROM player 
+            SELECT person_id, display_first_last, display_last_comma_first, player_slug FROM players 
             WHERE LOWER(display_first_last) LIKE ? OR 
                   LOWER(display_last_comma_first) LIKE ? OR 
                   LOWER(player_slug) LIKE ?
@@ -139,7 +139,7 @@ class PlayerRepository:
             cursor = self.db_manager.conn.cursor()
             cursor.execute("""
             SELECT display_first_last, display_last_comma_first
-            FROM player
+            FROM players
             WHERE person_id = ?
             """, (player_id,))
 
@@ -172,7 +172,7 @@ class PlayerRepository:
         """
         try:
             cursor = self.db_manager.conn.cursor()
-            cursor.execute("SELECT * FROM player ORDER BY display_first_last")
+            cursor.execute("SELECT * FROM players ORDER BY display_first_last")
             players = cursor.fetchall()
             return [dict(player) for player in players]
 

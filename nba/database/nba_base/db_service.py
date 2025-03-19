@@ -23,11 +23,11 @@ class DatabaseService:
             db_path = str(NBAConfig.DATABASE.get_db_path(env))
 
         # 导入并创建数据库管理器
-        from nba.database.db_manager import DBManager
+        from nba.database.nba_base.db_manager import DBManager
         self.db_manager = DBManager(db_path)
 
         # 创建同步管理器
-        from nba.database.nba_sync_manager import NBASyncManager
+        from nba.database.nba_base.nba_sync_manager import NBASyncManager
         self.sync_manager = NBASyncManager(self.db_manager)
 
         # 延迟初始化仓库对象
@@ -128,19 +128,19 @@ class DatabaseService:
     # 获取仓库对象的懒加载方法
     def get_team_repository(self):
         if not self._team_repository:
-            from nba.database.team_repository import TeamRepository
+            from nba.database.nba_base.team_repository import TeamRepository
             self._team_repository = TeamRepository(self.db_manager)
         return self._team_repository
 
     def get_player_repository(self):
         if not self._player_repository:
-            from nba.database.player_repository import PlayerRepository
+            from nba.database.nba_base.player_repository import PlayerRepository
             self._player_repository = PlayerRepository(self.db_manager)
         return self._player_repository
 
     def get_schedule_repository(self):
         if not self._schedule_repository:
-            from nba.database.schedule_repository import ScheduleRepository
+            from nba.database.nba_base.schedule_repository import ScheduleRepository
             self._schedule_repository = ScheduleRepository(self.db_manager)
         return self._schedule_repository
 

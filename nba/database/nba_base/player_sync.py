@@ -1,7 +1,7 @@
 import sqlite3
 from typing import Dict, List
 from datetime import datetime
-from nba.fetcher.league_fetcher import LeagueFetcher
+from nba.fetcher.player_fetcher import PlayerFetcher
 from utils.logger_handler import AppLogger
 
 
@@ -11,11 +11,11 @@ class PlayerSync:
     负责从NBA API获取数据、转换并写入数据库
     """
 
-    def __init__(self, db_manager, player_repository=None, league_fetcher=None):
+    def __init__(self, db_manager, player_repository=None, player_fetcher=None):
         """初始化球员数据同步器"""
         self.db_manager = db_manager
         self.player_repository = player_repository  # 可选，用于查询
-        self.league_fetcher = league_fetcher or LeagueFetcher()
+        self.player_fetcher = player_fetcher or PlayerFetcher()
         self.logger = AppLogger.get_logger(__name__, app_name='sqlite')
 
     def sync_players(self, force_update: bool = False) -> bool:
@@ -37,7 +37,7 @@ class PlayerSync:
                     return True
 
             # 获取球员名册数据
-            players_data = self.league_fetcher.get_all_players_info()
+            players_data = self.player_fetcher.get_all_players_info()
             if not players_data:
                 self.logger.error("获取球员名册数据失败")
                 return False
@@ -84,7 +84,7 @@ class PlayerSync:
                     player_data['updated_at'] = datetime.now().isoformat()
 
                     # 检查是否已存在该球员
-                    cursor.execute("SELECT person_id FROM player WHERE person_id = ?", (person_id,))
+                    cursor.execute("SELECT person_id FROM players WHERE person_id = ?", (person_id,))
                     exists = cursor.fetchone()
 
                     if exists:
@@ -93,14 +93,14 @@ class PlayerSync:
                         values = [v for k, v in player_data.items() if k != 'person_id']
                         values.append(person_id)  # WHERE条件的值
 
-                        cursor.execute(f"UPDATE player SET {placeholders} WHERE person_id = ?", values)
+                        cursor.execute(f"UPDATE players SET {placeholders} WHERE person_id = ?", values)
                     else:
                         # 插入新记录
                         placeholders = ", ".join(["?"] * len(player_data))
                         columns = ", ".join(player_data.keys())
                         values = list(player_data.values())
 
-                        cursor.execute(f"INSERT INTO player ({columns}) VALUES ({placeholders})", values)
+                        cursor.execute(f"INSERT INTO players ({columns}) VALUES ({placeholders})", values)
 
                     success_count += 1
 

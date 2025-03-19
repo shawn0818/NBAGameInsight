@@ -62,7 +62,7 @@ class DBManager:
 
             # 创建球队表 - 使用小写列名
             cursor.execute('''
-            CREATE TABLE IF NOT EXISTS team (
+            CREATE TABLE IF NOT EXISTS teams (
                 team_id INTEGER PRIMARY KEY,       -- 对应API中的TEAM_ID
                 abbreviation TEXT NOT NULL,        -- 对应API中的ABBREVIATION
                 nickname TEXT NOT NULL,            -- 对应API中的NICKNAME
@@ -81,12 +81,12 @@ class DBManager:
             ''')
 
             # 创建球队索引
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_team_abbr ON team (abbreviation)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_team_name ON team (nickname, city)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_teams_abbr ON teams (abbreviation)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_teams_name ON teams (nickname, city)')
 
             # 创建球员表 - 使用小写列名
             cursor.execute('''
-            CREATE TABLE IF NOT EXISTS player (
+            CREATE TABLE IF NOT EXISTS players (
                 person_id INTEGER PRIMARY KEY,     -- 对应API中的PERSON_ID
                 display_last_comma_first TEXT,     -- 对应API中的DISPLAY_LAST_COMMA_FIRST
                 display_first_last TEXT NOT NULL,  -- 对应API中的DISPLAY_FIRST_LAST
@@ -97,19 +97,19 @@ class DBManager:
                 team_id INTEGER,                   -- 对应API中的TEAM_ID
                 games_played_flag TEXT,            -- 对应API中的GAMES_PLAYED_FLAG
                 updated_at TIMESTAMP,
-                FOREIGN KEY (team_id) REFERENCES team (team_id)
+                FOREIGN KEY (team_id) REFERENCES teams (team_id)
             )
             ''')
 
             # 创建球员索引
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_player_name ON player (display_first_last)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_player_team ON player (team_id)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_player_status ON player (roster_status)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_player_slug ON player (player_slug)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_players_name ON players (display_first_last)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_players_team ON players (team_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_players_status ON players (roster_status)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_players_slug ON players (player_slug)')
 
             # 创建赛程表
             cursor.execute('''
-            CREATE TABLE IF NOT EXISTS schedule (
+            CREATE TABLE IF NOT EXISTS games (
                 game_id TEXT PRIMARY KEY,
                 game_code TEXT,
                 game_status INTEGER,
@@ -167,13 +167,13 @@ class DBManager:
                     ''')
 
             # 创建用于提高查询性能的索引
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_schedule_date ON schedule (game_date)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_schedule_season ON schedule (season_year)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_schedule_teams ON schedule (home_team_id, away_team_id)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_schedule_status ON schedule (game_status)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_schedule_date_utc ON schedule (game_date_time_utc)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_schedule_date_bjs ON schedule (game_date_bjs)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_schedule_type ON schedule (game_type)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_games_date ON games (game_date)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_games_season ON games (season_year)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_games_teams ON games (home_team_id, away_team_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_games_status ON games (game_status)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_games_date_utc ON games (game_date_time_utc)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_games_date_bjs ON games (game_date_bjs)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_games_type ON games (game_type)')
 
 
             self.conn.commit()
