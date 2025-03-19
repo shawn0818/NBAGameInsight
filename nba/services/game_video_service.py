@@ -19,8 +19,9 @@ class VideoConfig:
     chunk_size: int = 8192
     max_retries: int = 3
     retry_delay: float = 1.0
-    min_download_delay: float = 2.0  # 最小下载延迟(秒)
-    max_download_delay: float = 5.0  # 最大下载延迟(秒)
+    # 保留这两个参数用于配置HTTPRequestManager
+    min_download_delay: float = 2.0  # HTTP请求最小延迟(秒)
+    max_download_delay: float = 5.0  # HTTP请求最大延迟(秒)
     concurrent_downloads: int = 3  # 同时进行的下载任务数量
     output_dir: Path = NBAConfig.PATHS.VIDEO_DIR
     request_timeout: int = 30  # 请求超时时间(秒)
@@ -30,13 +31,8 @@ class VideoConfig:
             raise ValueError("quality must be one of: sd, md, hd")
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    def get_random_delay(self) -> float:
-        """获取随机延迟时间"""
-        return random.uniform(self.min_download_delay, self.max_download_delay)
-
     def get_output_path(self, game_id: str, video_asset: VideoAsset, player_id: Optional[int] = None,
                         context_measure: Optional[str] = None) -> Path:
-
         # 从 VideoAsset 对象中获取 event_id
         event_id = video_asset.event_id
 
@@ -65,7 +61,7 @@ class VideoDownloader:
         self.logger = AppLogger.get_logger(__name__, app_name='nba')
         self._semaphore = threading.Semaphore(config.concurrent_downloads)  # 控制并发下载数量
 
-        # 初始化HTTP请求管理器
+        # 初始化HTTP请求管理器，适配新的速率限制功能
         self.http_manager = HTTPRequestManager(
             headers={
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
@@ -74,8 +70,11 @@ class VideoDownloader:
             },
             timeout=config.request_timeout
         )
-        # 修改请求间隔，视频下载可能需要更长间隔
+
+        # 配置HTTP管理器的延迟参数，使用视频配置中的设置
         self.http_manager.min_request_interval = config.min_download_delay
+        self.http_manager._min_delay = config.min_download_delay
+        self.http_manager._max_delay = config.max_download_delay
 
     def download_video(
             self,
@@ -229,7 +228,10 @@ class GameVideoService:
             timeout: float = 300.0,
             force_reprocess: bool = False
     ) -> Dict[str, Path]:
-        """同步下载多个视频"""
+        """同步下载多个视频
+
+        注意：此方法不再需要手动添加随机延迟，因为HTTP管理器现在会自动处理请求间隔
+        """
         results: Dict[str, Path] = {}
         start_time = time.time()
 
@@ -244,11 +246,12 @@ class GameVideoService:
                         self.logger.warning(f"下载超时，已下载 {len(results)}/{len(videos)}")
                         break
 
-                    # 添加随机延迟，避免过快请求服务器
-                    if results:  # 如果已经下载了至少一个视频，则等待随机时间
-                        random_delay = self.config.get_random_delay()
-                        self.logger.info(f"等待 {random_delay:.2f} 秒后开始下载下一个视频")
-                        time.sleep(random_delay)
+                    # 不再需要手动添加延迟，HTTPRequestManager会自动管理
+                    # 原有代码移除：
+                    # if results:
+                    #     random_delay = self.config.get_random_delay()
+                    #     self.logger.info(f"等待 {random_delay:.2f} 秒后开始下载下一个视频")
+                    #     time.sleep(random_delay)
 
                     # 传递player_id和context_measure参数
                     result_path = self.downloader.download_video(
@@ -275,7 +278,7 @@ class GameVideoService:
             videos: Dict[str, VideoAsset],
             game_id: str,
             player_id: Optional[int] = None,
-            team_id: Optional[int] = None,  # 添加team_id参数保持API一致性
+            team_id: Optional[int] = None,
             context_measure: Optional[str] = None,
             max_videos: Optional[int] = None,
             force_reprocess: bool = False
@@ -286,7 +289,7 @@ class GameVideoService:
             videos: 视频资源字典
             game_id: 比赛ID
             player_id: 球员ID (可选)
-            team_id: 球队ID (可选) - 添加此参数保持API一致性
+            team_id: 球队ID (可选)
             context_measure: 上下文指标 (可选)
             max_videos: 最大下载视频数量 (可选)
             force_reprocess: 是否强制重新处理
