@@ -13,14 +13,11 @@ class ScheduleSync:
     负责从NBA API获取数据、转换并写入数据库
     """
 
-    def __init__(self, db_manager, schedule_fetcher: Optional[Any] = None, schedule_repository=None):
+    def __init__(self, db_manager, schedule_fetcher = None, schedule_repository=None):
         """初始化赛程数据同步器"""
         self.db_manager = db_manager
         self.schedule_repository = schedule_repository  # 可选，用于查询
-        # 如果未传入 schedule_fetcher，则自动创建一个
-        if schedule_fetcher is None:
-            schedule_fetcher = ScheduleFetcher()
-        self.schedule_fetcher = schedule_fetcher
+        self.schedule_fetcher = schedule_fetcher or ScheduleFetcher()
         self.logger = AppLogger.get_logger(__name__, app_name='nba')
         self.time_handler = TimeHandler()
 
@@ -33,7 +30,7 @@ class ScheduleSync:
             # 如果没有提供 repository，直接查询数据库
             try:
                 cursor = self.db_manager.conn.cursor()
-                cursor.execute("SELECT COUNT(*) FROM schedule WHERE season_year = ?", (season,))
+                cursor.execute("SELECT COUNT(*) FROM games WHERE season_year = ?", (season,))
                 result = cursor.fetchone()
                 existing_count = result[0] if result else 0
             except Exception as e:
@@ -52,7 +49,7 @@ class ScheduleSync:
             Dict[str, int]: 各赛季的同步结果，key为赛季，value为成功同步的比赛数
         """
         results = {}
-        seasons = self.schedule_fetcher.get_all_seasons()
+        seasons = self.schedule_fetcher._get_all_seasons()
 
         # 如果指定了起始赛季，则只同步该赛季及之后的
         if start_from_season:
@@ -124,7 +121,7 @@ class ScheduleSync:
         Returns:
             int: 成功同步的比赛数量
         """
-        current_season = self.schedule_fetcher.schedule_config.CURRENT_SEASON
+        current_season = self.schedule_fetcher.schedule_config.current_season
         self.logger.info(f"开始同步当前赛季 {current_season} 的数据...")
         result_count = self.sync_season(current_season, force_update)
 
@@ -205,7 +202,7 @@ class ScheduleSync:
                     schedule_data['updated_at'] = datetime.now().isoformat()
 
                     # 检查是否已存在该比赛
-                    cursor.execute("SELECT game_id FROM schedule WHERE game_id = ?", (game_id,))
+                    cursor.execute("SELECT game_id FROM games WHERE game_id = ?", (game_id,))
                     exists = cursor.fetchone()
 
                     if exists:
@@ -214,7 +211,7 @@ class ScheduleSync:
                         values = [v for k, v in schedule_data.items() if k != 'game_id']
                         values.append(game_id)  # WHERE条件的值
 
-                        cursor.execute(f"UPDATE schedule SET {placeholders} WHERE game_id = ?", values)
+                        cursor.execute(f"UPDATE games SET {placeholders} WHERE game_id = ?", values)
                         self.logger.debug(f"更新赛程: {game_id}")
                     else:
                         # 插入新记录
@@ -222,7 +219,7 @@ class ScheduleSync:
                         columns = ", ".join(schedule_data.keys())
                         values = list(schedule_data.values())
 
-                        cursor.execute(f"INSERT INTO schedule ({columns}) VALUES ({placeholders})", values)
+                        cursor.execute(f"INSERT INTO games ({columns}) VALUES ({placeholders})", values)
                         self.logger.debug(f"新增赛程: {game_id}")
 
                     success_count += 1

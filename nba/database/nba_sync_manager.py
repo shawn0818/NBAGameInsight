@@ -37,13 +37,7 @@ class NBASyncManager:
         # 初始化同步器(负责数据获取和写入)
         # 注意：传递db_manager用于写入、team_repository用于查询
         self.team_sync = TeamSync(db_manager, self.team_repository)
-
-        # 获取 league_fetcher 用于其他同步器
-        league_fetcher = self.team_sync.league_fetcher
-
-
-        # 初始化球员和赛程同步器
-        self.player_sync = PlayerSync(db_manager, self.player_repository, league_fetcher)
+        self.player_sync = PlayerSync(db_manager, self.player_repository)
         self.schedule_sync = ScheduleSync(db_manager, schedule_repository=self.schedule_repository)
 
         # 更新历史记录表
@@ -398,7 +392,7 @@ class NBASyncManager:
             season: 赛季标识，如"2024-25"，默认使用当前赛季
             force_update: 是否强制更新，默认为True以确保全量更新
         """
-        season = season or self.schedule_sync.schedule_fetcher.schedule_config.CURRENT_SEASON
+        season = season or self.schedule_sync.schedule_fetcher.schedule_config.current_season
         start_time = datetime.now().isoformat()
         self.logger.info(f"开始新赛季 {season} 同步...")
 
@@ -480,7 +474,7 @@ class NBASyncManager:
             force_update: 是否强制更新，默认为True
         """
         # 直接使用内部实现方法，避免循环调用
-        current_season = self.schedule_sync.schedule_fetcher.schedule_config.CURRENT_SEASON
+        current_season = self.schedule_sync.schedule_fetcher.schedule_config.current_season
         return self._execute_sync_operation(
             "current_season",
             self._sync_current_season_internal,
@@ -581,7 +575,7 @@ class NBASyncManager:
         """内部同步所有赛季实现，支持断点续传"""
         try:
             # 获取所有赛季
-            all_seasons = self.schedule_sync.schedule_fetcher.get_all_seasons()
+            all_seasons = self.schedule_sync.schedule_fetcher._get_all_seasons()
             if not all_seasons:
                 raise Exception("无法获取赛季列表")
 
@@ -624,7 +618,7 @@ class NBASyncManager:
         """
         同步当前赛季的赛程数据
         """
-        current_season = self.schedule_sync.schedule_fetcher.schedule_config.CURRENT_SEASON
+        current_season = self.schedule_sync.schedule_fetcher.schedule_config.current_season
         return self._execute_sync_operation(
             "current_season",
             self._sync_current_season_internal,
@@ -635,7 +629,7 @@ class NBASyncManager:
     def _sync_current_season_internal(self, force_update=True):
         """内部同步当前赛季实现"""
         try:
-            current_season = self.schedule_sync.schedule_fetcher.schedule_config.CURRENT_SEASON
+            current_season = self.schedule_sync.schedule_fetcher.schedule_config.current_season
 
             # 同步当前赛季
             success_count = self.schedule_sync.sync_current_season(force_update)
@@ -802,7 +796,7 @@ class NBASyncManager:
 
             # 检查球员-球队关系
             cursor.execute("""
-            SELECT COUNT(*) as count FROM player
+            SELECT COUNT(*) as count FROM players
             WHERE team_id IS NOT NULL AND team_id NOT IN (SELECT team_id FROM team)
             """)
             invalid_player_teams = cursor.fetchone()[0]
@@ -815,7 +809,7 @@ class NBASyncManager:
 
             # 检查赛程-球队关系
             cursor.execute("""
-            SELECT COUNT(*) as count FROM schedule
+            SELECT COUNT(*) as count FROM games
             WHERE home_team_id NOT IN (SELECT team_id FROM team)
             OR away_team_id NOT IN (SELECT team_id FROM team)
             """)
@@ -829,7 +823,7 @@ class NBASyncManager:
 
             # 检查是否有空的必要字段
             cursor.execute("""
-            SELECT COUNT(*) as count FROM team
+            SELECT COUNT(*) as count FROM teams
             WHERE nickname IS NULL OR abbreviation IS NULL
             """)
             invalid_teams = cursor.fetchone()[0]
@@ -841,7 +835,7 @@ class NBASyncManager:
                 })
 
             cursor.execute("""
-            SELECT COUNT(*) as count FROM player
+            SELECT COUNT(*) as count FROM players
             WHERE display_first_last IS NULL
             """)
             invalid_players = cursor.fetchone()[0]

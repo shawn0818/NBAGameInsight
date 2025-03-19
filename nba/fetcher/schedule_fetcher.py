@@ -1,5 +1,5 @@
 from typing import Dict, Optional, Any, List
-from datetime import timedelta
+from datetime import timedelta, datetime
 from .base_fetcher import BaseNBAFetcher, BaseRequestConfig, BaseCacheConfig
 from config import NBAConfig
 
@@ -10,6 +10,32 @@ class ScheduleConfig:
     SCHEDULE_ENDPOINT: str = "scheduleleaguev2"  # 端点
     CACHE_PATH = NBAConfig.PATHS.SCHEDULE_CACHE_DIR
     CACHE_DURATION: timedelta = timedelta(days=1)  # 赛程数据每天更新
+
+    START_SEASON = "1946-47"  # NBA首个赛季，首场正式比赛是0024600001
+
+    @property
+    def current_season(self) -> str:
+        """
+        根据当前日期动态计算当前NBA赛季
+        NBA赛季通常从每年10月开始，一直持续到次年6月
+        赛季表示为 "YYYY-YY" 格式，如 "2024-25"
+        """
+        now = datetime.now()
+        current_year = now.year
+        current_month = now.month
+
+        # 如果当前月份是10-12月，那么赛季是当前年份开始
+        # 如果当前月份是1-9月，那么赛季是前一年开始
+        if current_month >= 10:  # 10、11、12月属于新赛季
+            season_start_year = current_year
+        else:  # 1-9月属于上一年开始的赛季
+            season_start_year = current_year - 1
+
+        # 赛季结束年份的后两位
+        season_end_short = str(season_start_year + 1)[-2:]
+
+        return f"{season_start_year}-{season_end_short}"
+
 
 class ScheduleFetcher(BaseNBAFetcher):
     def __init__(self, custom_config: Optional[ScheduleConfig] = None):
@@ -86,11 +112,12 @@ class ScheduleFetcher(BaseNBAFetcher):
 
         return results
 
-    def get_all_seasons(self) -> List[str]:
+    def _get_all_seasons(self) -> List[str]:
         """获取所有需要处理的赛季列表"""
         try:
             start_year = int(self.schedule_config.START_SEASON.split('-')[0])
-            end_year = int(self.schedule_config.CURRENT_SEASON.split('-')[0])
+            # 使用动态计算的CURRENT_SEASON属性
+            end_year = int(self.schedule_config.current_season.split('-')[0])
 
             seasons = []
             for year in range(start_year, end_year + 1):

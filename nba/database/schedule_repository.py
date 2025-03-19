@@ -70,7 +70,7 @@ class ScheduleRepository:
 
                 cursor = self.db_manager.conn.cursor()
                 cursor.execute("""
-                SELECT game_id FROM schedule 
+                SELECT game_id FROM games 
                 WHERE (home_team_id = ? OR away_team_id = ?) 
                   AND game_date = ?
                 ORDER BY game_date_time_utc
@@ -98,7 +98,7 @@ class ScheduleRepository:
         """
         try:
             cursor = self.db_manager.conn.cursor()
-            cursor.execute("SELECT * FROM schedule WHERE game_id = ?", (game_id,))
+            cursor.execute("SELECT * FROM games WHERE game_id = ?", (game_id,))
             schedule = cursor.fetchone()
 
             if schedule:
@@ -129,7 +129,7 @@ class ScheduleRepository:
                 date_str = target_date
 
             cursor.execute('''
-            SELECT * FROM schedule 
+            SELECT * FROM games 
             WHERE game_date = ? 
             ORDER BY game_date_time_utc
             ''', (date_str,))
@@ -155,7 +155,7 @@ class ScheduleRepository:
         try:
             cursor = self.db_manager.conn.cursor()
             cursor.execute('''
-            SELECT * FROM schedule 
+            SELECT * FROM games 
             WHERE home_team_id = ? OR away_team_id = ? 
             ORDER BY game_date_time_utc DESC 
             LIMIT ?
@@ -184,7 +184,7 @@ class ScheduleRepository:
             now = datetime.now(timezone.utc).isoformat()
 
             cursor.execute('''
-            SELECT * FROM schedule 
+            SELECT * FROM games 
             WHERE (home_team_id = ? OR away_team_id = ?) 
               AND game_date_time_utc > ? 
               AND game_status = 1 
@@ -215,7 +215,7 @@ class ScheduleRepository:
             now = datetime.now(timezone.utc).isoformat()
 
             cursor.execute('''
-            SELECT * FROM schedule 
+            SELECT * FROM games 
             WHERE (home_team_id = ? OR away_team_id = ?) 
               AND game_date_time_utc < ? 
             ORDER BY game_date_time_utc DESC 
@@ -246,14 +246,14 @@ class ScheduleRepository:
 
             if game_type:
                 cursor.execute('''
-                SELECT * FROM schedule 
+                SELECT * FROM games 
                 WHERE season_year = ? AND game_type = ?
                 ORDER BY game_date_time_utc 
                 LIMIT ?
                 ''', (season, game_type, limit))
             else:
                 cursor.execute('''
-                SELECT * FROM schedule 
+                SELECT * FROM games 
                 WHERE season_year = ? 
                 ORDER BY game_date_time_utc 
                 LIMIT ?
@@ -278,7 +278,7 @@ class ScheduleRepository:
         """
         try:
             cursor = self.db_manager.conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM schedule WHERE season_year = ?", (season,))
+            cursor.execute("SELECT COUNT(*) FROM games WHERE season_year = ?", (season,))
             result = cursor.fetchone()
             return result[0] if result else 0
         except sqlite3.Error as e:
