@@ -257,8 +257,9 @@ class WeiboContentGenerator:
             "请基于以下信息生成一个中文标题，要求：\n"
             "1. 必须用中文表达，包括所有球队名称（{home_team} 和 {away_team}）；\n"
             "2. 明确包含比赛最终比分并强调胜负结果（{home_score} : {away_score}）；注意胜负需要从湖人的视角看待。\n"
-            "3. 标题字数控制在20字以内，简洁明了且适合社交媒体传播。\n"
-            "4. 可以参考古典书名/章节风格，并适度使用Emoji来吸引注意。\n"
+            "3. 注意：只在数据中明确包含rivalry_info字段且available为true时，才提及两队对抗历史,可以简要融入系列赛情况；否则不要提及；\n"
+            "4. 标题字数控制在20字以内，简洁明了且适合社交媒体传播。\n"
+            "5. 可以参考古典书名/章节风格，并适度使用Emoji来吸引注意。\n"
             "比赛信息：{game_info}"
         )
 
@@ -304,8 +305,9 @@ class WeiboContentGenerator:
             "1. 详细总结比赛的关键数据（如得分、篮板、助攻等）；\n"
             "2. 仔细查看提供数据中的关于比赛回合的部分，突出比赛过程中的关键转折点和重要时刻；\n"
             "3. 提及湖人队表现突出的1-3名球员，尤其是球队在进攻、组织、防守端表现较好的球员，并结合数据进行分析；\n"
-            "4. 使用生动语言，适合社交媒体发布，适当使用emoji。\n"
-            "5. 所有球队和球员名称均用中文，百分数只保留小数点后两位。\n"
+            "4. 注意：只在数据中明确包含rivalry_info字段且available为true时，才提及两队对抗历史；否则不要提及；\n"
+            "5. 使用生动语言，适合社交媒体发布，适当使用emoji。\n"
+            "6. 所有球队和球员名称均用中文，百分数只保留小数点后两位。\n"
             "比赛信息：{summary_data}"
         )
 
@@ -313,6 +315,11 @@ class WeiboContentGenerator:
         for key in ["game_info", "game_status", "game_result"]:
             if key in ai_data and ai_data[key]:
                 summary_data[key] = ai_data[key]
+
+        # 添加球队对抗历史信息
+        if "rivalry_info" in ai_data and ai_data["rivalry_info"].get("available", False):
+            summary_data["rivalry_info"] = ai_data["rivalry_info"]
+
         if "team_stats" in ai_data:
             summary_data["team_stats"] = {
                 "home": {

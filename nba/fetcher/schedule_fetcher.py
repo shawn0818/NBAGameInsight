@@ -112,7 +112,7 @@ class ScheduleFetcher(BaseNBAFetcher):
 
         return results
 
-    def _get_all_seasons(self) -> List[str]:
+    def get_all_seasons(self) -> List[str]:
         """获取所有需要处理的赛季列表"""
         try:
             start_year = int(self.schedule_config.START_SEASON.split('-')[0])

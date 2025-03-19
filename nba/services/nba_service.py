@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 import time
 
-from nba.database.db_service import DatabaseService
+from nba.database.nba_base.db_service import DatabaseService
 from nba.services.game_data_service import GameDataProvider, InitializationError, GameDataConfig
 from nba.services.game_video_service import GameVideoService, VideoConfig
 from nba.services.game_charts_service import GameChartsService, ChartConfig

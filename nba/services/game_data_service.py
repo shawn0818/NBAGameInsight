@@ -1,10 +1,10 @@
 # game_data_service.py
-from typing import Optional, Any
+from typing import Optional, Any, Dict
 from functools import lru_cache
 from pathlib import Path
 from dataclasses import dataclass
 
-from nba.database.db_service import DatabaseService
+from nba.database.nba_base.db_service import DatabaseService
 from nba.fetcher.game_fetcher import GameFetcher
 from nba.parser.game_parser import GameDataParser
 from nba.models.game_model import Game

@@ -39,6 +39,7 @@ class GameDataResponse:
     """比赛数据响应类"""
     boxscore: Dict[str, Any]  # 比赛统计数据
     playbyplay: Dict[str, Any]  # 比赛回放数据
+    boxscore_summary: Optional[Dict[str, Any]] = None  # 添加比赛摘要数据，包含对抗历史信息
 
     @property
     def status(self) -> GameStatusEnum:
@@ -91,23 +92,27 @@ class GameFetcher(BaseNBAFetcher):
                 return None
 
             # 2. 获取playbyplay数据 (不再区分比赛状态)
-            playbyplay_data, _ = self._get_data_with_status(  # 统一获取 playbyplay 数据
+            playbyplay_data, _ = self._get_data_with_status(
                 game_id,
                 'playbyplay',
                 force_update,
-                game_status  # 状态仍然可以传递，即使比赛未开始
+                game_status
             )
 
             if not playbyplay_data or 'game' not in playbyplay_data:
                 self.logger.error("无法获取playbyplay数据 (即使比赛未开始，也尝试获取)")
-                playbyplay_data = {'game': {}}  # 即使获取失败，也提供一个空字典，确保后续代码可以执行
+                playbyplay_data = {'game': {}}
             elif game_status == GameStatusEnum.NOT_STARTED:
                 self.logger.info("比赛未开始，但已尝试获取playbyplay数据")
 
-                # 3. 构建响应
+            # 3. 获取boxscore_summary数据
+            boxscore_summary_data = self.get_boxscore_summary(game_id, force_update)
+
+            # 4. 构建响应
             return GameDataResponse(
                 boxscore=boxscore_data['game'],
-                playbyplay=playbyplay_data['game']  # 确保 playbyplay_data 被使用
+                playbyplay=playbyplay_data['game'],
+                boxscore_summary=boxscore_summary_data  # 添加摘要数据
             )
 
         except Exception as e:
@@ -159,6 +164,46 @@ class GameFetcher(BaseNBAFetcher):
             self.logger.error(f"获取比赛状态失败: {e}")
             return GameStatusEnum.NOT_STARTED
 
+    def get_boxscore_summary(self, game_id: str, force_update: bool = False) -> Optional[Dict[str, Any]]:
+        """获取NBA比赛的摘要信息
+
+        该方法获取比赛的总体摘要信息，包括比赛基本信息、球队信息、比赛记录、
+        场馆信息、裁判信息、比赛进程、比分等综合性数据。
+
+        Args:
+            game_id: 比赛ID
+            force_update: 是否强制更新缓存
+
+        Returns:
+            Dict: 比赛摘要数据
+        """
+        try:
+            # 使用endpoint和params
+            endpoint = "boxscoresummaryv2"
+            params = {
+                "GameID": game_id
+            }
+
+            cache_key = f"boxscore_summary_v2_{game_id}"
+
+            # 使用fetch_data方法获取数据
+            data = self.fetch_data(
+                endpoint=endpoint,
+                params=params,
+                cache_key=cache_key,
+                force_update=force_update
+            )
+
+            if not data:
+                self.logger.error(f"无法获取比赛{game_id}的摘要信息")
+                return None
+
+            return data
+        except Exception as e:
+            self.logger.error(f"获取比赛摘要信息失败: {e}")
+            return None
+
+
     def get_boxscore_traditional(self, game_id: str, force_update: bool = False) -> Optional[Dict[str, Any]]:
         """获取比赛的传统盒子分数统计
 
@@ -199,7 +244,7 @@ class GameFetcher(BaseNBAFetcher):
             self.logger.error(f"获取传统盒子分数统计失败: {e}")
             return None
 
-    def get_playbyplay_v3(self, game_id: str, force_update: bool = False) -> Optional[Dict[str, Any]]:
+    def get_playbyplay(self, game_id: str, force_update: bool = False) -> Optional[Dict[str, Any]]:
         """获取比赛的详细回放数据(V3版本)
 
         Args:
@@ -263,7 +308,7 @@ class GameFetcher(BaseNBAFetcher):
 
         return results
 
-    def batch_get_playbyplay_v3(self, game_ids: List[str], force_update: bool = False) -> Dict[str, Dict[str, Any]]:
+    def batch_get_playbyplay(self, game_ids: List[str], force_update: bool = False) -> Dict[str, Dict[str, Any]]:
         """批量获取多场比赛的详细回放数据(V3版本)
 
         Args:
@@ -277,13 +322,81 @@ class GameFetcher(BaseNBAFetcher):
 
         # 定义单个获取函数
         def fetch_single(game_id):
-            return self.get_playbyplay_v3(game_id, force_update)
+            return self.get_playbyplay(game_id, force_update)
 
         # 使用基类的批量获取方法
         results = self.batch_fetch(
             ids=game_ids,
             fetch_func=fetch_single,
             task_name="playbyplay_v3_batch"
+        )
+
+        return results
+
+    def get_boxscore_misc(self, game_id: str, force_update: bool = False) -> Optional[Dict[str, Any]]:
+        """获取NBA比赛的Box Score杂项统计信息
+
+        该方法获取比赛中的各种非传统统计数据，包括得分来源(失误、二次进攻、快攻、油漆区)
+        以及犯规和盖帽等详细信息。为主队和客队的每位球员提供全面的杂项统计数据。
+
+        Args:
+            game_id: 比赛ID
+            force_update: 是否强制更新缓存
+
+        Returns:
+            Dict: Box Score杂项统计数据
+        """
+        try:
+            # 使用endpoint和params
+            endpoint = "boxscoremiscv3"
+            params = {
+                "GameID": game_id,
+                "EndPeriod": 0,
+                "EndRange": 28800,
+                "StartPeriod": 0,
+                "StartRange": 0
+            }
+
+            cache_key = f"boxscore_misc_v3_{game_id}"
+
+            # 使用fetch_data方法获取数据
+            data = self.fetch_data(
+                endpoint=endpoint,
+                params=params,
+                cache_key=cache_key,
+                force_update=force_update
+            )
+
+            if not data:
+                self.logger.error(f"无法获取比赛{game_id}的Box Score杂项统计信息")
+                return None
+
+            return data
+        except Exception as e:
+            self.logger.error(f"获取Box Score杂项统计信息失败: {e}")
+            return None
+
+    def batch_get_boxscore_misc(self, game_ids: List[str], force_update: bool = False) -> Dict[str, Dict[str, Any]]:
+        """批量获取多场比赛的Box Score杂项统计信息
+
+        Args:
+            game_ids: 比赛ID列表
+            force_update: 是否强制更新缓存
+
+        Returns:
+            Dict: 以比赛ID为键，杂项统计数据为值的字典
+        """
+        self.logger.info(f"批量获取{len(game_ids)}场比赛的Box Score杂项统计信息")
+
+        # 定义单个获取函数
+        def fetch_single(game_id):
+            return self.get_boxscore_misc(game_id, force_update)
+
+        # 使用基类的批量获取方法
+        results = self.batch_fetch(
+            ids=game_ids,
+            fetch_func=fetch_single,
+            task_name="boxscore_misc_v3_batch"
         )
 
         return results
