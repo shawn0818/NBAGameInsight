@@ -1,7 +1,13 @@
-# NBAGameInsight: NBA比赛分析平台
+# NBAGameInsight: NBA比赛分析平台 | NBA Game Analysis Platform
+
+<div align="center">
 
 [![Python 版本](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![许可证](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+**[中文](README.md) | [English](#english-version)**
+
+</div>
 
 **一个强大且智能的 Python 工具，用于获取、解析、分析和可视化 NBA 比赛数据。**
 
@@ -265,3 +271,281 @@ NBAGameInsight/
 ---
 
 **感谢您的关注和支持！**
+
+---
+
+<a name="english-version"></a>
+
+# NBAGameInsight: NBA Game Analysis Platform
+
+<div align="center">
+
+[![Python Version](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+**[中文](#) | [English](README_EN.md)**
+
+</div>
+
+**A powerful and intelligent Python tool for fetching, parsing, analyzing, and visualizing NBA game data.**
+
+NBAGameInsight is dedicated to providing comprehensive data services for NBA enthusiasts, data analysts, and developers. This project integrates data scraping, structured parsing, visualization, intelligent AI analysis, and social media publishing capabilities to help users gain deep insights into NBA games and develop various applications based on the data.
+
+## 🌟 Key Features
+
+### 📊 Comprehensive Data Acquisition
+- **Real-time & Historical Data**: Support for retrieving game Boxscores, PlayByPlay data, schedules, league standings, player and team information
+- **Authoritative Data Sources**: Data from NBA official and Stats API, ensuring accuracy and timeliness
+- **Incremental Updates**: Support for automatic synchronization of new season data, keeping the database up-to-date
+
+### 🔄 Efficient Data Processing
+- **Structured Data**: Data validation and conversion based on Pydantic v2 models, ensuring data quality
+- **Intelligent Parsing**: Powerful parsers that convert raw data into easy-to-use Python objects
+- **Caching Mechanism**: Built-in intelligent caching system that significantly improves response speed and performance
+
+### 📈 Visual Data Display
+- **Professional Shot Charts**: Generate shot distribution heat maps for players and teams, visually showing scoring hot zones
+- **Player Impact Analysis**: Visualize player scoring and assist impact, comprehensively showcasing player value
+- **Multiple Output Formats**: Support for JSON, Markdown, and other output formats to suit different scenarios
+
+### 🎬 Video Highlights Processing
+- **Automatic Downloads**: Automatically obtain game highlights and player compilations from official sources
+- **Intelligent Merging**: Combine scattered clips into complete highlight videos for a better viewing experience
+- **GIF Generation**: Create high-quality GIFs for key plays, facilitating sharing and display
+
+### 🤖 Intelligent AI Analysis
+- **Game Summaries**: AI-generated professional game analysis and summaries providing deep insights
+- **Player Performance Evaluation**: Intelligent analysis of player data, providing professional evaluations
+- **Play-by-Play Commentary**: Generate professional commentary for key moments, capturing the exciting moments of the game
+
+### 📱 Social Media Integration
+- **Weibo Publishing**: Support for one-click publishing of game analysis, charts, videos, and other content to Weibo
+- **Content Generation**: Automatically generate platform-specific copy and tags to enhance dissemination effect
+- **Batch Processing**: Support for batch publishing of multiple content types, efficiently managing social media content
+
+### 🛠️ Flexible Command Line Tools
+- **Multi-Mode Support**: Provides Info, Chart, Video, Weibo, AI and other operating modes
+- **Custom Configuration**: Support for customizing behavior through command line parameters or configuration files
+- **Batch Processing**: Built-in combination commands to execute multiple tasks at once
+
+## 🚀 Quick Start
+
+### Environment Preparation
+
+- **Python Requirements**: Python 3.8 or higher
+- **Installing Dependencies**:
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/NBAGameInsight.git
+cd NBAGameInsight
+
+# Create a virtual environment (recommended)
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+# or
+venv\Scripts\activate  # Windows
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+### Basic Configuration
+
+1. **Copy the configuration file template**:
+
+```bash
+cp .env.example .env
+```
+
+2. **Edit the configuration file**: Modify the configuration items in the `.env` file as needed:
+
+```
+# Required configuration
+API_KEY=your_nba_api_key
+
+# Optional configuration
+WB_COOKIES=your_weibo_cookies  # For Weibo publishing functionality
+AI_API_KEY=your_ai_api_key     # For AI analysis functionality
+```
+
+### Basic Usage Examples
+
+#### View Game Information
+
+```bash
+# Get information about the Lakers' most recent game
+python main.py --team Lakers --mode info
+```
+
+#### Generate Shot Charts
+
+```bash
+# Generate LeBron James' shot chart from the most recent game
+python main.py --team Lakers --player "LeBron James" --mode chart
+```
+
+#### Process Video Highlights
+
+```bash
+# Generate highlights video for the Warriors' most recent game
+python main.py --team Warriors --mode video-team
+
+# Generate highlights video for Stephen Curry's most recent game
+python main.py --team Warriors --player "Stephen Curry" --mode video-player
+```
+
+#### Publish to Weibo
+
+```bash
+# Publish Kevin Durant's most recent game highlights video to Weibo
+python main.py --team Suns --player "Kevin Durant" --mode weibo-player
+```
+
+#### AI Game Analysis
+
+```bash
+# Perform AI analysis on Durant's most recent game
+python main.py --team Suns --player "Kevin Durant" --mode ai
+```
+
+#### Update Season Data
+
+```bash
+# Update data for the 2025-26 season
+python main.py --mode new_season --new-season "2025-26"
+```
+
+### Command Line Parameters
+
+```
+Parameter       Description                            Default
+--team          Specify team                           Lakers
+--player        Specify player                         LeBron James
+--date          Specify date (YYYY-MM-DD or "last")    last
+--mode          Running mode                           all
+--no-weibo      Don't publish to Weibo                 False
+--debug         Enable debug mode                      False
+--config        Specify configuration file path        
+--new-season    Specify new season identifier          
+```
+
+Available running modes:
+- `info`: Display game information only
+- `chart`: Generate charts only
+- `video`: Process all videos
+- `video-team`: Process team videos only
+- `video-player`: Process player videos only
+- `video-rounds`: Process player video round GIFs
+- `weibo`: Execute all Weibo publishing functions
+- `weibo-team`: Publish team highlight videos only
+- `weibo-player`: Publish player highlight videos only
+- `weibo-chart`: Publish player shot charts only
+- `weibo-team-chart`: Publish team shot charts only
+- `weibo-round`: Publish player round commentary and GIFs only
+- `ai`: Run AI analysis only
+- `all`: Execute all functions (default)
+- `new_season`: Synchronize and update database for new season
+
+## 💻 Programmatic Usage Example
+
+In addition to the command line tool, you can use the library directly in your Python programs:
+
+```python
+from nba.services.nba_service import NBAService, NBAServiceConfig
+
+# Create configuration
+config = NBAServiceConfig(
+    default_team="Lakers",
+    default_player="LeBron James",
+    date_str="last"
+)
+
+# Use context manager to ensure resources are properly closed
+with NBAService(config=config) as nba_service:
+    # Get basic game information
+    game = nba_service.data_service.get_game("Lakers")
+    if game:
+        print(f"Game ID: {game.game_data.game_id}")
+        print(f"Home Team: {game.game_data.home_team.team_city} {game.game_data.home_team.team_name}")
+        print(f"Away Team: {game.game_data.away_team.team_city} {game.game_data.away_team.team_name}")
+        
+    # Generate player shot charts
+    chart_paths = nba_service.generate_shot_charts(
+        player_name="LeBron James",
+        chart_type="both",
+        shot_outcome="made_only"
+    )
+    
+    # Get player highlight videos
+    player_videos = nba_service.get_player_highlights(
+        player_name="LeBron James",
+        merge=True
+    )
+    
+    # Execute AI analysis
+    game_ai_data = game.prepare_ai_data()
+    print(f"Analysis data contains {len(game_ai_data.get('events', {}).get('data', []))} events")
+```
+
+## 📁 Project Structure
+
+```
+NBAGameInsight/
+├── nba/                 # Core functional modules
+│   ├── database/        # Database module
+│   ├── fetcher/         # Data retrieval module
+│   ├── models/          # Data models
+│   ├── parser/          # Data parsing module
+│   └── services/        # Service modules
+│       ├── nba_service.py         # Main service
+│       ├── game_data_service.py   # Data service
+│       ├── game_video_service.py  # Video service
+│       └── game_charts_service.py # Chart service
+├── weibo/               # Weibo integration module
+│   ├── weibo_content_generator.py # Content generation
+│   └── weibo_post_service.py      # Publishing service
+├── utils/               # Utility modules
+│   ├── ai_processor.py     # AI processing
+│   ├── logger_handler.py   # Log handling
+│   └── video_converter.py  # Video conversion
+├── data/                # Data cache
+├── storage/             # Media storage
+│   ├── pictures/        # Chart storage
+│   ├── videos/          # Video storage
+│   └── gifs/            # GIF storage
+├── main.py              # Main program entry
+├── config.py            # Global configuration module    
+├── requirements.txt     # Dependency list
+└── README.md            # Project documentation
+```
+
+## 🔗 Practical Application Cases
+
+- **Team Data Analysis**: Automatically generate data reports and video highlights for each team game
+- **Player Data Tracking**: Track and analyze a specific player's performance and progress
+- **Weibo Content Operations**: Provide automated content publishing solutions for NBA-related accounts
+- **Data Visualization Display**: Generate professional shot distribution charts and impact analysis charts
+
+## 🤝 Contributing
+
+Contributions of any form are welcome, including but not limited to:
+
+- Submitting bug reports
+- Suggesting new features
+- Contributing code (e.g., adding new data sources, parsers, visualization features, etc.)
+- Improving documentation
+
+Before submitting a Pull Request, please ensure that your code style complies with PEP 8 standards and add necessary unit tests.
+
+## 📝 License
+
+This project is open-source under the MIT License. For details, please see the [LICENSE](LICENSE) file.
+
+## 📧 Contact
+
+If you have any questions or suggestions, please feel free to contact us through GitHub Issues or Email.
+
+---
+
+**Thank you for your attention and support!**
