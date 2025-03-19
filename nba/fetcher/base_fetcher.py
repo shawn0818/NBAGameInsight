@@ -161,23 +161,6 @@ class CacheManager:
                 self.logger.error(f"清理缓存文件失败 {cache_file}: {e}")
 
 
-class BaseRequestConfig:
-    """基础请求配置"""
-
-    def __init__(
-        self,
-        cache_config: BaseCacheConfig,
-        base_url: Optional[str] = None,  # 改为可选参数
-        retry_config: Optional[RetryConfig] = None,
-        request_timeout: int = 30
-    ):
-        # base_url 现在是可选的
-        self.base_url = base_url
-        self.cache_config = cache_config
-        self.retry_config = retry_config or RetryConfig()
-        self.request_timeout = request_timeout
-
-
 class BatchRequestTracker:
     """批量请求进度跟踪器 - 内部使用，不暴露给外部"""
 
@@ -264,6 +247,21 @@ class BatchRequestTracker:
             'completion_percentage': round(len(self.completed_ids) / total * 100, 2) if total else 0
         }
 
+class BaseRequestConfig:
+    """基础请求配置"""
+
+    def __init__(
+        self,
+        cache_config: BaseCacheConfig,
+        base_url: Optional[str] = None,  # 改为可选参数
+        retry_config: Optional[RetryConfig] = None,
+        request_timeout: int = 30
+    ):
+        # base_url 现在是可选的
+        self.base_url = base_url
+        self.cache_config = cache_config
+        self.retry_config = retry_config or RetryConfig()
+        self.request_timeout = request_timeout
 
 class BaseNBAFetcher:
     """NBA数据获取基类"""
@@ -407,32 +405,48 @@ class BaseNBAFetcher:
             cache_root=self.config.cache_config.root_path
         )
 
-        # 获取未处理的ID
-        pending_ids = tracker.get_pending_ids(ids)
-        self.logger.info(f"总共 {len(ids)} 个ID，其中 {len(pending_ids)} 个待处理")
+        # 创建ID到类型的映射，以便在处理后恢复原始类型
+        id_type_map = {str(id_): type(id_) for id_ in ids}
+
+        # 获取未处理的ID (字符串格式)
+        pending_ids_str = tracker.get_pending_ids(ids)
+        self.logger.info(f"总共 {len(ids)} 个ID，其中 {len(pending_ids_str)} 个待处理")
 
         results = {}
         processed = 0
 
         # 批量处理
-        for i in range(0, len(pending_ids), batch_size):
-            batch_ids = pending_ids[i:i + batch_size]
+        for i in range(0, len(pending_ids_str), batch_size):
+            batch_ids_str = pending_ids_str[i:i + batch_size]
             self.logger.info(
-                f"处理批次 {i // batch_size + 1}/{(len(pending_ids) - 1) // batch_size + 1}，包含 {len(batch_ids)} 个ID")
+                f"处理批次 {i // batch_size + 1}/{(len(pending_ids_str) - 1) // batch_size + 1}，包含 {len(batch_ids_str)} 个ID")
 
-            for item_id in batch_ids:
+            for item_id_str in batch_ids_str:
                 try:
-                    # 调用提供的获取函数
+                    # 尝试将字符串ID转换回原始类型
+                    original_type = id_type_map.get(item_id_str, int)  # 默认假设为int类型
+                    try:
+                        # 对于数字类型，转换回数字
+                        if original_type in (int, float):
+                            item_id = original_type(item_id_str)
+                        else:
+                            item_id = item_id_str  # 保持原样
+                    except (ValueError, TypeError):
+                        # 如果转换失败，保持为字符串
+                        item_id = item_id_str
+
+                    # 调用提供的获取函数，使用转换后的ID
                     data = fetch_func(item_id)
 
                     if data:
-                        results[item_id] = data
-                        tracker.mark_completed(item_id)
+                        # 保存结果使用字符串ID作为键（与tracker兼容）
+                        results[item_id_str] = data
+                        tracker.mark_completed(item_id_str)
                     else:
-                        tracker.mark_failed(item_id, "返回数据为空")
+                        tracker.mark_failed(item_id_str, "返回数据为空")
                 except Exception as e:
-                    self.logger.error(f"处理ID {item_id} 时出错: {str(e)}")
-                    tracker.mark_failed(item_id, str(e))
+                    self.logger.error(f"处理ID {item_id_str} 时出错: {str(e)}")
+                    tracker.mark_failed(item_id_str, str(e))
 
                 processed += 1
                 # 定期保存进度

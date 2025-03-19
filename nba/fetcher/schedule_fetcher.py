@@ -6,15 +6,12 @@ from config import NBAConfig
 
 class ScheduleConfig:
     """赛程数据配置"""
-    SCHEDULE_URL: str = "https://stats.nba.com/stats/scheduleleaguev2"
+    BASE_URL: str = "https://stats.nba.com/stats"  # 基础URL
+    SCHEDULE_ENDPOINT: str = "scheduleleaguev2"  # 端点
     CACHE_PATH = NBAConfig.PATHS.SCHEDULE_CACHE_DIR
     CACHE_DURATION: timedelta = timedelta(days=1)  # 赛程数据每天更新
-    START_SEASON = "1970-71"  # 最早有数据统计的赛季
-    CURRENT_SEASON = "2024-25"  # 当前赛季
-
 
 class ScheduleFetcher(BaseNBAFetcher):
-
     def __init__(self, custom_config: Optional[ScheduleConfig] = None):
         """初始化赛程数据获取器"""
         self.schedule_config = custom_config or ScheduleConfig()
@@ -24,38 +21,29 @@ class ScheduleFetcher(BaseNBAFetcher):
             root_path=self.schedule_config.CACHE_PATH
         )
 
+        # 使用 BASE_URL 而不是完整的 URL
         base_config = BaseRequestConfig(
+            base_url=self.schedule_config.BASE_URL,
             cache_config=cache_config,
-            request_timeout=60  # 增加超时时间因为数据量大
+            request_timeout=60
         )
 
         super().__init__(base_config)
 
-    def get_schedule_by_season(self, season: str, force_update: bool = False,
-                               ) -> Optional[Dict[str, Any]]:
-        """
-        获取指定赛季的赛程数据
-
-        Args:
-            season: 赛季字符串，如"2024-25"
-            force_update: 是否强制更新缓存
-
-
-        Returns:
-            赛程数据字典
-        """
+    def get_schedule_by_season(self, season: str, force_update: bool = False) -> Optional[Dict[str, Any]]:
+        """获取指定赛季的赛程数据"""
         try:
             cache_key = f"schedule_{season}"
 
-            # 使用基类的 fetch_data 方法，简化请求和缓存处理
             params = {
                 "LeagueID": "00",  # NBA
                 "Season": season
             }
 
             self.logger.info(f"正在请求赛季{season}的数据...")
+            # 使用端点方式请求
             response = self.fetch_data(
-                url=self.schedule_config.SCHEDULE_URL,
+                endpoint=self.schedule_config.SCHEDULE_ENDPOINT,  # 使用端点
                 params=params,
                 cache_key=cache_key,
                 force_update=force_update

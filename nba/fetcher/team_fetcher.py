@@ -1,4 +1,3 @@
-import time
 from typing import Dict, Optional, Any, List
 from datetime import timedelta
 import requests
@@ -11,12 +10,12 @@ class TeamConfig:
     BASE_URL: str = "https://stats.nba.com/stats"
     CACHE_PATH = NBAConfig.PATHS.TEAM_CACHE_DIR
     CACHE_DURATION: timedelta = timedelta(days=7)  # 球队数据缓存7天
-    #ALL_TEAM_LIST =  [1610612739, 1610612760, 1610612763, 161061610612743, 1610612752,
-    # 1610612747, 1610612749, 1610612745, 1610612754, 1610612744, 1610612765, 1610612750,
-    # 1610612737, 1610612746, 1610612753, 1610612748, 1610612758, 1610612742, 1610612741,
-    # 1610612756, 1610612761, 1610612759, 1610612755, 1610612757, 1610612751, 1610612740,
-    # 1610612766, 1610612762, 1610612764]
-
+    ALL_TEAM_LIST = [1610612739, 1610612760, 1610612738, 1610612743, 1610612752,
+                     1610612747, 1610612749, 1610612754, 1610612763, 1610612744,
+                     1610612765, 1610612737, 1610612750, 1610612746, 1610612753,
+                     1610612741, 1610612758, 1610612742, 1610612748, 1610612756,
+                     1610612761, 1610612751, 1610612757, 1610612755, 1610612759,
+                     1610612740, 1610612766, 1610612762, 1610612764, 1610612745]
 
 
 class TeamFetcher(BaseNBAFetcher):
@@ -88,25 +87,36 @@ class TeamFetcher(BaseNBAFetcher):
             self.logger.error(f"获取球队数据失败: {e}")
             return None
 
-    def get_multiple_teams_details(self, team_ids: List[int],
+    def get_multiple_teams_details(self, team_ids: Optional[List[int]] = None,
                                    force_update: bool = False) -> Dict[int, Optional[Dict[str, Any]]]:
-        """批量获取多支球队详细信息，支持断点续传
+        """批量获取多支球队详细信息，支持断点续传"""
+        # 如果未提供team_ids，则使用所有球队
+        if team_ids is None:
+            team_ids = self.team_config.ALL_TEAM_LIST
 
-        Args:
-            team_ids: 球队ID列表
-            force_update: 是否强制更新
-
-        Returns:
-            Dict[int, Optional[Dict[str, Any]]]: 球队详情字典，key为球队ID
-        """
         self.logger.info(f"批量获取{len(team_ids)}支球队详细信息")
 
-        return self.batch_fetch(
+        # 如果强制更新，清理旧的缓存文件
+        if force_update:
+            # 清理球队相关的进度文件
+            progress_file = self.config.cache_config.root_path / "batch_multiple_teams_details_progress.json"
+            if progress_file.exists():
+                try:
+                    progress_file.unlink()
+                    self.logger.info("已清除球队同步进度缓存")
+                except Exception as e:
+                    self.logger.error(f"清除进度文件失败: {e}")
+
+        # 获取原始结果（字符串键）
+        string_key_results = self.batch_fetch(
             ids=team_ids,
             fetch_func=lambda team_id: self.get_team_details(team_id, force_update),
             task_name="multiple_teams_details",
             batch_size=5  # 球队少，可以用小批量
         )
+
+        # 将字符串键转换为整数键以匹配返回类型声明
+        return {int(k): v for k, v in string_key_results.items()}
 
     def cleanup_cache(self, team_id: Optional[int] = None, older_than: Optional[timedelta] = None) -> None:
         """清理缓存数据

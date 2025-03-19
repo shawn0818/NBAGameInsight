@@ -214,6 +214,33 @@ class VideoFetcher(BaseNBAFetcher):
             self.logger.error(f"获取视频链接数据失败: {e}")
             return None
 
+    def batch_get_games_video_urls(self, game_ids: list[str], batch_size: int = 10) -> Dict[str, Any]:
+        """批量获取多个比赛的视频数据
+
+        Args:
+            game_ids: 比赛ID列表
+            batch_size: 批处理大小，默认为10
+
+        Returns:
+            Dict[str, Any]: 以game_id为键的视频数据字典
+        """
+        self.logger.info(f"开始批量获取{len(game_ids)}个比赛的视频数据")
+
+        # 创建获取单个比赛视频的函数
+        def fetch_single_game(game_id: str) -> Optional[Dict[str, Any]]:
+            return self.get_game_video_urls(game_id=game_id)
+
+        # 使用基类的批量获取方法
+        results = self.batch_fetch(
+            ids=game_ids,
+            fetch_func=fetch_single_game,
+            task_name="game_videos",
+            batch_size=batch_size
+        )
+
+        self.logger.info(f"批量获取完成，成功获取{len(results)}/{len(game_ids)}个比赛的视频数据")
+        return results
+
     def clear_cache(self):
         """清除缓存"""
         self.logger.info("正在清除视频数据缓存")

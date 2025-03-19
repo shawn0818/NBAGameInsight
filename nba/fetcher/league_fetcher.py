@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Dict, Optional, Any, List
+from typing import Dict, Optional, Any
 from datetime import datetime, timedelta
 from .base_fetcher import BaseNBAFetcher, BaseRequestConfig, BaseCacheConfig
 from config import NBAConfig
@@ -14,7 +14,6 @@ class LeagueConfig:
     # API端点
     ENDPOINTS = {
         'STANDINGS': 'leaguestandingsv3',
-        'ALL_PLAYERS': 'commonallplayers',
     }
 
     # 使用预定义的联盟ID
@@ -75,75 +74,4 @@ class LeagueFetcher(BaseNBAFetcher):
             self.logger.error(f"获取联盟排名数据失败: {e}")
             return None
 
-    def get_all_team_ids(self) -> List[int]:
-        """从联盟排名数据中获取所有球队ID
-
-        Returns:
-            List[int]: 球队ID列表
-        """
-        try:
-            # 获取排名数据
-            standings_data = self.get_standings_data()
-            if not standings_data or 'resultSets' not in standings_data:
-                self.logger.error("获取排名数据失败，无法提取球队ID")
-                return []
-
-            # 找到Standings结果集
-            standings_set = None
-            for result_set in standings_data['resultSets']:
-                if result_set['name'] == 'Standings':
-                    standings_set = result_set
-                    break
-
-            if not standings_set or 'headers' not in standings_set or 'rowSet' not in standings_set:
-                self.logger.error("排名数据格式异常，无法提取球队ID")
-                return []
-
-            # 获取TeamID的索引
-            headers = standings_set['headers']
-            team_id_index = headers.index('TeamID')
-
-            # 提取所有球队ID
-            team_ids = []
-            for row in standings_set['rowSet']:
-                if len(row) > team_id_index:
-                    team_ids.append(int(row[team_id_index]))
-
-            self.logger.info(f"成功提取{len(team_ids)}个球队ID: {team_ids}")
-            return team_ids
-
-        except Exception as e:
-            self.logger.error(f"提取球队ID失败: {e}")
-            return []
-
-    def get_all_players_info(self, force_update: bool = False) -> Optional[Dict[str, Any]]:
-        """
-        获取所有NBA球员数据
-
-        使用commonallplayers端点获取所有NBA球员的基本信息
-
-        Args:
-            force_update: 是否强制更新缓存数据
-
-        Returns:
-            所有球员的数据，获取失败时返回None
-        """
-        try:
-            params = {
-                "LeagueID": "00",  # 00表示NBA联盟
-                "IsOnlyCurrentSeason": 0  # 获取所有球员，不仅是当前赛季
-            }
-
-            data = self.fetch_data(
-                endpoint="commonallplayers",
-                params=params,
-                cache_key="all_players",
-                force_update=force_update
-            )
-
-            return data
-
-        except Exception as e:
-            self.logger.error(f"获取所有球员数据失败: {e}")
-            return None
 
