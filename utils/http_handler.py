@@ -19,10 +19,10 @@ class RetryableErrorType(Enum):
 @dataclass
 class RetryConfig:
     """重试配置"""
-    max_retries: int = 3
-    base_delay: float = 2.0
-    max_delay: float = 60.0
-    backoff_factor: float = 2.0
+    max_retries: int = 5
+    base_delay: float = 5.0
+    max_delay: float = 120.0
+    backoff_factor: float = 2.5
     jitter_factor: float = 0.1
     retry_status_codes: List[int] = None
 
@@ -131,10 +131,10 @@ class HTTPRequestManager:
 
         # 请求间隔控制 - 保持原接口不变，内部实现优化
         self.last_request_time = 0
-        self.min_request_interval = 3.0  # 保持原来的变量名
+        self.min_request_interval = 6.0  # 保持原来的变量名
         # 新增内部变量用于随机延迟
-        self._min_delay = 2.0
-        self._max_delay = 5.0
+        self._min_delay = 5.0
+        self._max_delay = 10.0
         self._consecutive_failures = 0
 
     @staticmethod
@@ -164,7 +164,7 @@ class HTTPRequestManager:
         # 根据连续失败次数动态调整延迟范围
         if self._consecutive_failures > 0:
             # 每次连续失败都会增加延迟，但有上限
-            factor = min(3.0, 1.0 + (self._consecutive_failures * 0.5))
+            factor = min(5.0, 1.0 + (self._consecutive_failures * 0.5))
             current_min = self._min_delay * factor
             current_max = self._max_delay * factor
         else:
@@ -199,11 +199,8 @@ class HTTPRequestManager:
                     response = self.session.request(method=method.upper(), url=url, params=params, json=data,
                                                     timeout=self.timeout, headers=self.headers)
 
-                    self.logger.debug(f"请求URL: {response.request.url}")
-                    self.logger.debug(f"请求方法: {method}")
-                    self.logger.debug(f"请求头: {self.headers}")
-                    self.logger.debug(f"响应状态码: {response.status_code}")
-                    self.logger.debug(f"响应头: {response.headers}")
+                    # 添加完整URL日志记录（包含参数）
+                    self.logger.info(f"实际请求URL: {response.request.url}")
 
                     if response.ok:
                         # 请求成功，重置连续失败计数

@@ -270,12 +270,22 @@ class BaseNBAFetcher:
     def _get_default_headers() -> Dict[str, str]:
         """获取默认请求头"""
         return {
-        'accept': 'application/json',
-        'accept-language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
-        'accept-encoding': 'gzip, deflate, br, zstd',
-        'connection': 'keep-alive',
-        'dnt': '1',
-        'referer': 'https://www.nba.com/',
+        "accept": "*/*",
+        "accept-encoding": "gzip, deflate, br, zstd",
+        "accept-language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+        "cache-control": "no-cache",
+        "connection": "keep-alive",
+        "dnt": "1",
+        #"host": "stats.nba.com",  #会影响cdn.nba,com
+        "origin": "https://www.nba.com",
+        "pragma": "no-cache",
+        "referer": "https://www.nba.com/",
+        "sec-ch-ua": '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-site",
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36',
     }
 
@@ -316,10 +326,6 @@ class BaseNBAFetcher:
         if url is None and endpoint is None:
             raise ValueError("Must provide either url or endpoint")
 
-        if endpoint is not None:
-            url = self.build_url(endpoint, params)
-            params = None
-
         # 如果有缓存key且不强制更新，尝试获取缓存数据
         if cache_key and not force_update:
             cached_data = self.cache_manager.get(
@@ -329,17 +335,31 @@ class BaseNBAFetcher:
             )
             if cached_data is not None:
                 # 直接返回data字段内容
-                return cached_data.get('data') if isinstance(cached_data,dict) and 'data' in cached_data else cached_data
+                return cached_data.get('data') if isinstance(cached_data,
+                                                             dict) and 'data' in cached_data else cached_data
 
         # 获取新数据
         try:
-            self.logger.info(f"正在发送请求: {url}")
-            data = self.http_manager.make_request(
-                url=url,
-                params=params,
-                data=data
-            )
+            if endpoint is not None:
+                # 构建基础URL（不包含查询参数）
+                base_url = self.config.base_url
+                if base_url:
+                    request_url = f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
+                else:
+                    request_url = endpoint
 
+                # 让HTTP库处理参数编码
+                data = self.http_manager.make_request(
+                    url=request_url,
+                    params=params,
+                    data=data
+                )
+            else:
+
+                data = self.http_manager.make_request(
+                    url=url,
+                    data=data
+                )
 
             # 如果获取成功且需要缓存，则更新缓存
             if data is not None and cache_key:
@@ -358,26 +378,6 @@ class BaseNBAFetcher:
         except Exception as e:
             self.logger.error(f"请求失败: {str(e)}")
             return None
-
-    def build_url(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> str:
-        """构建请求URL"""
-        if not endpoint:
-            raise ValueError("endpoint cannot be empty")
-
-        # 如果没有 base_url，直接使用 endpoint
-        if not self.config.base_url:
-            if params:
-                query_string = urlencode({k: v for k, v in params.items() if v is not None})
-                return f"{endpoint}?{query_string}"
-            return endpoint
-
-        # 原有的 base_url 处理逻辑
-        base = self.config.base_url.rstrip('/')
-        clean_endpoint = endpoint.lstrip('/')
-        if params:
-            query_string = urlencode({k: v for k, v in params.items() if v is not None})
-            return f"{base}/{clean_endpoint}?{query_string}"
-        return f"{base}/{clean_endpoint}"
 
     # 新增内部方法，不影响原有接口
     def _batch_fetch_internal(self,

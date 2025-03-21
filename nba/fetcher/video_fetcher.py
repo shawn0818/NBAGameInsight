@@ -1,8 +1,11 @@
+import time
+import random
 from datetime import timedelta
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from config import NBAConfig
-from .base_fetcher import BaseNBAFetcher, BaseRequestConfig, BaseCacheConfig
+from .base_fetcher import BaseNBAFetcher, BaseRequestConfig, BaseCacheConfig, RetryConfig
 from nba.models.video_model import ContextMeasure
+
 
 
 class VideoConfig:
@@ -11,24 +14,24 @@ class VideoConfig:
     CACHE_PATH = NBAConfig.PATHS.VIDEOURL_CACHE_DIR
     CACHE_DURATION: timedelta = timedelta(hours=1)
 
-    # 备用URL配置
-    FALLBACK_URLS: Dict[str, str] = {
-        "https://cdn.nba.com/static/json": "https://nba-prod-us-east-1-mediaops-stats.s3.amazonaws.com/NBA",
-    }
-
     # API端点
     ENDPOINTS: Dict[str, str] = {
         'VIDEO_DETAILS': 'videodetailsasset'
     }
 
-    # 请求头配置
-    DEFAULT_HEADERS: Dict[str, str] = {
-        'accept': '*/*',
-        'accept-language': 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2',
-        'accept-encoding': 'gzip, deflate, br, zstd',
-        'connection': 'keep-alive',
-        'dnt': '1',
-        'host': 'stats.nba.com',
+    # 请求头配置 - 只包含视频特有的请求头
+    VIDEO_SPECIFIC_HEADERS: Dict[str, str] = {
+        "host": "stats.nba.com",
+        "origin": "https://www.nba.com",
+        "referer": "https://www.nba.com/",
+    }
+
+    # 视频请求特有的速率限制
+    REQUEST_LIMITS = {
+        "min_delay": 8.0,  # 最小请求间隔
+        "max_delay": 15.0,  # 最大请求间隔
+        "batch_size": 5,  # 批量请求大小
+        "batch_interval": 10.0  # 批次间隔
     }
 
 
@@ -36,7 +39,7 @@ class VideoRequestParams:
     """视频查询参数构建器
 
     参数组合规则：
-    1. 只传入game_id: 获取比赛全部视频
+    1. 只传入game_id: 获取比赛全部视频  #目前没有FGM参数不返回数据了2025/03/20
     2. game_id + ContextMeasure: 获取特定类型的视频(如投篮)
     3. game_id + team_id: 等同于只传game_id
     4. game_id + team_id + ContextMeasure: 获取特定球队的特定类型视频
@@ -70,9 +73,9 @@ class VideoRequestParams:
         self.season = season
         self.season_type = season_type
 
-    def build(self) -> Dict[str, Any]:
+    def build(self) -> Dict:
         """构建NBA API参数"""
-        return {
+        params = {
             'LeagueID': "00",
             'Season': self.season,
             'SeasonType': self.season_type,
@@ -80,7 +83,7 @@ class VideoRequestParams:
             'PlayerID': int(self.player_id) if self.player_id else 0,
             'GameID': self.game_id,
             'ContextMeasure': self.context_measure.value if self.context_measure else '',
-            'Outcome': '',
+            'Outcome': '',  # 使用空字符串而不是None
             'Location': '',
             'Month': 0,
             'SeasonSegment': '',
@@ -101,11 +104,15 @@ class VideoRequestParams:
             'StartPeriod': 0,
             'EndPeriod': 0,
             'StartRange': 0,
-            'EndRange': 28800,
+            'EndRange': 31800,  # 更新为31800
+            "GroupQuantity": 5,
+            "PORound": 0,
             'ContextFilter': '',
             'OppPlayerID': ''
         }
 
+        # 直接返回参数字典，不做转换处理
+        return params
 
 class VideoFetcher(BaseNBAFetcher):
     """视频数据获取器"""
@@ -121,31 +128,75 @@ class VideoFetcher(BaseNBAFetcher):
 
         # 配置缓存
         if disable_cache:
-            cache_config = None  # 完全禁用缓存
+            # 创建零持续时间的缓存配置（实际禁用缓存）
+            cache_config = BaseCacheConfig(
+                duration=timedelta(seconds=0),
+                root_path=self.video_config.CACHE_PATH
+            )
         else:
             cache_config = BaseCacheConfig(
                 duration=self.video_config.CACHE_DURATION,
                 root_path=self.video_config.CACHE_PATH
             )
 
-        # 创建基础请求配置
+        # 为视频请求创建特定的重试配置
+        video_retry_config = RetryConfig(
+            max_retries=3,  # 减少最大重试次数
+            base_delay=10.0,  # 增加基础延迟
+            max_delay=180.0,  # 增加最大延迟
+            backoff_factor=3.0,  # 增加退避因子
+            jitter_factor=0.15  # 增加抖动因子
+        )
+
+        # 创建基础请求配置，并传入视频特定的重试配置
         base_config = BaseRequestConfig(
             base_url=self.video_config.BASE_URL,
-            cache_config=cache_config
+            cache_config=cache_config,
+            retry_config=video_retry_config,
+            request_timeout=60  # 增加视频请求超时时间
         )
 
         # 初始化基类
         super().__init__(base_config)
 
-        # 更新请求头
-        self.http_manager.headers.update(self.video_config.DEFAULT_HEADERS)
+        # 配置视频特定的请求限制
+        self._configure_video_rate_limits()
+
+        # 更新请求头（只添加视频特有的头）
+        self.http_manager.headers.update(self.video_config.VIDEO_SPECIFIC_HEADERS)
+
+    def _configure_video_rate_limits(self):
+        """配置视频请求的特定限制"""
+        # 设置更严格的间隔时间
+        self.http_manager._min_delay = self.video_config.REQUEST_LIMITS["min_delay"]
+        self.http_manager._max_delay = self.video_config.REQUEST_LIMITS["max_delay"]
+        self.http_manager.min_request_interval = self.video_config.REQUEST_LIMITS["min_delay"]
+
+    def _make_video_request(self, endpoint: str, params: Dict[str, str], force_refresh: bool = False) -> Optional[Dict]:
+        """专用于视频请求的方法，带有额外限制"""
+        # 在请求前添加额外随机延迟
+        time.sleep(random.uniform(1.0, 3.0))
+
+        # 使用原有fetch_data方法
+        raw_data = self.fetch_data(
+            endpoint=endpoint,
+            params=params,
+            force_update=force_refresh,
+            # 可以为视频请求添加特定的缓存标识
+            cache_status_key="video"
+        )
+
+        # 请求后额外延迟
+        time.sleep(random.uniform(2.0, 4.0))
+
+        return raw_data
 
     def get_game_video_urls(self,
                             game_id: str,
                             context_measure: Optional[ContextMeasure] = None,
                             player_id: Optional[int] = None,
                             team_id: Optional[int] = None,
-                            force_refresh: bool = True) -> Optional[Dict[str, Any]]:
+                            force_refresh: bool = False) -> Optional[Dict[str, Any]]:
         """获取比赛视频原始数据
 
         Args:
@@ -177,11 +228,14 @@ class VideoFetcher(BaseNBAFetcher):
 
             self.logger.info(f"正在获取{request_info}的视频数据")
 
-            # 获取数据，可选强制刷新
-            raw_data = self.fetch_data(
-                endpoint=self.video_config.ENDPOINTS['VIDEO_DETAILS'],
+            # 使用端点和参数调用特定的视频请求方法
+            endpoint = self.video_config.ENDPOINTS['VIDEO_DETAILS']
+
+            # 使用专用视频请求方法
+            raw_data = self._make_video_request(
+                endpoint=endpoint,
                 params=params,
-                force_update=force_refresh
+                force_refresh=force_refresh
             )
 
             # 简单数据有效性检查
@@ -214,21 +268,31 @@ class VideoFetcher(BaseNBAFetcher):
             self.logger.error(f"获取视频链接数据失败: {e}")
             return None
 
-    def batch_get_games_video_urls(self, game_ids: list[str], batch_size: int = 10) -> Dict[str, Any]:
+    def batch_get_games_video_urls(self, game_ids: List[str], batch_size: int = None) -> Dict[str, Any]:
         """批量获取多个比赛的视频数据
 
         Args:
             game_ids: 比赛ID列表
-            batch_size: 批处理大小，默认为10
+            batch_size: 批处理大小，不指定则使用配置中的默认值
 
         Returns:
             Dict[str, Any]: 以game_id为键的视频数据字典
         """
-        self.logger.info(f"开始批量获取{len(game_ids)}个比赛的视频数据")
+        # 使用配置中的默认批处理大小，或者使用传入的值（但不超过配置的限制）
+        if batch_size is None:
+            batch_size = self.video_config.REQUEST_LIMITS["batch_size"]
+        else:
+            batch_size = min(batch_size, self.video_config.REQUEST_LIMITS["batch_size"])
+
+        self.logger.info(f"开始批量获取{len(game_ids)}个比赛的视频数据，批处理大小: {batch_size}")
 
         # 创建获取单个比赛视频的函数
         def fetch_single_game(game_id: str) -> Optional[Dict[str, Any]]:
-            return self.get_game_video_urls(game_id=game_id)
+            result = self.get_game_video_urls(game_id=game_id)
+            # 每次请求后添加额外等待，减轻服务器负担
+            batch_interval = self.video_config.REQUEST_LIMITS["batch_interval"]
+            time.sleep(random.uniform(batch_interval * 0.8, batch_interval * 1.2))
+            return result
 
         # 使用基类的批量获取方法
         results = self.batch_fetch(
