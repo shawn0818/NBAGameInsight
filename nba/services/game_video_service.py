@@ -64,9 +64,22 @@ class VideoDownloader:
         # 初始化HTTP请求管理器，适配新的速率限制功能
         self.http_manager = HTTPRequestManager(
             headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Accept': '*/*',  # 接受任何类型的响应
-                'Accept-Encoding': 'gzip, deflate, br'
+                "Accept": "*/*",
+                "Accept-Encoding": "identity;q=1, *;q=0",
+                "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Cache-Control": "no-cache",
+                "DNT": "1",
+                "Host": "videos.nba.com",
+                "Pragma": "no-cache",
+                "Sec-Ch-Ua": '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"',
+                "Sec-Ch-Ua-Mobile": "?0",
+                "Sec-Ch-Ua-Platform": '"Windows"',
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+                "Sec-Fetch-User": "?1",
+                "Upgrade-Insecure-Requests": "1",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
             },
             timeout=config.request_timeout
         )
