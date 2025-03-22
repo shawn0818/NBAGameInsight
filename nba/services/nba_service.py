@@ -1,15 +1,16 @@
 # nba/services/nba_service.py
 from abc import ABC
-from typing import Optional, Dict, Any, List, Union, Type, Set
+from typing import Optional, Dict, Any, List, Union,Set
 from pathlib import Path
 from dataclasses import dataclass, field
 from enum import Enum
 import time
 
-from nba.database.nba_base.db_service import DatabaseService
-from nba.services.game_data_service import GameDataProvider, InitializationError, GameDataConfig
+from database.db_service import DatabaseService
+from nba.services.game_data_provider import GameDataProvider
 from nba.services.game_video_service import GameVideoService, VideoConfig
 from nba.services.game_charts_service import GameChartsService, ChartConfig
+from nba.services.game_data_adapter import GameDataAdapter
 from nba.models.video_model import ContextMeasure, VideoAsset
 from config import NBAConfig
 from utils.logger_handler import AppLogger
@@ -26,31 +27,31 @@ class NBAServiceConfig:
     Attributes:
         default_team (str): 默认关注的球队名称，用于未指定球队时的查询
         default_player (str): 默认关注的球员名称，用于未指定球员时的查询
-        date_str (str): 日期字符串，默认为"last"表示最近一场比赛
-        cache_size (int): 缓存大小限制，范围必须在32到512之间
         auto_refresh (bool): 是否启用自动刷新功能，用于实时更新数据
+        cache_size (int): 缓存大小限制，范围必须在32到512之间
     """
     default_team: str = "Lakers"
     default_player: str = "LeBron James"
-    date_str: str = "last"
-    cache_size: int = 128
     auto_refresh: bool = False
+    cache_size: int = 128
 
     def __post_init__(self):
         """配置验证与初始化"""
         # 验证缓存大小
         if not (32 <= self.cache_size <= 512):
             raise ValueError("Cache size must be between 32 and 512")
-            # 验证必填参数
+        # 验证必填参数
         if not self.default_team:
             raise ValueError("default_team cannot be empty")
         if not self.default_player:
             raise ValueError("default_player cannot be empty")
-        if not self.date_str:
-            raise ValueError("date_str cannot be empty")
 
 
 # ========= 2. 服务基类==================
+
+class InitializationError(Exception):
+    """初始化失败异常"""
+    pass
 
 class BaseService(ABC):
     """服务基类，提供通用功能，该类实现了基础的日志记录和错误处理功能，所有具体的服务类都应该继承此类。
@@ -84,6 +85,7 @@ class BaseService(ABC):
         else:
             fallback_logger = AppLogger.get_logger(__name__, app_name='nba')
             fallback_logger.error(f"{context}: {str(error)}", exc_info=True)
+
 
 
 # ===========3. 服务状态管理================
@@ -148,10 +150,11 @@ class NBAService(BaseService):
     def __init__(
             self,
             config: Optional[NBAServiceConfig] = None,
-            data_config: Optional[GameDataConfig] = None,
             video_config: Optional[VideoConfig] = None,
             chart_config: Optional[ChartConfig] = None,
-            video_process_config: Optional[VideoProcessConfig] = None
+            video_process_config: Optional[VideoProcessConfig] = None,
+            env: str = "default",
+            create_tables: bool = False
     ):
         """初始化NBA服务
         这是服务的主要入口点，负责初始化所有子服务和配置。
@@ -159,10 +162,11 @@ class NBAService(BaseService):
 
         Args:
             config: NBA服务主配置，控制全局行为
-            data_config: 比赛数据服务配置
             video_config: 视频下载服务配置
             chart_config: 图表生成服务配置
-            video_process_config:视频合并转化gif配置
+            video_process_config: 视频合并转化gif配置
+            env: 环境名称，可以是 "default", "test", "development", "production"
+            create_tables: 是否创建数据表结构，默认为False
 
         初始化流程：
         1. 设置基础配置和日志
@@ -185,9 +189,12 @@ class NBAService(BaseService):
         self._services: Dict[str, Any] = {}
         self._service_status: Dict[str, ServiceHealth] = {}
 
+        # 环境和表创建配置保存
+        self.env = env
+        self.create_tables = create_tables
+
         # 初始化服务
         self._init_all_services(
-            data_config=data_config,
             video_config=video_config,
             chart_config=chart_config,
             video_process_config=video_process_config
@@ -195,25 +202,21 @@ class NBAService(BaseService):
 
     def _init_all_services(
             self,
-            data_config: Optional[GameDataConfig] = None,
             video_config: Optional[VideoConfig] = None,
             chart_config: Optional[ChartConfig] = None,
             video_process_config: Optional[VideoProcessConfig] = None
     ) -> None:
         """初始化所有子服务
 
-        按照特定的顺序和依赖关系初始化各个子服务。
-
-        初始化顺序：
-        1. 数据服务（核心服务）
-        2. 图表服务
-        3. 视频服务
-
-        服务依赖关系：
-        - 所有服务都依赖于数据服务
+        按照依赖顺序初始化各个子服务：
+        1. 数据库服务（核心服务，提供统一入口）
+        2. 数据适配器服务
+        3. 视频处理器
+        4. 数据提供服务
+        5. 图表服务
+        6. 视频服务
 
         Args:
-            data_config: 数据服务配置
             video_config: 视频服务配置
             chart_config: 图表服务配置
             video_process_config: 视频处理器配置
@@ -222,54 +225,71 @@ class NBAService(BaseService):
             InitializationError: 当核心服务初始化失败时抛出
         """
         try:
-            # 初始化数据库服务 - 将在GameDataProvider中使用
-            database_service = DatabaseService()
-
-            # 初始化GameData服务配置
-            data_config = data_config or GameDataConfig(
-                default_team=self.config.default_team,
-                default_player=self.config.default_player,
-                date_str=self.config.date_str,
-                cache_size=self.config.cache_size,
-                auto_refresh=False  # 强制设置为False，除非显式指定
-            )
-
-            # 初始化视频下载配置
-            video_config = video_config or VideoConfig()
-
-            # 初始化chart服务配置
-            chart_config = chart_config or ChartConfig()
-
-            # 初始化视频合并转化处理器
-            if video_process_config:
-                self._services['video_processor'] = VideoProcessor(video_process_config)
-                self._update_service_status('video_processor', ServiceStatus.AVAILABLE)
-
-            # 首先初始化数据服务，因为其他服务可能依赖它
+            # 1. 初始化数据库服务（作为统一入口）
             try:
-                self._services['data'] = GameDataProvider(
-                    config=data_config,
-                    database_service=database_service
-                )
+                # 创建数据库服务实例
+                self._services['db_service'] = DatabaseService(env=self.env)
+
+                # 初始化数据库连接
+                db_init_success = self._services['db_service'].initialize(create_tables=self.create_tables)
+
+                if not db_init_success:
+                    self._update_service_status('db_service', ServiceStatus.ERROR, "数据库初始化失败")
+                    raise InitializationError("数据库服务初始化失败")
+
+                self._update_service_status('db_service', ServiceStatus.AVAILABLE)
+                self.logger.info("数据库服务初始化成功")
+            except Exception as e:
+                self.logger.error(f"数据库服务初始化失败: {str(e)}")
+                self._update_service_status('db_service', ServiceStatus.ERROR, str(e))
+                # 如果数据库初始化失败，提前结束
+                raise InitializationError(f"核心数据库服务初始化失败: {str(e)}")
+
+            # 2. 初始化数据适配器
+            try:
+                self._services['adapter'] = GameDataAdapter()
+                self._update_service_status('adapter', ServiceStatus.AVAILABLE)
+                self.logger.info("数据适配器初始化成功")
+            except Exception as e:
+                self.logger.error(f"数据适配器初始化失败: {str(e)}")
+                self._update_service_status('adapter', ServiceStatus.ERROR, str(e))
+                # 如果数据适配器初始化失败，仍然继续初始化其他服务
+
+            # 3. 初始化视频处理器配置
+            if video_process_config:
+                try:
+                    self._services['video_processor'] = VideoProcessor(video_process_config)
+                    self._update_service_status('video_processor', ServiceStatus.AVAILABLE)
+                    self.logger.info("视频处理器初始化成功")
+                except Exception as e:
+                    self.logger.error(f"视频处理器初始化失败: {str(e)}")
+                    self._update_service_status('video_processor', ServiceStatus.ERROR, str(e))
+
+            # 4. 初始化数据服务
+            try:
+                self._services['data'] = GameDataProvider()
                 self._update_service_status('data', ServiceStatus.AVAILABLE)
+                self.logger.info("数据服务初始化成功")
             except Exception as e:
                 self.logger.error(f"数据服务初始化失败: {str(e)}")
                 self._update_service_status('data', ServiceStatus.ERROR, str(e))
-                # 如果数据服务初始化失败，可能需要提前结束
+                # 如果数据服务初始化失败，抛出异常
                 raise InitializationError(f"核心数据服务初始化失败: {str(e)}")
 
-            # 初始化图表服务 -
+            # 5. 初始化图表服务
             try:
-                self._services['chart'] = GameChartsService(chart_config)
+                self._services['chart'] = GameChartsService(chart_config or ChartConfig())
                 self._update_service_status('chart', ServiceStatus.AVAILABLE)
+                self.logger.info("图表服务初始化成功")
             except Exception as e:
                 self.logger.error(f"图表服务初始化失败: {str(e)}")
                 self._update_service_status('chart', ServiceStatus.ERROR, str(e))
 
-            # 初始化视频下载服务
+            # 6. 初始化视频下载服务
             try:
-                self._services['videodownloader'] = GameVideoService(video_config)
+                self._services['videodownloader'] = GameVideoService(video_config or VideoConfig())
                 self._update_service_status('videodownloader', ServiceStatus.AVAILABLE)
+                self.logger.info("视频下载服务初始化成功")
             except Exception as e:
                 self.logger.error(f"视频下载服务初始化失败: {str(e)}")
                 self._update_service_status('videodownloader', ServiceStatus.ERROR, str(e))
@@ -286,6 +306,24 @@ class NBAService(BaseService):
             Optional[GameDataProvider]: 数据服务实例，如果服务不可用则返回None
         """
         return self._get_service('data')
+
+    @property
+    def adapter_service(self) -> Optional[GameDataAdapter]:
+        """获取数据适配器服务实例
+
+        Returns:
+            Optional[GameDataAdapter]: 数据适配器实例，如果服务不可用则返回None
+        """
+        return self._get_service('adapter')
+
+    @property
+    def db_service(self) -> Optional[DatabaseService]:
+        """获取数据库服务实例
+
+        Returns:
+            Optional[DatabaseService]: 数据库服务实例，如果服务不可用则返回None
+        """
+        return self._get_service('db_service')
 
     @property
     def chart_service(self) -> Optional[GameChartsService]:
@@ -313,35 +351,6 @@ class NBAService(BaseService):
             Optional[VideoProcessor]: 视频处理器实例，如果服务不可用则返回None
         """
         return self._get_service('video_processor')
-
-    def _init_service(self,
-                      name: str,
-                      service_class: Type,
-                      service_config: Any) -> None:
-        """单个服务的初始化方法
-
-        负责初始化单个服务并更新其状态。
-        Args:
-            name: 服务名称
-            service_class: 服务类
-            service_config: 服务配置对象
-
-        注意：
-            - 初始化失败会被记录但不会阻止其他服务的初始化
-            - AI服务是可选的，其他服务初始化失败会被记录为错误状态
-        """
-        try:
-            # 处理不需要配置的服务
-            if service_config is None:
-                self._services[name] = service_class()
-            else:
-                self._services[name] = service_class(service_config)
-
-            self._update_service_status(name, ServiceStatus.AVAILABLE)
-
-        except Exception as e:
-            self.logger.error(f"{name}服务初始化失败: {str(e)}")
-            self._update_service_status(name, ServiceStatus.ERROR, str(e))
 
     def _update_service_status(self,
                                service_name: str,
@@ -381,6 +390,107 @@ class NBAService(BaseService):
 
     ## =======4.2 基础数据查询API ====================
 
+    def get_game(self, team: Optional[str] = None, date: Optional[str] = "last", force_update: bool = False) -> \
+    Optional[Any]:
+        """
+        获取比赛数据，根据球队名称和日期
+
+        Args:
+            team: 球队名称，不提供则使用默认球队
+            date: 日期字符串，默认为"last"表示最近一场比赛
+            force_update: 是否强制更新缓存
+
+        Returns:
+            Optional[Game]: 解析后的比赛数据对象
+        """
+        try:
+            # 使用默认球队，如果未提供
+            team_name = team or self.config.default_team
+            if not team_name:
+                self.logger.error("未提供球队名称且未设置默认球队")
+                return None
+
+            # 获取数据服务和数据库服务
+            data_service = self.data_service
+            db_service = self.db_service
+
+            if not (data_service and db_service):
+                self.logger.error("必要服务不可用")
+                return None
+
+            # 获取team_id
+            team_id = db_service.get_team_id_by_name(team_name)
+            if not team_id:
+                self.logger.error(f"未找到球队: {team_name}")
+                return None
+
+            # 获取game_id
+            game_id = db_service.get_game_id(team_id, date)
+            if not game_id:
+                self.logger.error(f"未找到{team_name}在{date}的比赛")
+                return None
+
+            # 使用game_id获取比赛数据
+            game = data_service.get_game(game_id, force_update=force_update)
+
+            return game
+
+        except Exception as e:
+            self.logger.error(f"获取比赛数据失败: {e}", exc_info=True)
+            return None
+
+    def sync_all_data(self, force_update: bool = False) -> Dict[str, Any]:
+        """执行全量数据同步
+
+        调用数据库服务执行完整的数据同步操作。
+
+        Args:
+            force_update: 是否强制更新所有数据
+
+        Returns:
+            Dict[str, Any]: 同步结果摘要
+        """
+        db_service = self.db_service
+        if not db_service:
+            self.logger.error("数据库服务不可用，无法执行数据同步")
+            return {"status": "failed", "error": "数据库服务不可用"}
+
+        return db_service.sync_all_data(force_update)
+
+    def sync_game_stats(self, game_id: str, force_update: bool = False) -> Dict[str, Any]:
+        """同步特定比赛的统计数据
+
+        Args:
+            game_id: 比赛ID
+            force_update: 是否强制更新
+
+        Returns:
+            Dict[str, Any]: 同步结果
+        """
+        db_service = self.db_service
+        if not db_service:
+            self.logger.error("数据库服务不可用，无法执行比赛数据同步")
+            return {"status": "failed", "error": "数据库服务不可用"}
+
+        return db_service.sync_game_stats(game_id, force_update)
+
+    def sync_new_season(self, season: str, force_update: bool = False) -> bool:
+        """同步新赛季数据
+
+        Args:
+            season: 赛季标识，例如 "2025-26"
+            force_update: 是否强制更新
+
+        Returns:
+            bool: 同步是否成功
+        """
+        db_service = self.db_service
+        if not db_service:
+            self.logger.error("数据库服务不可用，无法同步新赛季数据")
+            return False
+
+        return db_service.sync_new_season(season, force_update)
+
     def get_team_id_by_name(self, team_name: str) -> Optional[int]:
         """获取球队ID
 
@@ -393,16 +503,12 @@ class NBAService(BaseService):
         Returns:
             Optional[int]: 球队ID，如果未找到则返回None
         """
-        data_service = self._get_service('data')
-        if not data_service:
+        db_service = self.db_service
+        if not db_service:
+            self.logger.error("数据库服务不可用")
             return None
 
-        try:
-            # 通过数据库服务获取球队ID
-            return data_service.db_service.get_team_id_by_name(team_name)
-        except Exception as e:
-            self.logger.error(f"获取球队ID失败: {str(e)}")
-            return None
+        return db_service.get_team_id_by_name(team_name)
 
     def get_player_id_by_name(self, player_name: str) -> Optional[Union[int, List[int]]]:
         """获取球员ID
@@ -416,59 +522,12 @@ class NBAService(BaseService):
         Returns:
             Optional[Union[int, List[int]]]: 球员ID或ID列表，如果未找到则返回None
         """
-        data_service = self._get_service('data')
-        if not data_service:
+        db_service = self.db_service
+        if not db_service:
+            self.logger.error("数据库服务不可用")
             return None
 
-        try:
-            # 通过数据库服务获取球员ID
-            return data_service.db_service.get_player_id_by_name(player_name)
-        except Exception as e:
-            self.logger.error(f"获取球员ID失败: {str(e)}")
-            return None
-
-    def get_events_timeline(self, team: Optional[str] = None, player_name: Optional[str] = None) -> List[
-        Dict[str, Any]]:
-        """获取比赛事件时间线并进行分类
-
-        提取比赛中的关键事件，可按球员或球队筛选。
-        这是对底层Game模型的events功能的简单封装。
-
-        Args:
-            team: 球队名称，不提供则使用默认球队
-            player_name: 可选的球员名称，用于筛选特定球员的事件
-
-        Returns:
-            List[Dict[str, Any]]: 事件列表，如果获取失败则返回空列表
-        """
-        try:
-            team = team or self.config.default_team
-            data_service = self._get_service('data')
-            if not data_service:
-                self.logger.error("数据服务不可用")
-                return []
-
-            game_data = data_service.get_game(team)
-            if not game_data:
-                self.logger.error(f"获取比赛信息失败: 未找到{team}的比赛数据")
-                return []
-
-            # 如果指定了球员名称，则获取球员ID
-            player_id = None
-            if player_name:
-                player_id = self.get_player_id_by_name(player_name)
-                if not player_id:
-                    self.logger.warning(f"未找到球员 {player_name} 的ID")
-                    return []
-
-            # 直接使用Game模型的events筛选功能
-            events_data = game_data.prepare_ai_data(player_id)["events"]["data"]
-
-            return events_data
-
-        except Exception as e:
-            self.handle_error(e, "获取事件时间线")
-            return []
+        return db_service.get_player_id_by_name(player_name)
 
     ## =============4.3 调用个各子模块服务=================
 
@@ -1302,19 +1361,32 @@ class NBAService(BaseService):
             try:
                 if hasattr(service, 'clear_cache'):
                     service.clear_cache()
+                    self.logger.info(f"已清理 {service_name} 服务缓存")
             except Exception as e:
-                self.logger.error(f"清理{service_name}服务缓存失败: {str(e)}")
+                self.logger.error(f"清理 {service_name} 服务缓存失败: {str(e)}")
 
     def close(self) -> None:
         """关闭服务并清理资源"""
         self.clear_cache()
-        for service_name, service in self._services.items():
+
+        # 关闭数据库服务
+        db_service = self._get_service('db_service')
+        if db_service:
             try:
-                if hasattr(service, 'close'):
-                    service.close()
-                    self.logger.info(f"{service_name}服务已关闭")
+                db_service.close()
+                self.logger.info("数据库服务已关闭")
             except Exception as e:
-                self.logger.error(f"关闭{service_name}服务失败: {str(e)}")
+                self.logger.error(f"关闭数据库服务失败: {str(e)}")
+
+        # 关闭其他服务
+        for service_name, service in self._services.items():
+            if service_name != 'db_service':  # 已经关闭过了
+                try:
+                    if hasattr(service, 'close'):
+                        service.close()
+                        self.logger.info(f"{service_name}服务已关闭")
+                except Exception as e:
+                    self.logger.error(f"关闭{service_name}服务失败: {str(e)}")
 
     def __enter__(self) -> 'NBAService':
         """上下文管理器入口
