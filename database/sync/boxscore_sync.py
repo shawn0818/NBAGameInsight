@@ -1,24 +1,26 @@
+# sync/boxscore_sync.py
 import json
-import sqlite3
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple
 
 from nba.fetcher.game_fetcher import GameFetcher
 from utils.logger_handler import AppLogger
+from database.db_session import DBSession
+from database.models.stats_models import Statistics, GameStatsSyncHistory
 
 
 class BoxscoreSync:
     """
     比赛数据同步器
     负责从NBA API获取数据、转换并写入数据库
+    使用SQLAlchemy ORM进行数据操作
     """
 
-    def __init__(self, db_manager, boxscore_repository=None, game_fetcher=None):
+    def __init__(self, game_fetcher=None):
         """初始化比赛数据同步器"""
-        self.db_manager = db_manager
-        self.boxscore_repository = boxscore_repository  # 可选，用于查询
+        self.db_session = DBSession.get_instance()
         self.game_fetcher = game_fetcher or GameFetcher()
-        self.logger = AppLogger.get_logger(__name__, app_name='sqlite')
+        self.logger = AppLogger.get_logger(__name__, app_name='nba')
 
     def sync_boxscore(self, game_id: str, force_update: bool = False) -> Dict[str, Any]:
         """
@@ -31,7 +33,7 @@ class BoxscoreSync:
         Returns:
             Dict: 同步结果
         """
-        start_time = datetime.now().isoformat()
+        start_time = datetime.now()
         self.logger.info(f"开始同步比赛(ID:{game_id})的Boxscore数据...")
 
         try:
@@ -43,7 +45,7 @@ class BoxscoreSync:
             # 解析和保存数据
             success_count, summary = self._save_boxscore_data(game_id, boxscore_data)
 
-            end_time = datetime.now().isoformat()
+            end_time = datetime.now()
             status = "success" if success_count > 0 else "failed"
 
             # 记录同步历史
@@ -55,8 +57,8 @@ class BoxscoreSync:
                 "items_processed": 1,
                 "items_succeeded": success_count,
                 "summary": summary,
-                "start_time": start_time,
-                "end_time": end_time
+                "start_time": start_time.isoformat(),
+                "end_time": end_time.isoformat()
             }
 
         except Exception as e:
@@ -64,7 +66,7 @@ class BoxscoreSync:
             self.logger.error(error_msg, exc_info=True)
 
             # 记录失败的同步历史
-            self._record_sync_history(game_id, "failed", start_time, datetime.now().isoformat(), 0, {"error": str(e)})
+            self._record_sync_history(game_id, "failed", start_time, datetime.now(), 0, {"error": str(e)})
 
             return {
                 "status": "failed",
@@ -73,28 +75,24 @@ class BoxscoreSync:
                 "error": str(e)
             }
 
-    def _record_sync_history(self, game_id: str, status: str, start_time: str, end_time: str,
+    def _record_sync_history(self, game_id: str, status: str, start_time: datetime, end_time: datetime,
                              items_processed: int, details: Dict) -> None:
         """记录同步历史到数据库"""
         try:
-            cursor = self.db_manager.conn.cursor()
-            cursor.execute('''
-                INSERT INTO game_stats_sync_history 
-                (sync_type, game_id, status, items_processed, items_succeeded, 
-                start_time, end_time, details, error_message)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                'boxscore',
-                game_id,
-                status,
-                items_processed,
-                items_processed if status == "success" else 0,
-                start_time,
-                end_time,
-                json.dumps(details),
-                details.get("error", "") if status == "failed" else ""
-            ))
-            self.db_manager.conn.commit()
+            with self.db_session.session_scope('game') as session:
+                history = GameStatsSyncHistory(
+                    sync_type='boxscore',
+                    game_id=game_id,
+                    status=status,
+                    items_processed=items_processed,
+                    items_succeeded=items_processed if status == "success" else 0,
+                    start_time=start_time,
+                    end_time=end_time,
+                    details=json.dumps(details),
+                    error_message=details.get("error", "") if status == "failed" else ""
+                )
+                session.add(history)
+                self.logger.debug(f"记录同步历史成功: {history}")
         except Exception as e:
             self.logger.error(f"记录同步历史失败: {e}")
 
@@ -110,8 +108,7 @@ class BoxscoreSync:
             Tuple[int, Dict]: 成功保存的记录数和摘要信息
         """
         try:
-            cursor = self.db_manager.conn.cursor()
-            now = datetime.now().isoformat()
+            now = datetime.now()
             success_count = 0
             summary = {
                 "player_stats_count": 0,
@@ -130,38 +127,38 @@ class BoxscoreSync:
 
             # 2. 解析球员统计数据并与比赛信息合并
             player_stats = self._extract_player_stats(boxscore_data, game_id)
+
             if player_stats:
-                for player_stat in player_stats:
-                    # 合并比赛信息和球员统计数据
-                    player_stat.update({
-                        "game_id": game_id,
-                        "home_team_id": game_info.get("home_team_id"),
-                        "away_team_id": game_info.get("away_team_id"),
-                        "home_team_tricode": game_info.get("home_team_tricode"),
-                        "away_team_tricode": game_info.get("away_team_tricode"),
-                        "home_team_name": game_info.get("home_team_name"),
-                        "home_team_city": game_info.get("home_team_city"),
-                        "away_team_name": game_info.get("away_team_name"),
-                        "away_team_city": game_info.get("away_team_city"),
-                        "game_status": game_info.get("game_status", 0),
-                        "home_team_score": game_info.get("home_team_score", 0),
-                        "away_team_score": game_info.get("away_team_score", 0),
-                        "video_available": game_info.get("video_available", 0),
-                        "last_updated_at": now
-                    })
+                with self.db_session.session_scope('game') as session:
+                    for player_stat in player_stats:
+                        # 合并比赛信息和球员统计数据
+                        player_stat.update({
+                            "game_id": game_id,
+                            "home_team_id": game_info.get("home_team_id"),
+                            "away_team_id": game_info.get("away_team_id"),
+                            "home_team_tricode": game_info.get("home_team_tricode"),
+                            "away_team_tricode": game_info.get("away_team_tricode"),
+                            "home_team_name": game_info.get("home_team_name"),
+                            "home_team_city": game_info.get("home_team_city"),
+                            "away_team_name": game_info.get("away_team_name"),
+                            "away_team_city": game_info.get("away_team_city"),
+                            "game_status": game_info.get("game_status", 0),
+                            "home_team_score": game_info.get("home_team_score", 0),
+                            "away_team_score": game_info.get("away_team_score", 0),
+                            "video_available": game_info.get("video_available", 0),
+                            "last_updated_at": now
+                        })
 
-                    # 保存合并后的数据
-                    self._save_or_update_player_boxscore(cursor, player_stat)
-                    success_count += 1
+                        # 保存合并后的数据
+                        self._save_or_update_player_boxscore(session, player_stat)
+                        success_count += 1
 
-                summary["player_stats_count"] = len(player_stats)
+                    summary["player_stats_count"] = len(player_stats)
 
-            self.db_manager.conn.commit()
             self.logger.info(f"成功保存比赛(ID:{game_id})的Boxscore数据，共{success_count}条记录")
             return success_count, summary
 
         except Exception as e:
-            self.db_manager.conn.rollback()
             self.logger.error(f"保存Boxscore数据失败: {e}")
             raise
 
@@ -334,34 +331,30 @@ class BoxscoreSync:
             self.logger.error(f"提取球员统计数据失败: {e}")
             return []
 
-    def _save_or_update_player_boxscore(self, cursor, player_stat: Dict) -> None:
+    def _save_or_update_player_boxscore(self, session, player_stat: Dict) -> None:
         """保存或更新球员比赛统计数据"""
         try:
             game_id = player_stat.get('game_id')
             person_id = player_stat.get('person_id')
 
             # 检查是否已存在
-            cursor.execute("SELECT game_id FROM statistics WHERE game_id = ? AND person_id = ?",
-                           (game_id, person_id))
-            exists = cursor.fetchone()
+            existing_stat = session.query(Statistics).filter_by(
+                game_id=game_id,
+                person_id=person_id
+            ).first()
 
-            if exists:
+            if existing_stat:
                 # 更新现有记录
-                placeholders = ", ".join([f"{k} = ?" for k in player_stat.keys()
-                                          if k not in ('game_id', 'person_id')])
-                values = [v for k, v in player_stat.items() if k not in ('game_id', 'person_id')]
-                values.append(game_id)  # WHERE条件的值
-                values.append(person_id)  # WHERE条件的值
-
-                cursor.execute(f"UPDATE statistics SET {placeholders} WHERE game_id = ? AND person_id = ?",
-                               values)
+                for key, value in player_stat.items():
+                    if key not in ('game_id', 'person_id') and hasattr(existing_stat, key):
+                        setattr(existing_stat, key, value)
             else:
-                # 插入新记录
-                placeholders = ", ".join(["?"] * len(player_stat))
-                columns = ", ".join(player_stat.keys())
-                values = list(player_stat.values())
-
-                cursor.execute(f"INSERT INTO statistics ({columns}) VALUES ({placeholders})", values)
+                # 创建新记录
+                new_stat = Statistics()
+                for key, value in player_stat.items():
+                    if hasattr(new_stat, key):
+                        setattr(new_stat, key, value)
+                session.add(new_stat)
 
         except Exception as e:
             self.logger.error(f"保存或更新球员比赛统计数据失败: {e}")

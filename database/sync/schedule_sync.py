@@ -1,10 +1,14 @@
-import sqlite3
+# sync/schedule_sync.py
 from typing import Dict, List, Optional, Any
 from datetime import datetime
+from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from nba.fetcher.schedule_fetcher import ScheduleFetcher
 from utils.logger_handler import AppLogger
 from utils.time_handler import TimeHandler
+from database.models.base_models import Game, Team, Player
+from database.db_session import DBSession
 
 
 class ScheduleSync:
@@ -13,9 +17,9 @@ class ScheduleSync:
     负责从NBA API获取数据、转换并写入数据库
     """
 
-    def __init__(self, db_manager, schedule_fetcher = None, schedule_repository=None):
+    def __init__(self, schedule_fetcher=None, schedule_repository=None):
         """初始化赛程数据同步器"""
-        self.db_manager = db_manager
+        self.db_session = DBSession.get_instance()
         self.schedule_repository = schedule_repository  # 可选，用于查询
         self.schedule_fetcher = schedule_fetcher or ScheduleFetcher()
         self.logger = AppLogger.get_logger(__name__, app_name='nba')
@@ -29,10 +33,10 @@ class ScheduleSync:
         else:
             # 如果没有提供 repository，直接查询数据库
             try:
-                cursor = self.db_manager.conn.cursor()
-                cursor.execute("SELECT COUNT(*) FROM games WHERE season_year = ?", (season,))
-                result = cursor.fetchone()
-                existing_count = result[0] if result else 0
+                with self.db_session.session_scope('nba') as session:
+                    existing_count = session.query(func.count(Game.game_id)).filter(
+                        Game.season_year == season
+                    ).scalar() or 0
             except Exception as e:
                 self.logger.error(f"查询赛季数据数量失败: {e}")
         return existing_count
@@ -189,50 +193,38 @@ class ScheduleSync:
             int: 成功写入的记录数
         """
         success_count = 0
-        conn = self.db_manager.conn
 
         try:
-            cursor = conn.cursor()
+            with self.db_session.session_scope('nba') as session:
+                for schedule_data in schedules_data:
+                    try:
+                        game_id = schedule_data.get('game_id')
 
-            for schedule_data in schedules_data:
-                try:
-                    game_id = schedule_data.get('game_id')
+                        # 检查是否已存在该比赛
+                        existing_game = session.query(Game).filter(Game.game_id == game_id).first()
 
-                    # 添加更新时间
-                    schedule_data['updated_at'] = datetime.now().isoformat()
+                        if existing_game:
+                            # 更新现有记录
+                            for key, value in schedule_data.items():
+                                if hasattr(existing_game, key):
+                                    setattr(existing_game, key, value)
+                            existing_game.updated_at = datetime.now()
+                            self.logger.debug(f"更新赛程: {game_id}")
+                        else:
+                            # 创建新记录
+                            new_game = Game(**schedule_data)
+                            session.add(new_game)
+                            self.logger.debug(f"新增赛程: {game_id}")
 
-                    # 检查是否已存在该比赛
-                    cursor.execute("SELECT game_id FROM games WHERE game_id = ?", (game_id,))
-                    exists = cursor.fetchone()
+                        success_count += 1
 
-                    if exists:
-                        # 更新现有记录
-                        placeholders = ", ".join([f"{k} = ?" for k in schedule_data.keys() if k != 'game_id'])
-                        values = [v for k, v in schedule_data.items() if k != 'game_id']
-                        values.append(game_id)  # WHERE条件的值
+                    except Exception as e:
+                        self.logger.error(f"处理赛程记录失败: {e}")
+                        # 继续处理下一条记录，但不影响事务
 
-                        cursor.execute(f"UPDATE games SET {placeholders} WHERE game_id = ?", values)
-                        self.logger.debug(f"更新赛程: {game_id}")
-                    else:
-                        # 插入新记录
-                        placeholders = ", ".join(["?"] * len(schedule_data))
-                        columns = ", ".join(schedule_data.keys())
-                        values = list(schedule_data.values())
+                self.logger.info(f"成功保存{success_count}/{len(schedules_data)}条赛程数据")
 
-                        cursor.execute(f"INSERT INTO games ({columns}) VALUES ({placeholders})", values)
-                        self.logger.debug(f"新增赛程: {game_id}")
-
-                    success_count += 1
-
-                except Exception as e:
-                    self.logger.error(f"处理赛程记录失败: {e}")
-                    # 继续处理下一条记录
-
-            conn.commit()
-            self.logger.info(f"成功保存{success_count}/{len(schedules_data)}条赛程数据")
-
-        except sqlite3.Error as e:
-            conn.rollback()
+        except Exception as e:
             self.logger.error(f"批量保存赛程数据失败: {e}")
 
         return success_count

@@ -1,25 +1,27 @@
-import sqlite3
+# sync/team_sync.py
 from datetime import datetime
 from typing import Dict, List, Optional
+from database.models.base_models import Team
 from nba.fetcher.team_fetcher import TeamFetcher
 from utils.logger_handler import AppLogger
-from utils.http_handler import  HTTPRequestManager
+from utils.http_handler import HTTPRequestManager
+from database.db_session import DBSession
 
 
 class TeamSync:
     """
     球队数据同步器
     负责从NBA API获取数据、转换并写入数据库
+    使用SQLAlchemy ORM进行数据操作
     """
 
-    def __init__(self, db_manager, team_repository=None, team_fetcher=None):
+    def __init__(self, team_fetcher=None):
         """初始化球队数据同步器"""
-        self.db_manager = db_manager
-        self.team_repository = team_repository  # 可选，用于查询
+        self.db_session = DBSession.get_instance()
         self.team_fetcher = team_fetcher or TeamFetcher()
         self.logger = AppLogger.get_logger(__name__, app_name='nba')
 
-    def sync_team_details(self, force_update: bool = False) -> bool:
+    def sync_team_details(self, force_update: bool = True) -> bool:
         """同步所有球队的详细信息
 
         Args:
@@ -29,7 +31,6 @@ class TeamSync:
             bool: 同步是否成功
         """
         try:
-
             # 直接使用 TeamConfig 中的所有球队 ID 列表
             team_ids = self.team_fetcher.team_config.ALL_TEAM_LIST
             self.logger.info(f"开始同步 {len(team_ids)} 支球队的详细信息")
@@ -70,19 +71,19 @@ class TeamSync:
             bool: 同步是否成功
         """
         try:
-            if self.team_repository:
-                teams = self.team_repository.get_all_teams()
-            else:
-                # 如果没有提供 repository，直接查询数据库
-                try:
-                    cursor = self.db_manager.conn.cursor()
-                    cursor.execute("SELECT * FROM teams ORDER BY city, nickname")
-                    teams = [dict(team) for team in cursor.fetchall()]
-                except Exception as e:
-                    self.logger.error(f"查询球队数据失败: {e}")
-                    return False
+            # 使用SQLAlchemy会话查询所有球队
+            with self.db_session.session_scope('nba') as session:
+                teams = session.query(Team).order_by(Team.city, Team.nickname).all()
+                # 将ORM对象转换为字典以保持接口一致性
+                team_dicts = [
+                    {
+                        'team_id': team.team_id,
+                        'nickname': team.nickname,
+                        'city': team.city
+                    } for team in teams
+                ]
 
-            success_count = self._sync_logos_to_db(teams)
+            success_count = self._sync_logos_to_db(team_dicts)
             self.logger.info(f"成功同步{success_count}支球队的Logo")
             return success_count > 0
 
@@ -101,60 +102,44 @@ class TeamSync:
             int: 成功写入的记录数
         """
         success_count = 0
-        conn = self.db_manager.conn
 
         try:
-            cursor = conn.cursor()
+            with self.db_session.session_scope('nba') as session:
+                for team_data in teams_data:
+                    try:
+                        team_id = team_data.get('team_id')
+                        if not team_id:
+                            continue
 
-            for team_data in teams_data:
-                try:
-                    # 修改为使用小写键 "team_id"
-                    team_id = team_data.get('team_id')
-                    if not team_id:
-                        continue
+                        # 查询现有球队
+                        team = session.query(Team).filter(Team.team_id == team_id).first()
 
-                    # 添加更新时间
-                    updated_at = datetime.now().isoformat()
+                        if team:
+                            # 更新现有记录
+                            for key, value in team_data.items():
+                                if key != 'team_id' and hasattr(team, key):
+                                    setattr(team, key, value)
+                            team.updated_at = datetime.now()
+                            self.logger.debug(f"更新球队: {team_data.get('nickname')} (ID: {team_id})")
+                        else:
+                            # 创建新记录
+                            new_team = Team()
+                            for key, value in team_data.items():
+                                if hasattr(new_team, key):
+                                    setattr(new_team, key, value)
+                            new_team.updated_at = datetime.now()
+                            session.add(new_team)
+                            self.logger.info(f"新增球队: {team_data.get('nickname')} (ID: {team_id})")
 
-                    # 为 team_slug 字段生成值（如果不存在）
-                    if 'team_slug' not in team_data and 'nickname' in team_data:
-                        team_data['team_slug'] = team_data['nickname'].lower().replace(' ', '-')
+                        success_count += 1
 
-                    # 检查是否已存在该球队
-                    cursor.execute("SELECT team_id FROM teams WHERE team_id = ?", (team_id,))
-                    exists = cursor.fetchone()
+                    except Exception as e:
+                        self.logger.error(f"处理球队记录失败: {e}")
+                        # 继续处理下一条记录，但不回滚整个事务
 
-                    if exists:
-                        # 更新现有记录，更新时使用除 team_id 外的所有键（均为小写）
-                        set_clause = ", ".join(
-                            [f"{key} = ?" for key in team_data.keys() if key != 'team_id']
-                        ) + ", updated_at = ?"
-                        values = [team_data[key] for key in team_data.keys() if key != 'team_id'] + [updated_at, team_id]
+                self.logger.info(f"成功保存{success_count}/{len(teams_data)}支球队数据")
 
-                        query = f"UPDATE teams SET {set_clause} WHERE team_id = ?"
-                        cursor.execute(query, values)
-                        self.logger.debug(f"更新球队: {team_data.get('nickname')} (ID: {team_id})")
-                    else:
-                        # 插入新记录
-                        fields = list(team_data.keys()) + ['updated_at']
-                        placeholders = ", ".join(["?"] * (len(fields)))
-                        values = [team_data[key] for key in team_data.keys()] + [updated_at]
-
-                        query = f"INSERT INTO teams ({', '.join(fields)}) VALUES ({placeholders})"
-                        cursor.execute(query, values)
-                        self.logger.info(f"新增球队: {team_data.get('nickname')} (ID: {team_id})")
-
-                    success_count += 1
-
-                except Exception as e:
-                    self.logger.error(f"处理球队记录失败: {e}")
-                    # 继续处理下一条记录
-
-            conn.commit()
-            self.logger.info(f"成功保存{success_count}/{len(teams_data)}支球队数据")
-
-        except sqlite3.Error as e:
-            conn.rollback()
+        except Exception as e:
             self.logger.error(f"批量保存球队数据失败: {e}")
 
         return success_count
@@ -171,15 +156,18 @@ class TeamSync:
             bool: 操作是否成功
         """
         try:
-            cursor = self.db_manager.conn.cursor()
-            cursor.execute("UPDATE teams SET logo = ? WHERE team_id = ?",
-                           (logo_data, team_id))
-            self.db_manager.conn.commit()
-            self.logger.debug(f"保存球队(ID:{team_id})logo成功")
-            return True
-        except sqlite3.Error as e:
+            with self.db_session.session_scope('nba') as session:
+                team = session.query(Team).filter(Team.team_id == team_id).first()
+                if team:
+                    team.logo = logo_data
+                    team.updated_at = datetime.now()
+                    self.logger.debug(f"保存球队(ID:{team_id})logo成功")
+                    return True
+                else:
+                    self.logger.warning(f"未找到球队(ID:{team_id})，无法保存logo")
+                    return False
+        except Exception as e:
             self.logger.error(f"保存球队logo失败: {e}")
-            self.db_manager.conn.rollback()
             return False
 
     def _sync_logos_to_db(self, teams: List[Dict]) -> int:
@@ -218,6 +206,16 @@ class TeamSync:
         return success_count
 
     def _parse_team_details(self, team_details: Dict, team_id: int) -> Optional[Dict]:
+        """
+        解析从API获取的球队详细信息
+
+        Args:
+            team_details: 从API获取的球队详情数据
+            team_id: 球队ID
+
+        Returns:
+            Optional[Dict]: 解析后的球队数据字典
+        """
         try:
             if not team_details or 'resultSets' not in team_details:
                 self.logger.error(f"球队(ID:{team_id})详细信息格式异常")
@@ -266,14 +264,13 @@ class TeamSync:
                     team_data[key.lower()] = value
 
             # 保留或生成 team_slug 字段
-            db_team = None
-            if self.team_repository:
-                db_team = self.team_repository.get_team_by_id(team_id)
-            if db_team and db_team.get('team_slug'):
-                team_data['team_slug'] = db_team['team_slug']
-            else:
-                nickname = team_data.get('nickname', '')
-                team_data['team_slug'] = nickname.lower().replace(' ', '-') if nickname else ''
+            with self.db_session.session_scope('nba') as session:
+                db_team = session.query(Team).filter(Team.team_id == team_id).first()
+                if db_team and db_team.team_slug:
+                    team_data['team_slug'] = db_team.team_slug
+                else:
+                    nickname = team_data.get('nickname', '')
+                    team_data['team_slug'] = nickname.lower().replace(' ', '-') if nickname else ''
 
             return team_data
 

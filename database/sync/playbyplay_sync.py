@@ -1,10 +1,11 @@
-import json
-import sqlite3
+# sync/playbyplay_sync.py
 from datetime import datetime
-from typing import Dict, List, Optional, Any, Tuple
-
+from typing import Dict, List, Any, Tuple
+import json
 from nba.fetcher.game_fetcher import GameFetcher
 from utils.logger_handler import AppLogger
+from database.models.stats_models import Event, GameStatsSyncHistory
+from database.db_session import DBSession
 
 
 class PlayByPlaySync:
@@ -13,12 +14,12 @@ class PlayByPlaySync:
     负责从NBA API获取数据、转换并写入数据库
     """
 
-    def __init__(self, db_manager, playbyplay_repository=None, game_fetcher=None):
+    def __init__(self, playbyplay_repository=None, game_fetcher=None):
         """初始化比赛回合数据同步器"""
-        self.db_manager = db_manager
+        self.db_session = DBSession.get_instance()
         self.playbyplay_repository = playbyplay_repository  # 可选，用于查询
         self.game_fetcher = game_fetcher or GameFetcher()
-        self.logger = AppLogger.get_logger(__name__, app_name='sqlite')
+        self.logger = AppLogger.get_logger(__name__, app_name='nba')
 
     def sync_playbyplay(self, game_id: str, force_update: bool = False) -> Dict[str, Any]:
         """
@@ -31,7 +32,7 @@ class PlayByPlaySync:
         Returns:
             Dict: 同步结果
         """
-        start_time = datetime.now().isoformat()
+        start_time = datetime.now()
         self.logger.info(f"开始同步比赛(ID:{game_id})的Play-by-Play数据...")
 
         try:
@@ -43,7 +44,7 @@ class PlayByPlaySync:
             # 解析和保存数据
             success_count, summary = self._save_playbyplay_data(game_id, playbyplay_data)
 
-            end_time = datetime.now().isoformat()
+            end_time = datetime.now()
             status = "success" if success_count > 0 else "failed"
 
             # 记录同步历史
@@ -55,8 +56,8 @@ class PlayByPlaySync:
                 "items_processed": 1,
                 "items_succeeded": success_count,
                 "summary": summary,
-                "start_time": start_time,
-                "end_time": end_time
+                "start_time": start_time.isoformat(),
+                "end_time": end_time.isoformat()
             }
 
         except Exception as e:
@@ -64,7 +65,7 @@ class PlayByPlaySync:
             self.logger.error(error_msg, exc_info=True)
 
             # 记录失败的同步历史
-            self._record_sync_history(game_id, "failed", start_time, datetime.now().isoformat(), 0, {"error": str(e)})
+            self._record_sync_history(game_id, "failed", start_time, datetime.now(), 0, {"error": str(e)})
 
             return {
                 "status": "failed",
@@ -73,28 +74,24 @@ class PlayByPlaySync:
                 "error": str(e)
             }
 
-    def _record_sync_history(self, game_id: str, status: str, start_time: str, end_time: str,
+    def _record_sync_history(self, game_id: str, status: str, start_time: datetime, end_time: datetime,
                              items_processed: int, details: Dict) -> None:
         """记录同步历史到数据库"""
         try:
-            cursor = self.db_manager.conn.cursor()
-            cursor.execute('''
-                INSERT INTO game_stats_sync_history 
-                (sync_type, game_id, status, items_processed, items_succeeded, 
-                start_time, end_time, details, error_message)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                'playbyplay',
-                game_id,
-                status,
-                items_processed,
-                items_processed if status == "success" else 0,
-                start_time,
-                end_time,
-                json.dumps(details),
-                details.get("error", "") if status == "failed" else ""
-            ))
-            self.db_manager.conn.commit()
+            with self.db_session.session_scope('game') as session:
+                sync_history = GameStatsSyncHistory(
+                    sync_type='playbyplay',
+                    game_id=game_id,
+                    status=status,
+                    items_processed=items_processed,
+                    items_succeeded=items_processed if status == "success" else 0,
+                    start_time=start_time,
+                    end_time=end_time,
+                    details=json.dumps(details),
+                    error_message=details.get("error", "") if status == "failed" else ""
+                )
+                session.add(sync_history)
+                # 事务会在session_scope结束时自动提交
         except Exception as e:
             self.logger.error(f"记录同步历史失败: {e}")
 
@@ -110,30 +107,26 @@ class PlayByPlaySync:
             Tuple[int, Dict]: 成功保存的记录数和摘要信息
         """
         try:
-            cursor = self.db_manager.conn.cursor()
-            now = datetime.now().isoformat()
             success_count = 0
             summary = {
                 "play_actions_count": 0
             }
 
-            # 提取并保存回合动作
+            # 提取回合动作
             play_actions = self._extract_play_actions(playbyplay_data, game_id)
             if play_actions:
-                for action in play_actions:
-                    action["game_id"] = game_id
-                    action["last_updated_at"] = now
-                    self._save_or_update_play_action(cursor, action)
-                    success_count += 1
+                with self.db_session.session_scope('game') as session:
+                    for action in play_actions:
+                        action["game_id"] = game_id
+                        self._save_or_update_play_action(session, action)
+                        success_count += 1
 
                 summary["play_actions_count"] = len(play_actions)
 
-            self.db_manager.conn.commit()
             self.logger.info(f"成功保存比赛(ID:{game_id})的PlayByPlay数据，共{success_count}条记录")
             return success_count, summary
 
         except Exception as e:
-            self.db_manager.conn.rollback()
             self.logger.error(f"保存PlayByPlay数据失败: {e}")
             raise
 
@@ -185,34 +178,27 @@ class PlayByPlaySync:
             self.logger.error(f"提取回合动作数据失败: {e}")
             return []
 
-    def _save_or_update_play_action(self, cursor, play_action: Dict) -> None:
+    def _save_or_update_play_action(self, session, play_action: Dict) -> None:
         """保存或更新回合动作数据"""
         try:
             game_id = play_action.get('game_id')
             action_number = play_action.get('action_number')
 
             # 检查是否已存在
-            cursor.execute("SELECT game_id FROM events WHERE game_id = ? AND action_number = ?",
-                           (game_id, action_number))
-            exists = cursor.fetchone()
+            existing_event = session.query(Event).filter(
+                Event.game_id == game_id,
+                Event.action_number == action_number
+            ).first()
 
-            if exists:
+            if existing_event:
                 # 更新现有记录
-                placeholders = ", ".join([f"{k} = ?" for k in play_action.keys()
-                                          if k not in ('game_id', 'action_number')])
-                values = [v for k, v in play_action.items() if k not in ('game_id', 'action_number')]
-                values.append(game_id)  # WHERE条件的值
-                values.append(action_number)  # WHERE条件的值
-
-                cursor.execute(
-                    f"UPDATE events SET {placeholders} WHERE game_id = ? AND action_number = ?", values)
+                for key, value in play_action.items():
+                    if hasattr(existing_event, key):
+                        setattr(existing_event, key, value)
             else:
-                # 插入新记录
-                placeholders = ", ".join(["?"] * len(play_action))
-                columns = ", ".join(play_action.keys())
-                values = list(play_action.values())
-
-                cursor.execute(f"INSERT INTO events ({columns}) VALUES ({placeholders})", values)
+                # 创建新的Event对象
+                new_event = Event(**play_action)
+                session.add(new_event)
 
         except Exception as e:
             self.logger.error(f"保存或更新回合动作数据失败: {e}")
