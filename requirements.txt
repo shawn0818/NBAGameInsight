@@ -1,10 +1,10 @@
 pydantic>=2.10.4
-pandas>=2.2.3
 requests>=2.32.3
 pytz>=2024.2
 matplotlib>=3.10.0
 python-dotenv>=1.0.1
-fuzzywuzzy>=0.18.0
 pillow>=11.1.0
 numpy>=2.2.1
 openai>=1.59.7
+scipy>=1.15.2
+SQLAlchemy>=2.0.39

@@ -19,10 +19,10 @@ class RetryableErrorType(Enum):
 @dataclass
 class RetryConfig:
     """重试配置"""
-    max_retries: int = 3
-    base_delay: float = 2.0
-    max_delay: float = 60.0
-    backoff_factor: float = 2.0
+    max_retries: int = 5
+    base_delay: float = 5.0
+    max_delay: float = 120.0
+    backoff_factor: float = 2.5
     jitter_factor: float = 0.1
     retry_status_codes: List[int] = None
 
@@ -84,7 +84,7 @@ class RetryStrategy:
         return max(wait_time + jitter, 0)
 
     def should_retry(self, error: Optional[Exception] = None, status_code: Optional[int] = None,
-                    retry_count: int = 0) -> tuple[bool, float]:
+                     retry_count: int = 0) -> tuple[bool, float]:
         """判断是否应该重试请求"""
         if retry_count >= self.config.max_retries:
             self.logger.debug(f"Exceeded maximum retry attempts ({self.config.max_retries})")
@@ -128,8 +128,14 @@ class HTTPRequestManager:
         self.timeout = timeout or 30
         self.logger = logging.getLogger(__name__)
         self.session = self._create_session()
+
+        # 请求间隔控制 - 保持原接口不变，内部实现优化
         self.last_request_time = 0
-        self.min_request_interval = 3.0
+        self.min_request_interval = 6.0  # 保持原来的变量名
+        # 新增内部变量用于随机延迟
+        self._min_delay = 5.0
+        self._max_delay = 10.0
+        self._consecutive_failures = 0
 
     @staticmethod
     def _prepare_headers(headers: Optional[Dict[str, str]]) -> Dict[str, str]:
@@ -151,9 +157,36 @@ class HTTPRequestManager:
         session.mount('https://', adapter)
         return session
 
+    def _wait_for_rate_limit(self):
+        """等待请求间隔 - 内部实现使用随机延迟，但保持方法名不变"""
+        elapsed = time.time() - self.last_request_time
+
+        # 根据连续失败次数动态调整延迟范围
+        if self._consecutive_failures > 0:
+            # 每次连续失败都会增加延迟，但有上限
+            factor = min(5.0, 1.0 + (self._consecutive_failures * 0.5))
+            current_min = self._min_delay * factor
+            current_max = self._max_delay * factor
+        else:
+            current_min = self._min_delay
+            current_max = self._max_delay
+
+        # 生成随机延迟，不低于原来的min_request_interval
+        random_delay = max(
+            self.min_request_interval,  # 确保不低于原配置的最小间隔
+            random.uniform(current_min, current_max)
+        )
+
+        if elapsed < random_delay:
+            wait_time = random_delay - elapsed
+            self.logger.debug(f"应用随机延迟: {wait_time:.2f}秒")
+            time.sleep(wait_time)
+
+        self.last_request_time = time.time()
+
     def make_request(self, url: str, method: str = 'GET', params: Optional[Dict[str, Any]] = None,
-                    data: Optional[Dict[str, Any]] = None) -> Optional[Dict]:
-        """发送HTTP请求"""
+                     data: Optional[Dict[str, Any]] = None) -> Optional[Dict]:
+        """发送HTTP请求 - 保持原接口不变，内部增强自适应逻辑"""
         if not url:
             raise ValueError("URL cannot be empty")
 
@@ -164,18 +197,25 @@ class HTTPRequestManager:
                     self._wait_for_rate_limit()
 
                     response = self.session.request(method=method.upper(), url=url, params=params, json=data,
-                                                 timeout=self.timeout,headers=self.headers)
+                                                    timeout=self.timeout, headers=self.headers)
 
-                    self.logger.debug(f"请求URL: {response.request.url}")  # 打印最终请求的 URL (可能经过重定向)
-                    self.logger.debug(f"请求方法: {method}")
-                    self.logger.debug(f"请求头: {self.headers}")
-                    self.logger.debug(f"响应状态码: {response.status_code}")
-                    self.logger.debug(f"响应头: {response.headers}")
+                    # 添加完整URL日志记录（包含参数）
+                    self.logger.info(f"实际请求URL: {response.request.url}")
 
-                    if not response.ok:
+                    if response.ok:
+                        # 请求成功，重置连续失败计数
+                        self._consecutive_failures = 0
+                        return response.json()
+                    else:
                         self.logger.warning(f"请求失败: {response.status_code}, URL: {url}")
+
+                        # 检测到429（请求过多）或服务器错误，增加连续失败计数
+                        if response.status_code == 429 or response.status_code >= 500:
+                            self._consecutive_failures += 1
+                            self.logger.warning(f"检测到可能的请求限制，当前连续失败: {self._consecutive_failures}")
+
                         should_retry, wait_time = self.retry_strategy.should_retry(status_code=response.status_code,
-                                                                                retry_count=retry_count)
+                                                                                   retry_count=retry_count)
 
                         if should_retry:
                             retry_count += 1
@@ -184,9 +224,11 @@ class HTTPRequestManager:
 
                         response.raise_for_status()
 
-                    return response.json()
-
                 except requests.RequestException as e:
+                    # 网络异常，增加连续失败计数
+                    self._consecutive_failures += 1
+                    self.logger.warning(f"请求异常，当前连续失败: {self._consecutive_failures}")
+
                     should_retry, wait_time = self.retry_strategy.should_retry(error=e, retry_count=retry_count)
 
                     if should_retry:
@@ -202,7 +244,7 @@ class HTTPRequestManager:
             self.logger.error(f"请求失败: {str(e)}")
             return None
 
-    # 在http_handler.py中添加新方法
+    # 其余方法保持不变
     def make_binary_request(self, url: str, method: str = 'GET') -> Optional[bytes]:
         """发送HTTP请求并返回二进制响应内容"""
         if not url:
@@ -221,7 +263,15 @@ class HTTPRequestManager:
                         headers=self.headers
                     )
 
-                    if not response.ok:
+                    if response.ok:
+                        # 请求成功，重置连续失败计数
+                        self._consecutive_failures = 0
+                        return response.content
+                    else:
+                        # 检测到429（请求过多）或服务器错误，增加连续失败计数
+                        if response.status_code == 429 or response.status_code >= 500:
+                            self._consecutive_failures += 1
+
                         should_retry, wait_time = self.retry_strategy.should_retry(
                             status_code=response.status_code,
                             retry_count=retry_count
@@ -234,9 +284,10 @@ class HTTPRequestManager:
 
                         response.raise_for_status()
 
-                    return response.content
-
                 except requests.RequestException as e:
+                    # 网络异常，增加连续失败计数
+                    self._consecutive_failures += 1
+
                     should_retry, wait_time = self.retry_strategy.should_retry(
                         error=e,
                         retry_count=retry_count
@@ -251,13 +302,6 @@ class HTTPRequestManager:
         except Exception as e:
             self.logger.error(f"请求失败: {str(e)}")
             return None
-
-    def _wait_for_rate_limit(self):
-        """等待请求间隔"""
-        elapsed = time.time() - self.last_request_time
-        if elapsed < self.min_request_interval:
-            time.sleep(self.min_request_interval - elapsed)
-        self.last_request_time = time.time()
 
     def close(self):
         """关闭session"""

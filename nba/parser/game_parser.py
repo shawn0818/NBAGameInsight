@@ -1,4 +1,6 @@
 from typing import Optional, Dict, Any, Union
+from datetime import datetime
+import re
 from pydantic import ValidationError
 from nba.fetcher.game_fetcher import GameDataResponse
 from nba.models.game_model import (
@@ -7,7 +9,8 @@ from nba.models.game_model import (
     PeriodEvent, JumpBallEvent, TwoPointEvent, ThreePointEvent,
     FreeThrowEvent, ReboundEvent, StealEvent, BlockEvent, FoulEvent,
     AssistEvent, TurnoverEvent, SubstitutionEvent, TimeoutEvent, ViolationEvent,
-    ShotEvent, GameEvent, TeamStatistics, PlayerStatistics, EjectionEvent
+    ShotEvent, GameEvent, TeamStatistics, PlayerStatistics, EjectionEvent,
+    TeamRivalryInfo  # 添加对新模型的引用
 )
 from utils.logger_handler import AppLogger
 
@@ -53,6 +56,10 @@ class GameDataParser:
                     'meta': {},  # 元数据，可以为空字典
                     'game': data.boxscore,  # boxscore 作为 game 数据
                 }
+
+                # 1.1 处理对抗历史信息
+                if data.boxscore_summary:
+                    self._parse_rivalry_info(data.boxscore_summary, processed_data['game'])
             else:
                 # 2. 处理字典类型数据
                 if not isinstance(data, dict):
@@ -97,6 +104,133 @@ class GameDataParser:
             self.logger.error(f"解析比赛数据时出错: {str(e)}", exc_info=True)
             return None
 
+    def _parse_rivalry_info(self, boxscore_summary: Dict[str, Any], game_data: Dict[str, Any]) -> None:
+        """解析球队对抗历史信息并添加到game_data中"""
+        try:
+            self.logger.debug("开始解析球队对抗历史信息")
+
+            # 初始化所需字段的字典
+            rivalry_data = {}
+
+            # 遍历所有结果集
+            for result_set in boxscore_summary.get("resultSets", []):
+                result_name = result_set.get("name")
+
+                if not result_set.get("rowSet") or len(result_set["rowSet"]) == 0:
+                    continue
+
+                headers = result_set.get("headers", [])
+                row = result_set["rowSet"][0]
+
+                # 处理LastMeeting数据
+                if result_name == "LastMeeting":
+                    for i, header in enumerate(headers):
+                        field_name = self._convert_to_snake_case(header)
+                        value = row[i]
+
+                        # 特殊处理lastGameId，确保是字符串类型
+                        if field_name == "last_game_id":
+                            rivalry_data["lastGameId"] = str(value)
+                        # 日期字段特殊处理
+                        elif field_name == "last_game_date_est":
+                            try:
+                                rivalry_data["lastGameDateEst"] = datetime.fromisoformat(value.replace('Z', '+00:00'))
+                            except:
+                                try:
+                                    rivalry_data["lastGameDateEst"] = datetime.strptime(value, "%Y-%m-%dT%H:%M:%S")
+                                except:
+                                    rivalry_data["lastGameDateEst"] = datetime.now()
+                        # ID和分数字段特殊处理，确保是整数
+                        elif field_name in ["last_game_home_team_id", "last_game_visitor_team_id",
+                                            "last_game_home_team_points", "last_game_visitor_team_points"]:
+                            try:
+                                key = field_name.replace("last_game_", "lastGame").replace("_", "")
+                                # 首字母大写
+                                key = key[0].lower() + key[1:]
+                                rivalry_data[key] = int(value)
+                            except:
+                                key = field_name.replace("last_game_", "lastGame").replace("_", "")
+                                key = key[0].lower() + key[1:]
+                                rivalry_data[key] = 0
+                        # 确保队伍简写字段正确处理
+                        elif header == "LAST_GAME_VISITOR_TEAM_CITY1":
+                            rivalry_data["lastGameVisitorTeamAbbreviation"] = value
+                        # 普通文本字段
+                        elif field_name in ["last_game_home_team_city", "last_game_home_team_name",
+                                            "last_game_home_team_abbreviation", "last_game_visitor_team_city",
+                                            "last_game_visitor_team_name"]:
+                            key = field_name.replace("last_game_", "lastGame").replace("_", "")
+                            key = key[0].lower() + key[1:]
+                            rivalry_data[key] = value
+
+                # 处理SeasonSeries数据
+                elif result_name == "SeasonSeries":
+                    for i, header in enumerate(headers):
+                        if header == "GAME_ID":
+                            rivalry_data["gameId"] = str(row[i])
+                        elif header == "HOME_TEAM_ID":
+                            rivalry_data["homeTeamId"] = int(row[i])
+                        elif header == "VISITOR_TEAM_ID":
+                            rivalry_data["visitorTeamId"] = int(row[i])
+                        elif header == "GAME_DATE_EST":
+                            try:
+                                rivalry_data["gameDateEst"] = datetime.fromisoformat(row[i].replace('Z', '+00:00'))
+                            except:
+                                try:
+                                    rivalry_data["gameDateEst"] = datetime.strptime(row[i], "%Y-%m-%dT%H:%M:%S")
+                                except:
+                                    rivalry_data["gameDateEst"] = datetime.now()
+                        elif header == "HOME_TEAM_WINS":
+                            rivalry_data["homeTeamWins"] = int(row[i])
+                        elif header == "HOME_TEAM_LOSSES":
+                            rivalry_data["homeTeamLosses"] = int(row[i])
+                        elif header == "SERIES_LEADER":
+                            rivalry_data["seriesLeader"] = row[i] if row[i] else ""
+
+            # 确保所有必需字段都存在
+            required_fields = [
+                "gameId", "homeTeamId", "visitorTeamId", "gameDateEst",
+                "homeTeamWins", "homeTeamLosses", "lastGameId", "lastGameDateEst",
+                "lastGameHomeTeamId", "lastGameHomeTeamCity", "lastGameHomeTeamName",
+                "lastGameHomeTeamAbbreviation", "lastGameHomeTeamPoints",
+                "lastGameVisitorTeamId", "lastGameVisitorTeamCity", "lastGameVisitorTeamName",
+                "lastGameVisitorTeamAbbreviation", "lastGameVisitorTeamPoints"
+            ]
+
+            for field in required_fields:
+                if field not in rivalry_data:
+                    if "Id" in field or "Points" in field or "Wins" in field or "Losses" in field:
+                        rivalry_data[field] = 0
+                    elif "Date" in field:
+                        rivalry_data[field] = datetime.now()
+                    elif field == "gameId" or field == "lastGameId":
+                        rivalry_data[field] = ""  # 确保ID字段是字符串
+                    else:
+                        rivalry_data[field] = ""
+
+            # 确保lastGameId是字符串类型
+            if "lastGameId" in rivalry_data and not isinstance(rivalry_data["lastGameId"], str):
+                rivalry_data["lastGameId"] = str(rivalry_data["lastGameId"])
+
+            game_data["rivalryInfo"] = rivalry_data
+            self.logger.debug(f"成功解析球队对抗历史信息，字段数量: {len(rivalry_data)}")
+
+        except Exception as e:
+            self.logger.error(f"解析球队对抗历史信息时出错: {str(e)}")
+            game_data["rivalryInfo"] = None
+
+    def _convert_to_snake_case(self, text: str) -> str:
+        """将驼峰命名转换为蛇形命名"""
+        return re.sub(r'(?<!^)(?=[A-Z])', '_', text).lower()
+
+    def _parse_datetime(self, date_str: str) -> datetime:
+        """解析日期时间字符串为datetime对象"""
+        try:
+            return datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+        except ValueError:
+            # 尝试其他格式
+            return datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%S")
+
     def _process_game_data(self, game_data: Dict[str, Any]) -> GameData:
         try:
             # 处理嵌套的数据结构
@@ -127,9 +261,6 @@ class GameDataParser:
             home_team = self._process_team_stats(home_team_data)
             away_team = self._process_team_stats(away_team_data)
 
-            # 让pydantic自动处理时间字段转换,不需要手动解析
-            # 移除原来的时间处理代码
-
             # 处理场馆信息
             if 'arena' in data:
                 data['arena'] = Arena(**data['arena'])
@@ -139,6 +270,25 @@ class GameDataParser:
             # 处理裁判信息
             if 'officials' in data and isinstance(data['officials'], list):
                 data['officials'] = [Official(**official) for official in data['officials']]
+
+            # 处理球队对抗历史信息
+            if 'rivalryInfo' in data:
+                try:
+                    # 转换为TeamRivalryInfo实例
+                    rivalry_data = data.pop('rivalryInfo')  # 先移除原始数据
+                    if rivalry_data:  # 确保数据不为None
+                        # 确保lastGameId是字符串类型
+                        if 'lastGameId' in rivalry_data and not isinstance(rivalry_data['lastGameId'], str):
+                            rivalry_data['lastGameId'] = str(rivalry_data['lastGameId'])
+
+                        data['rivalryInfo'] = TeamRivalryInfo(**rivalry_data)
+                        self.logger.debug("成功创建TeamRivalryInfo实例")
+                except ValidationError as ve:
+                    self.logger.error(f"TeamRivalryInfo验证错误: {ve}")
+                    data['rivalryInfo'] = None
+                except Exception as e:
+                    self.logger.error(f"处理球队对抗历史信息时出错: {str(e)}")
+                    data['rivalryInfo'] = None
 
             # 创建 GameData 实例
             return GameData(
@@ -152,7 +302,8 @@ class GameDataParser:
             return GameData(
                 homeTeam=self._process_team_stats({}),
                 awayTeam=self._process_team_stats({}),
-                statistics=None # 保证数据结构正确
+                statistics=None, # 保证数据结构正确
+                rivalryInfo = None # 处理数据出错的情况下,保证数据结构正确
             )
 
     def _process_team_stats(self, team_data: Dict[str, Any]) -> TeamInGame:
@@ -184,7 +335,7 @@ class GameDataParser:
         except Exception as e:
             self.logger.error(f"处理球队数据时出错: {str(e)}")
             raise  # 让上层处理错误
-            
+
     def _process_player_stats(self, player_data: Dict[str, Any]) -> Optional[PlayerInGame]:
         """处理球员统计数据"""
         try:
@@ -197,13 +348,12 @@ class GameDataParser:
 
             # 3. 处理统计数据
             player_data['statistics'] = PlayerStatistics(**player_data['statistics'])
-            
+
             return PlayerInGame(**player_data)
 
         except Exception as e:
             self.logger.error(f"处理球员数据时出错: {str(e)}")
             return None
-
 
     def _process_event(self, event_data: Dict[str, Any]) -> Optional[BaseEvent]:
         """处理单个事件数据"""
@@ -391,7 +541,6 @@ class GameDataParser:
         except Exception as e:
             self.logger.error(f"解析回放数据时出错: {e}")
             return None
-
 
     def _get_event_class(self, event_type: str) -> Optional[type]:
         """

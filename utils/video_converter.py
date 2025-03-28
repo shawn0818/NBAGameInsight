@@ -351,9 +351,11 @@ class VideoProcessor:
         tries = 0
         last_result_path = None
         last_file_size_mb = 0
-        min_quality = self.config.gif_min_quality
-        min_fps = self.config.gif_min_fps
-        min_width = self.config.gif_min_width
+
+        # 最低限制设置，用于参数调整时的边界检查
+        min_quality = self.config.gif_min_quality  # 质量下限(越高质量越低)
+        min_fps = self.config.gif_min_fps  # 帧率下限
+        min_width = self.config.gif_min_width  # 宽度下限
 
         self.logger.info(f"开始转换GIF (大小限制: {max_size_mb}MB): {output_path}")
 
@@ -397,20 +399,21 @@ class VideoProcessor:
                 last_result_path = temp_output
 
                 # 调整参数策略 - 优化后的顺序
-                # 1. 首先降低帧率到10fps
+                # 1. 首先降低帧率到10fps，但不低于最低帧率限制
                 if tries == 1:
-                    current_params['fps'] = 10  # 第一次尝试时直接降低到10fps
+                    current_params['fps'] = max(min_fps, 10)  # 确保不低于最低帧率
                     params = current_params
                     continue
 
-                # 2. 然后调整质量参数 (quality)
+                # 2. 然后调整质量参数 (quality)，但不超过最低质量限制
                 elif tries == 2 or tries == 3:
-                    # 较大幅度增加质量值(降低画质)
-                    current_params['quality'] += 5
+                    # 较大幅度增加质量值(降低画质)，但不超过最低质量值
+                    new_quality = current_params['quality'] + 5
+                    current_params['quality'] = min(min_quality, new_quality)  # 质量值越高，效果越差
                     params = current_params
                     continue
 
-                # 3. 最后才调整分辨率 (scale)
+                # 3. 最后才调整分辨率 (scale)，但不低于最低宽度
                 else:
                     try:
                         current_width = int(current_params['scale'].split(':')[0])

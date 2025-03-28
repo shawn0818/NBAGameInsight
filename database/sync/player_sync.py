@@ -1,8 +1,9 @@
-import sqlite3
+# sync/player_sync.py
 from typing import Dict, List
-from datetime import datetime
-from nba.fetcher.league_fetcher import LeagueFetcher
+from nba.fetcher.player_fetcher import PlayerFetcher
 from utils.logger_handler import AppLogger
+from database.models.base_models import Player
+from database.db_session import DBSession
 
 
 class PlayerSync:
@@ -11,12 +12,12 @@ class PlayerSync:
     负责从NBA API获取数据、转换并写入数据库
     """
 
-    def __init__(self, db_manager, player_repository=None, league_fetcher=None):
+    def __init__(self, player_repository=None, player_fetcher=None):
         """初始化球员数据同步器"""
-        self.db_manager = db_manager
+        self.db_session = DBSession.get_instance()
         self.player_repository = player_repository  # 可选，用于查询
-        self.league_fetcher = league_fetcher or LeagueFetcher()
-        self.logger = AppLogger.get_logger(__name__, app_name='sqlite')
+        self.player_fetcher = player_fetcher or PlayerFetcher()
+        self.logger = AppLogger.get_logger(__name__, app_name='nba')
 
     def sync_players(self, force_update: bool = False) -> bool:
         """
@@ -37,7 +38,7 @@ class PlayerSync:
                     return True
 
             # 获取球员名册数据
-            players_data = self.league_fetcher.get_all_players_info()
+            players_data = self.player_fetcher.get_all_players_info()
             if not players_data:
                 self.logger.error("获取球员名册数据失败")
                 return False
@@ -48,7 +49,7 @@ class PlayerSync:
                 self.logger.error("解析球员数据失败")
                 return False
 
-            # 直接写入数据库
+            # 导入数据到数据库
             success_count = self._import_players(parsed_players)
             self.logger.info(f"成功同步{success_count}名球员数据")
 
@@ -69,50 +70,39 @@ class PlayerSync:
             int: 成功写入的记录数
         """
         success_count = 0
-        conn = self.db_manager.conn
 
         try:
-            cursor = conn.cursor()
+            with self.db_session.session_scope('nba') as session:
+                for player_data in players_data:
+                    try:
+                        person_id = player_data.get('person_id')
+                        if not person_id:
+                            continue
 
-            for player_data in players_data:
-                try:
-                    person_id = player_data.get('person_id')
-                    if not person_id:
-                        continue
+                        # 检查是否已存在该球员
+                        existing_player = session.query(Player).filter(Player.person_id == person_id).first()
 
-                    # 添加更新时间
-                    player_data['updated_at'] = datetime.now().isoformat()
+                        if existing_player:
+                            # 更新现有记录
+                            for key, value in player_data.items():
+                                if hasattr(existing_player, key):
+                                    setattr(existing_player, key, value)
+                        else:
+                            # 创建新记录
+                            new_player = Player(**player_data)
+                            session.add(new_player)
 
-                    # 检查是否已存在该球员
-                    cursor.execute("SELECT person_id FROM player WHERE person_id = ?", (person_id,))
-                    exists = cursor.fetchone()
+                        success_count += 1
 
-                    if exists:
-                        # 更新现有记录
-                        placeholders = ", ".join([f"{k} = ?" for k in player_data.keys() if k != 'person_id'])
-                        values = [v for k, v in player_data.items() if k != 'person_id']
-                        values.append(person_id)  # WHERE条件的值
+                    except Exception as e:
+                        self.logger.error(f"处理球员记录失败: {e}")
+                        # 继续处理下一条记录
 
-                        cursor.execute(f"UPDATE player SET {placeholders} WHERE person_id = ?", values)
-                    else:
-                        # 插入新记录
-                        placeholders = ", ".join(["?"] * len(player_data))
-                        columns = ", ".join(player_data.keys())
-                        values = list(player_data.values())
+                # 提交事务（会在session_scope结束时自动提交）
+                self.logger.info(f"成功保存{success_count}/{len(players_data)}名球员数据")
 
-                        cursor.execute(f"INSERT INTO player ({columns}) VALUES ({placeholders})", values)
-
-                    success_count += 1
-
-                except Exception as e:
-                    self.logger.error(f"处理球员记录失败: {e}")
-                    # 继续处理下一条记录
-
-            conn.commit()
-            self.logger.info(f"成功保存{success_count}/{len(players_data)}名球员数据")
-
-        except sqlite3.Error as e:
-            conn.rollback()
+        except Exception as e:
+            # 异常会在session_scope中被捕获并回滚
             self.logger.error(f"批量保存球员数据失败: {e}")
 
         return success_count

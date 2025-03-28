@@ -105,6 +105,11 @@ class NBAConfig:
         DEFAULT_DB_RELATIVE_PATH = "data/database/nba.db"
         TEST_DB_RELATIVE_PATH = "test/test_nba.db"
 
+        # 添加game.db相关配置
+        GAME_DB_FILENAME = "game.db"
+        GAME_DB_RELATIVE_PATH = "data/database/game.db"
+        TEST_GAME_DB_RELATIVE_PATH = "test/test_game.db"
+
         # 数据库连接配置
         TIMEOUT = 30  # 连接超时时间（秒）
         ISOLATION_LEVEL = None  # 自动提交模式
@@ -151,6 +156,25 @@ class NBAConfig:
 
             # 默认使用常规数据库路径
             return root / cls.DEFAULT_DB_RELATIVE_PATH
+
+        @classmethod
+        def get_game_db_path(cls, env="default"):
+            """
+            根据环境获取game.db数据库完整路径
+
+            Args:
+                env: 环境名称，可以是 "default", "test", "development", "production"
+
+            Returns:
+                Path: game.db数据库文件的完整路径
+            """
+            root = get_project_root()
+
+            if env == "test":
+                return root / cls.TEST_GAME_DB_RELATIVE_PATH
+
+            # 默认使用常规game数据库路径
+            return root / cls.GAME_DB_RELATIVE_PATH
 
     class APP:
         """应用程序配置"""

@@ -1,21 +1,24 @@
-import sqlite3
+# repositories/schedule_repository.py
 from datetime import datetime, date, timezone
 from typing import Dict, List, Optional, Union
+from sqlalchemy import or_,  desc
+from database.models.base_models import Game
+from database.db_session import DBSession
 from utils.logger_handler import AppLogger
 
 
 class ScheduleRepository:
     """
     赛程数据访问对象 - 专注于查询操作
+    使用SQLAlchemy ORM进行数据访问
     """
 
-    def __init__(self, db_manager):
+    def __init__(self):
         """初始化赛程数据访问对象"""
-        self.db_manager = db_manager
+        self.db_session = DBSession.get_instance()
         self.logger = AppLogger.get_logger(__name__, app_name='nba')
 
-    def get_game_id(self, team_id: int, date_query: Union[str, datetime.date, datetime, None] = 'today') -> Optional[
-        str]:
+    def get_game_id(self, team_id: int, date_query: Union[str, datetime.date, datetime, None] = 'today') -> Optional[str]:
         """
         获取指定球队在特定日期的比赛ID
 
@@ -68,21 +71,17 @@ class ScheduleRepository:
                 # 转换为标准日期字符串
                 date_str = date_query.strftime('%Y-%m-%d')
 
-                cursor = self.db_manager.conn.cursor()
-                cursor.execute("""
-                SELECT game_id FROM schedule 
-                WHERE (home_team_id = ? OR away_team_id = ?) 
-                  AND game_date = ?
-                ORDER BY game_date_time_utc
-                LIMIT 1
-                """, (team_id, team_id, date_str))
+                with self.db_session.session_scope('nba') as session:
+                    game = session.query(Game.game_id).filter(
+                        or_(Game.home_team_id == team_id, Game.away_team_id == team_id),
+                        Game.game_date == date_str
+                    ).order_by(Game.game_date_time_utc).first()
 
-                result = cursor.fetchone()
-                return result['game_id'] if result else None
+                    return game.game_id if game else None
 
             return None
 
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"获取比赛ID失败: {e}")
             return None
 
@@ -97,15 +96,14 @@ class ScheduleRepository:
             Optional[Dict]: 赛程信息字典，未找到时返回None
         """
         try:
-            cursor = self.db_manager.conn.cursor()
-            cursor.execute("SELECT * FROM schedule WHERE game_id = ?", (game_id,))
-            schedule = cursor.fetchone()
+            with self.db_session.session_scope('nba') as session:
+                game = session.query(Game).filter(Game.game_id == game_id).first()
 
-            if schedule:
-                return dict(schedule)
-            return None
+                if game:
+                    return self._to_dict(game)
+                return None
 
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"获取赛程(ID:{game_id})数据失败: {e}")
             return None
 
@@ -120,24 +118,20 @@ class ScheduleRepository:
             List[Dict]: 匹配的赛程信息列表
         """
         try:
-            cursor = self.db_manager.conn.cursor()
-
             # 将日期转换为string格式(YYYY-MM-DD)进行比较
             if isinstance(target_date, (date, datetime)):
                 date_str = target_date.strftime('%Y-%m-%d')
             else:
                 date_str = target_date
 
-            cursor.execute('''
-            SELECT * FROM schedule 
-            WHERE game_date = ? 
-            ORDER BY game_date_time_utc
-            ''', (date_str,))
+            with self.db_session.session_scope('nba') as session:
+                games = session.query(Game).filter(
+                    Game.game_date == date_str
+                ).order_by(Game.game_date_time_utc).all()
 
-            schedules = cursor.fetchall()
-            return [dict(schedule) for schedule in schedules]
+                return [self._to_dict(game) for game in games]
 
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"获取日期({target_date})赛程数据失败: {e}")
             return []
 
@@ -153,18 +147,14 @@ class ScheduleRepository:
             List[Dict]: 匹配的赛程信息列表
         """
         try:
-            cursor = self.db_manager.conn.cursor()
-            cursor.execute('''
-            SELECT * FROM schedule 
-            WHERE home_team_id = ? OR away_team_id = ? 
-            ORDER BY game_date_time_utc DESC 
-            LIMIT ?
-            ''', (team_id, team_id, limit))
+            with self.db_session.session_scope('nba') as session:
+                games = session.query(Game).filter(
+                    or_(Game.home_team_id == team_id, Game.away_team_id == team_id)
+                ).order_by(desc(Game.game_date_time_utc)).limit(limit).all()
 
-            schedules = cursor.fetchall()
-            return [dict(schedule) for schedule in schedules]
+                return [self._to_dict(game) for game in games]
 
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"获取球队(ID:{team_id})赛程数据失败: {e}")
             return []
 
@@ -179,23 +169,18 @@ class ScheduleRepository:
             Optional[Dict]: 下一场比赛信息，无下一场比赛时返回None
         """
         try:
-            cursor = self.db_manager.conn.cursor()
-            # 使用 datetime.now(timezone.utc) 替代 datetime.utcnow()
             now = datetime.now(timezone.utc).isoformat()
 
-            cursor.execute('''
-            SELECT * FROM schedule 
-            WHERE (home_team_id = ? OR away_team_id = ?) 
-              AND game_date_time_utc > ? 
-              AND game_status = 1 
-            ORDER BY game_date_time_utc 
-            LIMIT 1
-            ''', (team_id, team_id, now))
+            with self.db_session.session_scope('nba') as session:
+                game = session.query(Game).filter(
+                    or_(Game.home_team_id == team_id, Game.away_team_id == team_id),
+                    Game.game_date_time_utc > now,
+                    Game.game_status == 1
+                ).order_by(Game.game_date_time_utc).first()
 
-            schedule = cursor.fetchone()
-            return dict(schedule) if schedule else None
+                return self._to_dict(game) if game else None
 
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"获取球队(ID:{team_id})下一场比赛失败: {e}")
             return None
 
@@ -210,22 +195,17 @@ class ScheduleRepository:
             Optional[Dict]: 上一场比赛信息，无上一场比赛时返回None
         """
         try:
-            cursor = self.db_manager.conn.cursor()
-            # 使用 datetime.now(timezone.utc) 替代 datetime.utcnow()
             now = datetime.now(timezone.utc).isoformat()
 
-            cursor.execute('''
-            SELECT * FROM schedule 
-            WHERE (home_team_id = ? OR away_team_id = ?) 
-              AND game_date_time_utc < ? 
-            ORDER BY game_date_time_utc DESC 
-            LIMIT 1
-            ''', (team_id, team_id, now))
+            with self.db_session.session_scope('nba') as session:
+                game = session.query(Game).filter(
+                    or_(Game.home_team_id == team_id, Game.away_team_id == team_id),
+                    Game.game_date_time_utc < now
+                ).order_by(desc(Game.game_date_time_utc)).first()
 
-            schedule = cursor.fetchone()
-            return dict(schedule) if schedule else None
+                return self._to_dict(game) if game else None
 
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"获取球队(ID:{team_id})上一场比赛失败: {e}")
             return None
 
@@ -242,27 +222,17 @@ class ScheduleRepository:
             List[Dict]: 匹配的赛程信息列表
         """
         try:
-            cursor = self.db_manager.conn.cursor()
+            with self.db_session.session_scope('nba') as session:
+                query = session.query(Game).filter(Game.season_year == season)
 
-            if game_type:
-                cursor.execute('''
-                SELECT * FROM schedule 
-                WHERE season_year = ? AND game_type = ?
-                ORDER BY game_date_time_utc 
-                LIMIT ?
-                ''', (season, game_type, limit))
-            else:
-                cursor.execute('''
-                SELECT * FROM schedule 
-                WHERE season_year = ? 
-                ORDER BY game_date_time_utc 
-                LIMIT ?
-                ''', (season, limit))
+                if game_type:
+                    query = query.filter(Game.game_type == game_type)
 
-            schedules = cursor.fetchall()
-            return [dict(schedule) for schedule in schedules]
+                games = query.order_by(Game.game_date_time_utc).limit(limit).all()
 
-        except sqlite3.Error as e:
+                return [self._to_dict(game) for game in games]
+
+        except Exception as e:
             self.logger.error(f"获取赛季({season})赛程数据失败: {e}")
             return []
 
@@ -277,10 +247,20 @@ class ScheduleRepository:
             int: 赛程数量
         """
         try:
-            cursor = self.db_manager.conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM schedule WHERE season_year = ?", (season,))
-            result = cursor.fetchone()
-            return result[0] if result else 0
-        except sqlite3.Error as e:
+            with self.db_session.session_scope('nba') as session:
+                count = session.query(Game).filter(Game.season_year == season).count()
+                return count or 0
+
+        except Exception as e:
             self.logger.error(f"获取赛季({season})赛程数量失败: {e}")
             return 0
+
+    def _to_dict(self, model_instance):
+        """将模型实例转换为字典"""
+        if model_instance is None:
+            return None
+
+        result = {}
+        for column in model_instance.__table__.columns:
+            result[column.name] = getattr(model_instance, column.name)
+        return result
