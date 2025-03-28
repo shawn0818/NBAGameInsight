@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Optional, Any, Union, List, Callable
-from urllib.parse import urlencode
+
 
 from utils.http_handler import HTTPRequestManager, RetryConfig
 from utils.logger_handler import AppLogger
@@ -276,16 +276,17 @@ class BaseNBAFetcher:
         "cache-control": "no-cache",
         "connection": "keep-alive",
         "dnt": "1",
-        #"host": "stats.nba.com",  #会影响cdn.nba,com
-        "origin": "https://www.nba.com",
         "pragma": "no-cache",
-        "referer": "https://www.nba.com/",
         "sec-ch-ua": '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"',
         "sec-ch-ua-mobile": "?0",
         "sec-ch-ua-platform": '"Windows"',
         "sec-fetch-dest": "empty",
         "sec-fetch-mode": "cors",
         "sec-fetch-site": "same-site",
+        "origin": "https://www.nba.com",
+        "referer": "https://www.nba.com/",
+        "x-nba-stats-token": "true", #特殊认证标头,有时候没有会403
+        "x-nba-stats-origin": "stats",#特殊认证标头，有时候没有会403
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36',
     }
 

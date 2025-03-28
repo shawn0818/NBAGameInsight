@@ -1,11 +1,11 @@
 # db_session.py
 from contextlib import contextmanager
-from typing import Dict, Generator, Optional, Any
-from sqlalchemy.orm import Session, scoped_session, sessionmaker
+from typing import Dict, Generator, Optional
+from sqlalchemy.orm import Session, scoped_session
 from sqlalchemy.engine import Engine
 import threading
 import logging
-from connection_pool import ConnectionPool
+from database.connection_pool import ConnectionPool
 from config import NBAConfig
 
 logger = logging.getLogger(__name__)
@@ -31,7 +31,7 @@ class DBSession:
         self.connection_pool = ConnectionPool()
         self.scoped_sessions: Dict[str, scoped_session] = {}
 
-    def initialize(self, env: str = "default", create_tables: bool = False) -> None:
+    def initialize(self, env: str = "default", create_tables: bool = True) -> None:
         """
         初始化数据库连接
 

@@ -1,15 +1,20 @@
-from dataclasses import dataclass, field
-import numpy as np
+from dataclasses import dataclass
 import time
+import threading
 from typing import Optional, Dict, Any, Tuple, Union, List
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.patches import Rectangle, Circle, Arc
+from matplotlib.lines import Line2D
 from PIL import Image, ImageDraw, ImageEnhance
 import requests
 from io import BytesIO
 from pathlib import Path
 from scipy.spatial import cKDTree
+
+from nba.models.game_model import Game
+from utils.logger_handler import AppLogger
+from config import NBAConfig
 
 
 @dataclass
@@ -38,7 +43,7 @@ class ChartConfig:
     # 边框设置
     marker_border_width: float = 0.5  # 头像边框宽度
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """配置验证与初始化"""
         if self.dpi < 72 or self.dpi > 600:
             raise ValueError("DPI must be between 72 and 600")
@@ -53,7 +58,7 @@ class ChartConfig:
 class ImageCache:
     """优化的图像缓存管理器"""
 
-    def __init__(self, cache_duration: int = 24 * 60 * 60):
+    def __init__(self, cache_duration: int = 24 * 60 * 60) -> None:
         # 原始图像缓存
         self.raw_cache: Dict[str, Tuple[bytes, float]] = {}
         # 处理后图像缓存（按大小和处理类型）
@@ -70,7 +75,7 @@ class ImageCache:
                 del self.raw_cache[key]
         return None
 
-    def set_raw(self, key: str, image_data: bytes):
+    def set_raw(self, key: str, image_data: bytes) -> None:
         """设置原始图像缓存"""
         self.raw_cache[key] = (image_data, time.time())
 
@@ -84,7 +89,7 @@ class ImageCache:
                 del self.processed_cache[key]
         return None
 
-    def set_processed(self, key: str, image: Image.Image):
+    def set_processed(self, key: str, image: Image.Image) -> None:
         """缓存处理后的图像"""
         self.processed_cache[key] = (image, time.time())
 
@@ -94,12 +99,14 @@ class PlayerImageManager:
 
     # 使用单例模式共享缓存
     _instance = None
+    _lock = threading.Lock()
 
-    def __new__(cls, cache_duration: int = 24 * 60 * 60):
-        if cls._instance is None:
-            cls._instance = super(PlayerImageManager, cls).__new__(cls)
-            cls._instance.cache = ImageCache(cache_duration)
-            cls._instance.session = requests.Session()  # 重用HTTP连接
+    def __new__(cls, cache_duration: int = 24 * 60 * 60) -> 'PlayerImageManager':
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = super(PlayerImageManager, cls).__new__(cls)
+                cls._instance.cache = ImageCache(cache_duration)
+                cls._instance.session = requests.Session()  # 重用HTTP连接
         return cls._instance
 
     def get_player_headshot_url(self, player_id: int, small: bool = False) -> str:
@@ -201,7 +208,7 @@ class CourtRenderer:
     """NBA球场渲染器 - 专注于绘制球场元素"""
 
     @staticmethod
-    def draw_court(config: ChartConfig):
+    def draw_court(config: ChartConfig) -> Tuple[plt.Figure, plt.Axes]:
         """绘制NBA半场
 
         Args:
@@ -326,17 +333,25 @@ class CourtRenderer:
 
     @staticmethod
     def add_player_portrait(axis: Axes, player_id: int,
-                            position=(0.9995, 0.002),
-                            size: float = 0.15,
-                            config: Optional[ChartConfig] = None) -> None:
-        """在图表中添加球员肖像（通常用于图表右下角标识）"""
+                          position: Tuple[float, float] = (0.9995, 0.002),
+                          size: float = 0.15,
+                          config: Optional[ChartConfig] = None) -> None:
+        """在图表中添加球员肖像（通常用于图表右下角标识）
+
+        Args:
+            axis: matplotlib轴对象
+            player_id: 球员ID
+            position: 肖像位置（相对坐标）
+            size: 肖像大小（相对大小）
+            config: 图表配置，用于获取DPI等信息
+        """
         try:
             # 获取图像管理器
             image_manager = PlayerImageManager()
 
             # 计算图像尺寸（像素）
             fig_width, fig_height = axis.figure.get_size_inches()
-            dpi = axis.figure.dpi
+            dpi = axis.figure.dpi if config is None else config.dpi
             portrait_size_px = int(size * fig_width * dpi)
 
             # 获取处理后的图像
@@ -358,7 +373,7 @@ class ShotProcessor:
     """投篮数据处理器 - 处理和分析投篮数据"""
 
     @staticmethod
-    def calculate_marker_sizes(coordinates, config: ChartConfig):
+    def calculate_marker_sizes(coordinates: List[Tuple[float, float]], config: ChartConfig) -> List[float]:
         """基于局部密度计算每个投篮点标记大小
 
         Args:
@@ -384,7 +399,7 @@ class ShotProcessor:
             if dist < config.ideal_marker_distance:
                 # 根据距离比例平滑缩放
                 scale_factor = max(config.marker_min_size / config.marker_base_size,
-                                   dist / config.ideal_marker_distance)
+                                  dist / config.ideal_marker_distance)
                 size = config.marker_base_size * scale_factor
             else:
                 # 孤立点保持原始大小
@@ -395,7 +410,9 @@ class ShotProcessor:
         return marker_sizes
 
     @staticmethod
-    def prepare_team_shots_data(team_shots, shot_outcome="made_only", config: ChartConfig = None):
+    def prepare_team_shots_data(team_shots: Dict[int, List[Dict[str, Any]]],
+                               shot_outcome: str = "made_only",
+                               config: Optional[ChartConfig] = None) -> List[Dict[str, Any]]:
         """处理球队投篮数据
 
         Args:
@@ -443,8 +460,15 @@ class ShotProcessor:
         return all_shots_data
 
     @staticmethod
-    def prepare_player_shots_data(player_shots, shot_outcome="made_only", config: ChartConfig = None):
+    def prepare_player_shots_data(player_shots: List[Dict[str, Any]],
+                                shot_outcome: str = "made_only",
+                                config: Optional[ChartConfig] = None) -> List[Dict[str, Any]]:
         """处理单个球员的投篮数据
+
+        Args:
+            player_shots: 球员投篮数据列表
+            shot_outcome: 筛选条件，"made_only"仅命中，"all"全部
+            config: 图表配置
 
         Returns:
             所有投篮点信息列表
@@ -489,7 +513,7 @@ class ShotRenderer:
     """投篮图渲染器 - 负责将处理后的投篮数据渲染到球场上"""
 
     @staticmethod
-    def add_player_info_box(axis: Axes, player_id: int, player_stats: Dict[str, Any], config: ChartConfig):
+    def add_player_info_box(axis: Axes, player_id: int, player_stats: Dict[str, Any], config: ChartConfig) -> None:
         """添加球员信息框
 
         在球场图底部添加包含球员头像、数据统计和制作者信息的矩形框
@@ -609,7 +633,7 @@ class ShotRenderer:
             # 出错时不影响主图显示
 
     @staticmethod
-    def add_shot_marker(axis: Axes, shot_data: Dict[str, Any], config: ChartConfig):
+    def add_shot_marker(axis: Axes, shot_data: Dict[str, Any], config: ChartConfig) -> None:
         """添加单个投篮标记
 
         Args:
@@ -668,22 +692,18 @@ class ShotRenderer:
             print(f"添加投篮标记出错: {str(e)}")
 
     @staticmethod
-    def add_legend(axis: Axes, shot_outcome: str = "made_only"):
+    def add_legend(axis: Axes, shot_outcome: str = "made_only") -> None:
         """添加图例
 
         Args:
             axis: matplotlib轴对象
             shot_outcome: "made_only"仅显示命中，"all"显示所有
         """
-        from matplotlib.lines import Line2D
-
-        legend_elements = []
-
-        # 命中投篮图例
-        legend_elements.append(
+        # 使用列表字面量初始化
+        legend_elements = [
             Line2D([0], [0], marker='o', color='w', markerfacecolor='#3A7711',
                    markeredgecolor='#3A7711', markersize=10, label='投篮命中')
-        )
+        ]
 
         # 未命中投篮图例（仅在显示全部投篮时添加）
         if shot_outcome == "all":
@@ -695,7 +715,7 @@ class ShotRenderer:
         axis.legend(handles=legend_elements, loc='upper right')
 
     @staticmethod
-    def render_shots(axis: Axes, shots_data: List[Dict[str, Any]], config: ChartConfig):
+    def render_shots(axis: Axes, shots_data: List[Dict[str, Any]], config: ChartConfig) -> None:
         """渲染所有投篮点
 
         Args:
@@ -708,21 +728,36 @@ class ShotRenderer:
 
 
 class GameChartsService:
-    """NBA比赛数据可视化服务 - 主服务类"""
+    """NBA比赛数据可视化服务 - 增强版，整合业务逻辑"""
 
-    def __init__(self, config: Optional[ChartConfig] = None):
+    def __init__(self, config: Optional[ChartConfig] = None) -> None:
         """初始化服务"""
         self.config = config or ChartConfig()
+
+        # 使用 NBAConfig.PATHS.PICTURES_DIR 作为默认图表保存路径
+        if not self.config.figure_path:
+            self.config.figure_path = NBAConfig.PATHS.PICTURES_DIR
+
         # 确保图表保存路径存在
         if self.config.figure_path:
             self.config.figure_path.mkdir(parents=True, exist_ok=True)
 
-    def _save_figure(self, fig: plt.Figure, output_path: str) -> None:
+        # 使用 NBAConfig.PATHS.PICTURES_DIR 作为默认输出目录
+        self.default_output_dir = self.config.figure_path
+        self.default_output_dir.mkdir(parents=True, exist_ok=True)
+
+        # 日志系统
+        self.logger = AppLogger.get_logger(__name__, app_name='nba')
+
+    def _save_figure(self, fig: plt.Figure, output_path: str) -> Path:
         """保存图表到文件
 
         Args:
             fig: matplotlib图表对象
             output_path: 输出路径
+
+        Returns:
+            Path: 保存图表的完整路径
         """
         try:
             # 如果提供了基础路径，与输出路径组合
@@ -742,9 +777,10 @@ class GameChartsService:
                 pad_inches=0.1
             )
             plt.close(fig)
-            print(f"图表已保存至 {full_path}")
+            self.logger.info(f"图表已保存至 {full_path}")
+            return full_path
         except Exception as e:
-            print(f"保存图表时出错: {e}")
+            self.logger.error(f"保存图表时出错: {e}")
             raise e
 
     def plot_shots(self,
@@ -768,11 +804,11 @@ class GameChartsService:
         try:
             # 验证参数
             if shot_outcome not in ["made_only", "all"]:
-                print(f"无效的shot_outcome值: {shot_outcome}，使用默认值 'made_only'")
+                self.logger.warning(f"无效的shot_outcome值: {shot_outcome}，使用默认值 'made_only'")
                 shot_outcome = "made_only"
 
             if data_type not in ["team", "player"]:
-                print(f"无效的data_type值: {data_type}，使用默认值 'team'")
+                self.logger.warning(f"无效的data_type值: {data_type}，使用默认值 'team'")
                 data_type = "team"
 
             # 创建球场
@@ -786,7 +822,7 @@ class GameChartsService:
             if data_type == "team":
                 team_shots = shots_data
                 if not team_shots:
-                    print("球队投篮数据为空")
+                    self.logger.warning("球队投篮数据为空")
                     return None
 
                 processed_shots = ShotProcessor.prepare_team_shots_data(
@@ -796,7 +832,7 @@ class GameChartsService:
             elif data_type == "player":
                 player_shots = shots_data
                 if not player_shots:
-                    print("球员投篮数据为空")
+                    self.logger.warning("球员投篮数据为空")
                     return None
 
                 processed_shots = ShotProcessor.prepare_player_shots_data(
@@ -805,7 +841,7 @@ class GameChartsService:
 
             # 检查处理后的数据
             if len(processed_shots) < 1:
-                print("处理后的投篮数据为空")
+                self.logger.warning("处理后的投篮数据为空")
                 return None
 
             # 渲染投篮点
@@ -824,23 +860,24 @@ class GameChartsService:
             return fig
 
         except Exception as e:
-            print(f"绘制投篮图时出错: {str(e)}")
+            self.logger.error(f"绘制投篮图时出错: {str(e)}")
             return None
 
     def plot_player_impact(self,
-                           player_shots: List[Dict[str, Any]],
-                           assisted_shots: List[Dict[str, Any]],
-                           player_id: int,
-                           player_stats: Optional[Dict[str, Any]] = None,
-                           title: Optional[str] = None,
-                           output_path: Optional[str] = None,
-                           impact_type: str = "full_impact") -> Optional[plt.Figure]:
+                          player_shots: List[Dict[str, Any]],
+                          assisted_shots: List[Dict[str, Any]],
+                          player_id: int,
+                          player_stats: Optional[Dict[str, Any]] = None,
+                          title: Optional[str] = None,
+                          output_path: Optional[str] = None,
+                          impact_type: str = "full_impact") -> Optional[plt.Figure]:
         """绘制球员得分影响力图
 
         Args:
             player_shots: 球员自己的投篮数据
             assisted_shots: 球员助攻的投篮数据
             player_id: 球员ID
+            player_stats: 球员统计数据字典，包含姓名、位置、得分等信息
             title: 图表标题
             output_path: 输出路径
             impact_type: 图表类型，"scoring_only"或"full_impact"
@@ -851,27 +888,23 @@ class GameChartsService:
         try:
             # 验证参数
             if impact_type not in ["scoring_only", "full_impact"]:
-                print(f"无效的impact_type值: {impact_type}，使用默认值 'full_impact'")
+                self.logger.warning(f"无效的impact_type值: {impact_type}，使用默认值 'full_impact'")
                 impact_type = "full_impact"
 
             # 创建球场
             fig, ax = CourtRenderer.draw_court(self.config)
 
             # 添加图例
-            from matplotlib.lines import Line2D
-            legend_elements = []
-
-            # 添加个人得分图例
-            legend_elements.append(
+            legend_elements = [
                 Line2D([0], [0], marker='o', color='w', markerfacecolor='#3A7711',
-                       markeredgecolor='#3A7711', markersize=10, label='个人得分')
-            )
+                      markeredgecolor='#3A7711', markersize=10, label='个人得分')
+            ]
 
             # 如果是完整影响力图，添加助攻图例
             if impact_type == "full_impact":
                 legend_elements.append(
                     Line2D([0], [0], marker='o', color='w', markerfacecolor='#552583',
-                           markeredgecolor='#552583', markersize=10, label='助攻队友得分')
+                          markeredgecolor='#552583', markersize=10, label='助攻队友得分')
                 )
 
             ax.legend(handles=legend_elements, loc='upper right')
@@ -965,5 +998,398 @@ class GameChartsService:
             return fig
 
         except Exception as e:
-            print(f"绘制球员影响力图时出错: {str(e)}")
+            self.logger.error(f"绘制球员影响力图时出错: {str(e)}")
             return None
+
+    # ==== 从NBAService下放的业务方法 ====
+
+    def generate_player_scoring_impact_charts(self,
+                                             game: Game,
+                                             player_id: int,
+                                             player_name: str,
+                                             output_dir: Optional[Path] = None,
+                                             force_reprocess: bool = False,
+                                             impact_type: str = "full_impact") -> Dict[str, Path]:
+        """生成球员得分影响力图
+
+        展示球员自己的投篮和由其助攻的队友投篮，以球员头像方式显示。
+
+        Args:
+            game: 比赛对象
+            player_id: 球员ID
+            player_name: 球员名称
+            output_dir: 输出目录，默认使用配置中的图片目录
+            force_reprocess: 是否强制重新处理已存在的文件
+            impact_type: 图表类型，可选 "scoring_only"(仅显示球员自己的投篮)
+                        或 "full_impact"(同时显示球员投篮和助攻队友投篮)
+
+        Returns:
+            Dict[str, Path]: 图表路径字典，键包含"impact_chart"或"scoring_chart"
+        """
+        result = {}
+
+        try:
+            # 设置输出目录
+            if not output_dir:
+                output_dir = self.default_output_dir
+                output_dir.mkdir(parents=True, exist_ok=True)
+
+            # 收集输入数据
+            chart_data = self._collect_player_chart_data(
+                game=game,
+                player_id=player_id,
+                player_name=player_name,
+                impact_type=impact_type
+            )
+
+            if not chart_data["success"]:
+                self.logger.error(f"球员 {player_name} (ID={player_id}) 没有投篮或助攻数据")
+                return result
+
+            # 准备输出路径和文件名
+            output_path = self._prepare_player_chart_output(
+                player_id=player_id,
+                game=game,
+                output_dir=output_dir,
+                impact_type=impact_type,
+                force_reprocess=force_reprocess
+            )
+
+            if not output_path["success"]:
+                result[output_path["key"]] = output_path["path"]  # 返回已存在的图表
+                return result
+
+            # 调用图表绘制方法
+            fig = self.plot_player_impact(
+                player_shots=chart_data["player_shots"],
+                assisted_shots=chart_data["assisted_shots"],
+                player_id=player_id,
+                title=chart_data["title"],
+                output_path=str(output_path["path"]),
+                impact_type=impact_type
+            )
+
+            if fig:
+                self.logger.info(f"球员{impact_type}图已生成: {output_path['path']}")
+                result[output_path["key"]] = output_path["path"]
+            else:
+                self.logger.error(f"球员{impact_type}图生成失败")
+
+            return result
+
+        except Exception as e:
+            self.logger.error(f"生成球员图表失败: {e}", exc_info=True)
+            return result
+
+    def generate_shot_charts(self,
+                            game: Game,
+                            team_id: Optional[int] = None,
+                            player_id: Optional[int] = None,
+                            team_name: Optional[str] = None,
+                            player_name: Optional[str] = None,
+                            chart_type: str = "both",  # "team", "player", "both"
+                            output_dir: Optional[Path] = None,
+                            force_reprocess: bool = False,
+                            shot_outcome: str = "made_only",  # "made_only", "all"
+                            impact_type: str = "full_impact") -> Dict[str, Path]:
+        """生成投篮分布图
+
+        Args:
+            game: 比赛对象
+            team_id: 球队ID
+            player_id: 球员ID
+            team_name: 球队名称
+            player_name: 球员名称
+            chart_type: 生成图表类型，"team"、"player"或"both"
+            output_dir: 输出目录
+            force_reprocess: 是否强制重新处理
+            shot_outcome: 投篮结果筛选，"made_only"或"all"
+            impact_type: 影响力图类型，"scoring_only"或"full_impact"
+
+        Returns:
+            Dict[str, Path]: 生成图表的路径字典
+        """
+        chart_paths = {}
+
+        try:
+            # 设置输出目录
+            if not output_dir:
+                output_dir = self.default_output_dir
+                output_dir.mkdir(parents=True, exist_ok=True)
+
+            # 1. 生成球员投篮图
+            if chart_type in ["player", "both"] and player_id:
+                player_chart = self._generate_player_chart(
+                    player_id=player_id,
+                    player_name=player_name,
+                    game=game,
+                    output_dir=output_dir,
+                    shot_outcome=shot_outcome,
+                    impact_type=impact_type,
+                    force_reprocess=force_reprocess
+                )
+                if player_chart:
+                    chart_paths["player_chart"] = player_chart
+
+            # 2. 生成球队投篮图
+            if chart_type in ["team", "both"] and team_id:
+                team_chart = self._generate_team_chart(
+                    team_id=team_id,
+                    team_name=team_name,
+                    game=game,
+                    output_dir=output_dir,
+                    shot_outcome=shot_outcome,
+                    force_reprocess=force_reprocess
+                )
+                if team_chart:
+                    chart_paths["team_chart"] = team_chart
+
+            return chart_paths
+
+        except Exception as e:
+            self.logger.error(f"生成投篮图失败: {e}", exc_info=True)
+            return chart_paths
+
+    # ==== 辅助方法 ====
+
+    def _collect_player_chart_data(self, game: Game, player_id: int, player_name: str, impact_type: str) -> Dict[str, Any]:
+        """收集球员图表所需数据
+
+        Args:
+            game: 比赛对象
+            player_id: 球员ID
+            player_name: 球员名称
+            impact_type: 图表类型
+
+        Returns:
+            Dict[str, Any]: 包含图表所需数据的字典
+        """
+        result = {"success": False}
+
+        # 1. 获取球员自己的投篮数据
+        player_shots = game.get_shot_data(player_id)
+        if not player_shots:
+            self.logger.warning(f"未找到{player_name}的投篮数据")
+            player_shots = []
+
+        # 2. 获取由球员助攻的队友投篮数据（仅在full_impact模式下需要）
+        assisted_shots = []
+        if impact_type == "full_impact":
+            assisted_shots = game.get_assisted_shot_data(player_id)
+            if not assisted_shots:
+                self.logger.warning(f"未找到{player_name}的助攻投篮数据")
+
+        # 3. 如果没有投篮数据，返回空结果
+        if not player_shots:
+            if impact_type == "full_impact":
+                if not assisted_shots:
+                    self.logger.error(f"{player_name}没有投篮或助攻数据")
+                    return result
+                else:  # 有助攻数据但没有投篮数据
+                    self.logger.warning(f"{player_name}没有投篮数据，但有助攻数据")
+                    # 继续处理，因为有助攻数据
+            elif impact_type == "scoring_only":
+                self.logger.error(f"{player_name}没有投篮数据")
+                return result
+
+        # 4. 准备标题
+        formatted_date = game.game_data.game_time_beijing.strftime("%Y年%m月%d日")
+
+        # 根据impact_type选择合适的标题
+        if impact_type == "full_impact":
+            title = f"{player_name} 得分影响力图\n{formatted_date}"
+        else:  # scoring_only
+            title = f"{player_name} 投篮分布图\n{formatted_date}"
+
+        result.update({
+            "success": True,
+            "player_shots": player_shots,
+            "assisted_shots": assisted_shots,
+            "title": title
+        })
+
+        return result
+
+    def _prepare_player_chart_output(self, player_id: int, game: Game, output_dir: Path,
+                                   impact_type: str, force_reprocess: bool) -> Dict[str, Any]:
+        """准备球员图表输出路径
+
+        Args:
+            player_id: 球员ID
+            game: 比赛对象
+            output_dir: 输出目录
+            impact_type: 图表类型
+            force_reprocess: 是否强制重新处理
+
+        Returns:
+            Dict[str, Any]: 包含输出路径和结果键的字典，以及是否需要重新处理的标志
+        """
+        # 根据impact_type选择合适的文件名
+        if impact_type == "full_impact":
+            output_filename = f"player_impact_{game.game_data.game_id}_{player_id}.png"
+            result_key = "impact_chart"
+        else:  # scoring_only
+            output_filename = f"player_scoring_{game.game_data.game_id}_{player_id}.png"
+            result_key = "scoring_chart"
+
+        output_path = output_dir / output_filename
+
+        # 检查是否已存在
+        if not force_reprocess and output_path.exists():
+            self.logger.info(f"检测到已存在的处理结果: {output_path}")
+            return {
+                "success": False,  # 不需要重新处理
+                "path": output_path,
+                "key": result_key
+            }
+
+        return {
+            "success": True,  # 需要处理
+            "path": output_path,
+            "key": result_key
+        }
+
+    def _generate_player_chart(self,
+                              player_id: int,
+                              player_name: str,
+                              game: Game,
+                              output_dir: Optional[Path] = None,
+                              shot_outcome: str = "made_only",
+                              impact_type: str = "full_impact",
+                              force_reprocess: bool = False) -> Optional[Path]:
+        """生成球员投篮图的辅助方法
+
+        Args:
+            player_id: 球员ID
+            player_name: 球员名称
+            game: 比赛对象
+            output_dir: 输出目录
+            shot_outcome: 投篮结果筛选
+            impact_type: 图表类型
+            force_reprocess: 是否强制重新处理
+
+        Returns:
+            Optional[Path]: 生成图表的路径
+        """
+        self.logger.info(f"正在生成 {player_name} 的投篮图")
+
+        # 选择生成方法：如果是full_impact则使用球员得分影响力图
+        if impact_type == "full_impact":
+            impact_charts = self.generate_player_scoring_impact_charts(
+                game=game,
+                player_id=player_id,
+                player_name=player_name,
+                output_dir=output_dir,
+                force_reprocess=force_reprocess,
+                impact_type=impact_type
+            )
+            if impact_charts and "impact_chart" in impact_charts:
+                self.logger.info(f"球员得分影响力图已生成: {impact_charts['impact_chart']}")
+                return impact_charts["impact_chart"]
+            return None
+
+        # 球员单独投篮图生成逻辑
+        # 获取球员投篮数据
+        shots = game.get_shot_data(player_id)
+        if not shots:
+            self.logger.warning(f"未找到{player_name}的投篮数据")
+            return None
+
+        # 准备输出路径和文件名
+        formatted_date = game.game_data.game_time_beijing.strftime("%Y年%m月%d日")
+        title_prefix = "所有" if shot_outcome == "all" else ""
+        title = f"{player_name} {title_prefix}投篮分布图\n{formatted_date}"
+
+        filename_prefix = "all_shots" if shot_outcome == "all" else "scoring"
+        output_filename = f"{filename_prefix}_{game.game_data.game_id}_{player_id}.png"
+        output_path = (output_dir or self.default_output_dir) / output_filename
+
+        # 检查是否已存在
+        if not force_reprocess and output_path.exists():
+            self.logger.info(f"检测到已存在的处理结果: {output_path}")
+            return output_path
+
+        # 使用plot_shots方法绘制球员投篮图
+        fig = self.plot_shots(
+            shots_data=shots,
+            title=title,
+            output_path=str(output_path),
+            shot_outcome=shot_outcome,
+            data_type="player"
+        )
+
+        if fig:
+            self.logger.info(f"球员投篮图已生成: {output_path}")
+            return output_path
+        else:
+            self.logger.error("球员投篮图生成失败")
+            return None
+
+    def _generate_team_chart(self,
+                            team_id: int,
+                            team_name: str,
+                            game: Game,
+                            output_dir: Optional[Path] = None,
+                            shot_outcome: str = "made_only",
+                            force_reprocess: bool = False) -> Optional[Path]:
+        """生成球队投篮图的辅助方法
+
+        Args:
+            team_id: 球队ID
+            team_name: 球队名称
+            game: 比赛对象
+            output_dir: 输出目录
+            shot_outcome: 投篮结果筛选
+            force_reprocess: 是否强制重新处理
+
+        Returns:
+            Optional[Path]: 生成图表的路径
+        """
+        self.logger.info(f"正在生成 {team_name} 的球队投篮图")
+
+        # 准备输出路径和文件名
+        formatted_date = game.game_data.game_time_beijing.strftime("%Y年%m月%d日")
+        title_prefix = "所有" if shot_outcome == "all" else ""
+        title = f"{team_name} {title_prefix}球队投篮分布图\n{formatted_date}"
+
+        filename_prefix = "all_shots" if shot_outcome == "all" else "team_shots"
+        output_filename = f"{filename_prefix}_{game.game_data.game_id}_{team_id}.png"
+        output_path = (output_dir or self.default_output_dir) / output_filename
+
+        # 检查是否已存在
+        if not force_reprocess and output_path.exists():
+            self.logger.info(f"检测到已存在的处理结果: {output_path}")
+            return output_path
+
+        # 获取球队投篮数据
+        team_shots = game.get_team_shot_data(team_id)
+        if not team_shots:
+            self.logger.warning(f"未找到{team_name}的投篮数据")
+            return None
+
+        # 调用图表服务绘制球队投篮图
+        fig = self.plot_shots(
+            shots_data=team_shots,
+            title=title,
+            output_path=str(output_path),
+            shot_outcome=shot_outcome,
+            data_type="team"
+        )
+
+        if fig:
+            self.logger.info(f"球队投篮图已生成: {output_path}")
+            return output_path
+        else:
+            self.logger.error("球队投篮图生成失败")
+            return None
+
+    def clear_cache(self) -> None:
+        """清理图表服务缓存"""
+        # 当前实现下没有需要特别清理的缓存
+        pass
+
+    def close(self) -> None:
+        """关闭图表服务资源"""
+        # 关闭所有plt图表
+        plt.close('all')
+        self.logger.info("图表服务资源已清理")

@@ -104,9 +104,7 @@ class VideoRequestParams:
             'StartPeriod': 0,
             'EndPeriod': 0,
             'StartRange': 0,
-            'EndRange': 31800,  # 更新为31800
-            "GroupQuantity": 5,
-            "PORound": 0,
+            'EndRange': 28800,  # 更新为31800
             'ContextFilter': '',
             'OppPlayerID': ''
         }

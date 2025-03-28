@@ -1,8 +1,10 @@
 # database/db_service.py
+from datetime import datetime
 from typing import Optional, Dict, Any, List, Union
 from database.db_session import DBSession
 from database.sync.sync_manager import SyncManager
 from utils.logger_handler import AppLogger
+
 
 
 class DatabaseService:
@@ -18,17 +20,30 @@ class DatabaseService:
         Args:
             env: 环境名称，可以是 "default", "test", "development", "production"
         """
-        self.logger = AppLogger.get_logger(__name__, app_name='nba')
+        self.logger = AppLogger.get_logger(__name__, app_name='sqlite')
         self.env = env
 
         # 获取单例实例
         self.db_session = DBSession.get_instance()
         self.sync_manager = SyncManager()
 
+        # 初始化各个Repository
+        from database.repositories.schedule_repository import ScheduleRepository
+        from database.repositories.team_repository import TeamRepository
+        from database.repositories.player_repository import PlayerRepository
+        from database.repositories.boxscore_repository import BoxscoreRepository
+        from database.repositories.playbyplay_repository import PlayByPlayRepository
+
+        self.schedule_repo = ScheduleRepository()
+        self.team_repo = TeamRepository()
+        self.player_repo = PlayerRepository()
+        self.boxscore_repo = BoxscoreRepository()
+        self.playbyplay_repo = PlayByPlayRepository()
+
         # 标记初始化状态
         self._initialized = False
 
-    def initialize(self, create_tables: bool = False) -> bool:
+    def initialize(self, create_tables: bool = True) -> bool:  # 修改默认值为True
         """初始化数据库连接和服务
 
         Args:
@@ -42,13 +57,46 @@ class DatabaseService:
             self.db_session.initialize(env=self.env, create_tables=create_tables)
             self._initialized = True
             self.logger.info(f"数据库服务初始化成功，环境: {self.env}")
+
+            # 检查核心数据库是否为空，如果为空则自动同步
+            if self._is_nba_database_empty():
+                self.logger.info("检测到核心数据库为空，开始自动同步基础数据...")
+                # 同步核心数据（球队、球员）
+                sync_result = self._sync_core_data(force_update=True)
+                if sync_result.get("status") == "success":
+                    self.logger.info("核心数据同步成功")
+                else:
+                    self.logger.warning(f"核心数据同步部分失败: {sync_result}")
+
             return True
         except Exception as e:
             self.logger.error(f"数据库服务初始化失败: {e}", exc_info=True)
             return False
 
+    def _is_nba_database_empty(self) -> bool:
+        """检查核心数据库是否为空"""
+        if not self._initialized:
+            return True
+
+        try:
+            with self.db_session.session_scope('nba') as session:
+                from database.models.base_models import Team
+                # 检查是否有任何球队记录
+                team_count = session.query(Team).count()
+                return team_count == 0
+        except Exception as e:
+            self.logger.error(f"检查核心数据库是否为空失败: {e}", exc_info=True)
+            return False
+
+    def _sync_core_data(self, force_update: bool = False) -> Dict[str, Any]:
+        """同步nba.db的所有核心数据"""
+        self.logger.info("开始同步nba.db核心数据...")
+
+        # 调用sync_all方法进行全量同步，但跳过统计数据同步
+        return self.sync_manager.sync_all(force_update, skip_game_stats=True)
+
     def sync_all_data(self, force_update: bool = False) -> Dict[str, Any]:
-        """执行全量数据同步
+        """执行全量数据同步（串行方式）
 
         Args:
             force_update: 是否强制更新所有数据
@@ -61,6 +109,46 @@ class DatabaseService:
             return {"status": "failed", "error": "数据库服务未初始化"}
 
         return self.sync_manager.sync_all(force_update)
+        
+    def sync_all_data_parallel(self, force_update: bool = False, max_workers: int = 10, 
+                              batch_size: int = 50) -> Dict[str, Any]:
+        """并行执行全量数据同步
+        
+        使用多线程并发同步所有比赛统计数据，显著提高同步效率。
+        
+        Args:
+            force_update: 是否强制更新所有数据
+            max_workers: 最大工作线程数
+            batch_size: 每批处理的比赛数量
+            
+        Returns:
+            Dict[str, Any]: 同步结果摘要
+        """
+        if not self._initialized:
+            self.logger.error("数据库服务未初始化，无法执行并行同步")
+            return {"status": "failed", "error": "数据库服务未初始化"}
+            
+        # 同步基础数据（球队、球员、赛程）
+        self.logger.info("开始同步基础数据...")
+        core_data_result = self._sync_core_data(force_update)
+        
+        # 然后并行同步所有比赛统计数据
+        self.logger.info("开始并行同步所有比赛统计数据...")
+        game_stats_result = self.sync_manager.sync_all_game_stats_parallel(
+            force_update=force_update,
+            max_workers=max_workers,
+            batch_size=batch_size
+        )
+        
+        # 构建结果
+        result = {
+            "status": "success" if core_data_result.get("status") == "success" and 
+                                 game_stats_result.get("status") != "failed" else "partially_failed",
+            "core_data": core_data_result,
+            "game_stats": game_stats_result
+        }
+        
+        return result
 
     def sync_game_stats(self, game_id: str, force_update: bool = False) -> Dict[str, Any]:
         """同步特定比赛的统计数据
@@ -77,6 +165,34 @@ class DatabaseService:
             return {"status": "failed", "error": "数据库服务未初始化"}
 
         return self.sync_manager.sync_game_stats(game_id, force_update)
+        
+    def sync_remaining_data_parallel(self, force_update: bool = False, max_workers: int = 10, 
+                                   batch_size: int = 50) -> Dict[str, Any]:
+        """并行同步剩余未同步的比赛统计数据
+        
+        仅同步尚未同步的比赛数据，使用多线程提高效率。
+        
+        Args:
+            force_update: 是否强制更新数据
+            max_workers: 最大工作线程数
+            batch_size: 每批处理的比赛数量
+            
+        Returns:
+            Dict[str, Any]: 同步结果摘要
+        """
+        if not self._initialized:
+            self.logger.error("数据库服务未初始化，无法执行并行同步")
+            return {"status": "failed", "error": "数据库服务未初始化"}
+            
+        # 并行同步剩余的比赛统计数据
+        self.logger.info("开始并行同步剩余未同步的比赛统计数据...")
+        result = self.sync_manager.sync_remaining_game_stats_parallel(
+            force_update=force_update,
+            max_workers=max_workers,
+            batch_size=batch_size
+        )
+        
+        return result
 
     def sync_new_season(self, season: str, force_update: bool = False) -> bool:
         """同步新赛季数据
@@ -102,240 +218,154 @@ class DatabaseService:
         return True
 
     def get_team_id_by_name(self, team_name: str) -> Optional[int]:
-        """获取球队ID
-
-        Args:
-            team_name: 球队名称
-
-        Returns:
-            Optional[int]: 球队ID，如果未找到则返回None
-        """
+        """获取球队ID"""
         if not self._initialized:
             self.logger.error("数据库服务未初始化，无法执行查询")
             return None
 
         try:
-            with self.db_session.session_scope('nba') as session:
-                # 在这里实现查询逻辑
-                # 示例实现，具体逻辑需要根据你的数据库模型调整
-                from database.models.base_models import Team
-                team = session.query(Team).filter(Team.name.like(f"%{team_name}%")).first()
-                if team:
-                    return team.team_id
-                return None
+            return self.team_repo.get_team_id_by_name(team_name)
         except Exception as e:
             self.logger.error(f"获取球队ID失败: {e}", exc_info=True)
             return None
 
     def get_player_id_by_name(self, player_name: str) -> Optional[Union[int, List[int]]]:
-        """获取球员ID
-
-        Args:
-            player_name: 球员名称
-
-        Returns:
-            Optional[Union[int, List[int]]]: 球员ID或ID列表，如果未找到则返回None
-        """
+        """获取球员ID"""
         if not self._initialized:
             self.logger.error("数据库服务未初始化，无法执行查询")
             return None
 
         try:
-            with self.db_session.session_scope('nba') as session:
-                # 在这里实现查询逻辑
-                # 示例实现，具体逻辑需要根据你的数据库模型调整
-                from database.models.base_models import Player
-                players = session.query(Player).filter(Player.name.like(f"%{player_name}%")).all()
-                if not players:
-                    return None
-                if len(players) == 1:
-                    return players[0].player_id
-                return [player.player_id for player in players]
+            return self.player_repo.get_player_id_by_name(player_name)
         except Exception as e:
             self.logger.error(f"获取球员ID失败: {e}", exc_info=True)
             return None
 
     def get_game_id(self, team_id: int, date_str: str = "last") -> Optional[str]:
-        """查找指定球队在特定日期的比赛ID
-
-        Args:
-            team_id: 球队ID
-            date_str: 日期字符串，默认为"last"表示最近一场比赛
-
-        Returns:
-            Optional[str]: 比赛ID，如果未找到则返回None
-        """
+        """查找指定球队在特定日期的比赛ID"""
         if not self._initialized:
             self.logger.error("数据库服务未初始化，无法执行查询")
             return None
 
         try:
-            with self.db_session.session_scope('nba') as session:
-                # 在这里实现查询逻辑
-                # 示例实现，具体逻辑需要根据你的数据库模型调整
-                from database.models.base_models import Game
-                from sqlalchemy import or_, and_, desc
+            # 使用ScheduleRepository的方法获取比赛ID
+            if date_str.lower() == 'last':
+                # 获取上一场比赛
+                last_game = self.schedule_repo.get_team_last_schedule(team_id)
+                if last_game:
+                    game_id = last_game.get('game_id')
+                    # 处理ISO格式的时间戳（带有T和时区信息）
+                    if 'game_date_time_bjs' in last_game and last_game['game_date_time_bjs']:
+                        try:
+                            from datetime import datetime
+                            import re
 
-                if date_str.lower() == "last":
-                    # 查询最近一场比赛
-                    game = session.query(Game).filter(
-                        or_(
-                            Game.home_team_id == team_id,
-                            Game.away_team_id == team_id
-                        )
-                    ).order_by(desc(Game.game_date)).first()
+                            # 处理ISO格式 (2025-03-27T07:30:00+08:00)
+                            time_str = last_game['game_date_time_bjs']
+
+                            # 使用正则表达式分离日期和时间部分
+                            match = re.match(r'(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2}).*', time_str)
+                            if match:
+                                date_part, time_part = match.groups()
+                                # 解析日期和时间
+                                dt = datetime.strptime(f"{date_part} {time_part}", '%Y-%m-%d %H:%M:%S')
+                                formatted_time = dt.strftime('%Y年%m月%d日 %H:%M')
+                            else:
+                                # 尝试直接解析
+                                dt = datetime.fromisoformat(time_str.replace('Z', '+00:00'))
+                                formatted_time = dt.strftime('%Y年%m月%d日 %H:%M')
+                        except Exception as e:
+                            # 如果解析失败，记录错误并使用原始值
+                            self.logger.debug(f"日期解析失败: {e}, 使用原始值: {last_game['game_date_time_bjs']}")
+                            formatted_time = last_game['game_date_time_bjs']
+
+                    # 如果没有完整字段，尝试其他格式（保留原有的回退逻辑）
+                    elif ('game_date_bjs' in last_game and last_game['game_date_bjs']) and \
+                            ('game_time_bjs' in last_game and last_game['game_time_bjs']):
+                        try:
+                            date_str = last_game['game_date_bjs']
+                            time_str = last_game['game_time_bjs']
+                            from datetime import datetime
+
+                            # 根据实际数据格式调整解析格式
+                            dt = datetime.strptime(f"{date_str} {time_str}", '%Y-%m-%d %H:%M:%S')
+                            formatted_time = dt.strftime('%Y年%m月%d日 %H:%M')
+                        except Exception:
+                            # 如果解析失败，简单拼接日期和时间
+                            formatted_time = f"{last_game['game_date_bjs']} {last_game['game_time_bjs']}"
+
+                    # 只有日期没有时间
+                    elif 'game_date_bjs' in last_game and last_game['game_date_bjs']:
+                        try:
+                            from datetime import datetime
+                            dt = datetime.strptime(last_game['game_date_bjs'], '%Y-%m-%d')
+                            formatted_time = dt.strftime('%Y年%m月%d日')
+                        except Exception:
+                            formatted_time = last_game['game_date_bjs']
+
+                    # 最后回退到普通日期
+                    else:
+                        formatted_time = last_game.get('game_date', '未知日期')
+
+                    self.logger.info(f"找到最近已完成的比赛: ID={game_id}, 北京时间={formatted_time}")
+                    return game_id
                 else:
-                    # 查询特定日期的比赛
-                    game = session.query(Game).filter(
-                        and_(
-                            or_(
-                                Game.home_team_id == team_id,
-                                Game.away_team_id == team_id
-                            ),
-                            Game.game_date == date_str
-                        )
-                    ).first()
-
-                if game:
-                    return game.game_id
-                return None
+                    self.logger.warning(f"未找到球队ID={team_id}的最近比赛")
+                    return None
+            else:
+                # 使用ScheduleRepository的get_game_id方法
+                return self.schedule_repo.get_game_id(team_id, date_str)
         except Exception as e:
             self.logger.error(f"获取比赛ID失败: {e}", exc_info=True)
             return None
 
-    def get_latest_game_for_team(self, team_name: str) -> Dict[str, Any]:
-        """获取指定球队的最近一场比赛信息
 
-        Args:
-            team_name: 球队名称
-
+    def get_sync_progress(self) -> Dict[str, Any]:
+        """获取同步进度统计
+        
+        获取当前所有比赛的同步状态统计信息
+        
         Returns:
-            Dict: 包含game_id和其他比赛基本信息的字典
+            Dict: 包含同步进度统计的字典
         """
         if not self._initialized:
-            self.logger.error("数据库服务未初始化，无法执行查询")
+            self.logger.error("数据库服务未初始化，无法获取同步进度")
             return {"error": "数据库服务未初始化"}
-
+            
         try:
-            # 获取球队ID
-            team_id = self.get_team_id_by_name(team_name)
-            if not team_id:
-                return {"error": f"未找到球队: {team_name}"}
-
-            # 查询最近一场比赛
+            # 获取所有已完成比赛总数
             with self.db_session.session_scope('nba') as session:
-                from database.models.base_models import Game, Team
-                from sqlalchemy import or_, desc
-
-                # 查询并加载关联数据
-                game = session.query(Game).filter(
-                    or_(
-                        Game.home_team_id == team_id,
-                        Game.away_team_id == team_id
-                    )
-                ).order_by(desc(Game.game_date)).first()
-
-                if not game:
-                    return {"error": f"未找到{team_name}的比赛记录"}
-
-                # 获取对阵双方信息
-                home_team = session.query(Team).filter(Team.team_id == game.home_team_id).first()
-                away_team = session.query(Team).filter(Team.team_id == game.away_team_id).first()
-
-                # 构建比赛信息
-                result = {
-                    "game_id": game.game_id,
-                    "date": game.game_date.strftime("%Y-%m-%d") if game.game_date else "Unknown",
-                    "home_team": {
-                        "id": game.home_team_id,
-                        "name": home_team.name if home_team else "Unknown",
-                        "tricode": home_team.tricode if home_team else "???"
-                    },
-                    "away_team": {
-                        "id": game.away_team_id,
-                        "name": away_team.name if away_team else "Unknown",
-                        "tricode": away_team.tricode if away_team else "???"
-                    },
-                    "status": game.game_status
-                }
-
-                return result
-
+                from database.models.base_models import Game
+                total_finished_games = session.query(Game).filter(
+                    Game.game_status == 3
+                ).count()
+                
+            # 获取已同步的boxscore比赛数
+            with self.db_session.session_scope('game') as session:
+                from database.models.stats_models import GameStatsSyncHistory
+                synced_games = session.query(GameStatsSyncHistory.game_id).filter(
+                    GameStatsSyncHistory.sync_type == 'boxscore',
+                    GameStatsSyncHistory.status == 'success'
+                ).distinct().count()
+                
+            # 计算进度
+            progress_percentage = 0
+            if total_finished_games > 0:
+                progress_percentage = (synced_games / total_finished_games) * 100
+                
+            result = {
+                "total_games": total_finished_games,
+                "synced_games": synced_games,
+                "remaining_games": total_finished_games - synced_games,
+                "progress_percentage": round(progress_percentage, 2),
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            return result
+            
         except Exception as e:
-            self.logger.error(f"获取球队最近比赛信息失败: {e}", exc_info=True)
+            self.logger.error(f"获取同步进度失败: {e}", exc_info=True)
             return {"error": str(e)}
-
-    def get_player_games(self, player_name: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """获取指定球员的比赛记录
-
-        Args:
-            player_name: 球员名称
-            limit: 返回记录数量限制
-
-        Returns:
-            List[Dict]: 比赛记录列表
-        """
-        if not self._initialized:
-            self.logger.error("数据库服务未初始化，无法执行查询")
-            return [{"error": "数据库服务未初始化"}]
-
-        try:
-            # 获取球员ID
-            player_id = self.get_player_id_by_name(player_name)
-            if not player_id:
-                return [{"error": f"未找到球员: {player_name}"}]
-
-            # 简化处理：假设player_id是单值
-            if isinstance(player_id, list):
-                player_id = player_id[0]
-
-            # 查询球员比赛记录
-            with self.db_session.session_scope('nba') as session:
-                from database.models.base_models import Game, PlayerGame, Team
-                from sqlalchemy import desc
-
-                # 查询球员参与的比赛
-                query = session.query(Game, PlayerGame) \
-                    .join(PlayerGame, Game.game_id == PlayerGame.game_id) \
-                    .filter(PlayerGame.player_id == player_id) \
-                    .order_by(desc(Game.game_date)) \
-                    .limit(limit)
-
-                results = []
-                for game, player_game in query.all():
-                    # 获取对阵双方信息
-                    home_team = session.query(Team).filter(Team.team_id == game.home_team_id).first()
-                    away_team = session.query(Team).filter(Team.team_id == game.away_team_id).first()
-
-                    # 构建比赛信息
-                    game_info = {
-                        "game_id": game.game_id,
-                        "date": game.game_date.strftime("%Y-%m-%d") if game.game_date else "Unknown",
-                        "home_team": {
-                            "id": game.home_team_id,
-                            "name": home_team.name if home_team else "Unknown",
-                            "tricode": home_team.tricode if home_team else "???"
-                        },
-                        "away_team": {
-                            "id": game.away_team_id,
-                            "name": away_team.name if away_team else "Unknown",
-                            "tricode": away_team.tricode if away_team else "???"
-                        },
-                        "status": game.game_status,
-                        "player_stats": {
-                            "minutes": player_game.minutes,
-                            "points": player_game.points,
-                            "rebounds": player_game.rebounds,
-                            "assists": player_game.assists
-                        }
-                    }
-                    results.append(game_info)
-
-                return results
-
-        except Exception as e:
-            self.logger.error(f"获取球员比赛记录失败: {e}", exc_info=True)
-            return [{"error": str(e)}]
 
     def close(self) -> None:
         """关闭数据库连接"""
@@ -345,4 +375,3 @@ class DatabaseService:
                 self.logger.info("数据库连接已关闭")
             except Exception as e:
                 self.logger.error(f"关闭数据库连接失败: {e}", exc_info=True)
-

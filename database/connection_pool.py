@@ -24,8 +24,8 @@ class ConnectionPool:
         NBAConfig.PATHS.ensure_directories()
 
     def setup_engine(self, name: str, db_path: str, echo: bool = False,
-                     pool_size: int = 5, max_overflow: int = 10,
-                     pool_timeout: int = 30) -> Engine:
+                     pool_size: int = 15, max_overflow: int = 20,
+                     pool_timeout: int = 60) -> Engine:
         """
         创建并配置SQLAlchemy引擎
 
@@ -57,11 +57,11 @@ class ConnectionPool:
             pool_size=pool_size,
             max_overflow=max_overflow,
             pool_timeout=pool_timeout,
-            # SQLite特定参数
+            # SQLite特定参数 - 只保留兼容的参数
             connect_args={
                 "check_same_thread": False,  # 允许多线程访问
-                "timeout": NBAConfig.DATABASE.TIMEOUT,
-                "isolation_level": NBAConfig.DATABASE.ISOLATION_LEVEL,
+                "timeout": 60,  # 增加超时时间到60秒
+                "isolation_level": "IMMEDIATE"  # 提高并发事务隔离级别
             }
         )
 

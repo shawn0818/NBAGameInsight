@@ -1,8 +1,5 @@
-from typing import Dict, Any, Optional, List, Type, Protocol, TypeVar
-from abc import ABC, abstractmethod
-import logging
-from pydantic import BaseModel, Field
-from datetime import datetime
+from typing import Dict, Any, Optional, List,  Protocol
+from pydantic import BaseModel
 from nba.models.game_model import Game
 from utils.logger_handler import AppLogger
 

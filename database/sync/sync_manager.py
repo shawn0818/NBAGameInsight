@@ -2,6 +2,8 @@
 from typing import Dict, List, Optional, Any, Union, Set
 from datetime import datetime, timedelta
 from sqlalchemy import and_, or_, not_, exists, func
+import concurrent.futures
+import threading
 
 from utils.logger_handler import AppLogger
 from database.db_session import DBSession
@@ -39,12 +41,13 @@ class SyncManager:
 
         self.logger.info("同步管理器初始化完成")
 
-    def sync_all(self, force_update: bool = False) -> Dict[str, Any]:
+    def sync_all(self, force_update: bool = False, skip_game_stats: bool = False) -> Dict[str, Any]:
         """
         执行全量数据同步
 
         Args:
             force_update: 是否强制更新所有数据
+            skip_game_stats: 是否跳过比赛统计数据同步，默认为False
 
         Returns:
             Dict: 同步结果摘要
@@ -67,13 +70,14 @@ class SyncManager:
             player_result = self.sync_players(force_update)
             results["details"]["players"] = player_result
 
-            # 3. 同步赛程信息
-            schedule_result = self.sync_schedules(force_update)
+            # 3. 同步赛程信息（指定all_seasons=True确保同步所有赛季）
+            schedule_result = self.sync_schedules(force_update, all_seasons=True)
             results["details"]["schedules"] = schedule_result
 
-            # 4. 全量同步比赛统计数据
-            game_stats_result = self.sync_all_game_stats(force_update)
-            results["details"]["game_stats"] = game_stats_result
+            # 4. 全量同步比赛统计数据（如果不跳过）
+            if not skip_game_stats:
+                game_stats_result = self.sync_all_game_stats(force_update)
+                results["details"]["game_stats"] = game_stats_result
 
             # 同步完成，记录结束时间
             end_time = datetime.now()
@@ -166,12 +170,13 @@ class SyncManager:
 
         return result
 
-    def sync_schedules(self, force_update: bool = False) -> Dict[str, Any]:
+    def sync_schedules(self, force_update: bool = False, all_seasons: bool = True) -> Dict[str, Any]:
         """
         同步赛程数据
 
         Args:
             force_update: 是否强制更新
+            all_seasons: 是否同步所有赛季，默认为True
 
         Returns:
             Dict: 同步结果
@@ -186,12 +191,23 @@ class SyncManager:
         }
 
         try:
-            # 同步当前赛季
-            current_season_count = self.schedule_sync.sync_current_season(force_update)
-            result["details"]["current_season"] = {
-                "count": current_season_count,
-                "success": current_season_count > 0
-            }
+            if all_seasons:
+                # 同步所有赛季
+                seasons_result = self.schedule_sync.sync_all_seasons(force_update=force_update)
+                total_count = sum(seasons_result.values())
+
+                result["details"]["all_seasons"] = {
+                    "count": total_count,
+                    "success": total_count > 0,
+                    "seasons_detail": seasons_result
+                }
+            else:
+                # 只同步当前赛季
+                current_season_count = self.schedule_sync.sync_current_season(force_update)
+                result["details"]["current_season"] = {
+                    "count": current_season_count,
+                    "success": current_season_count > 0
+                }
 
         except Exception as e:
             self.logger.error(f"同步赛程数据失败: {e}", exc_info=True)
@@ -270,6 +286,7 @@ class SyncManager:
     def _is_game_stats_synchronized(self, game_id: str) -> bool:
         """
         检查比赛统计数据是否已同步
+        只检查boxscore同步状态，忽略playbyplay
 
         Args:
             game_id: 比赛ID
@@ -279,20 +296,11 @@ class SyncManager:
         """
         try:
             with self.db_session.session_scope('game') as session:
-                # 检查是否有成功的boxscore同步记录
+                # 只检查boxscore同步记录
                 boxscore_synced = session.query(exists().where(
                     and_(
                         GameStatsSyncHistory.game_id == game_id,
                         GameStatsSyncHistory.sync_type == 'boxscore',
-                        GameStatsSyncHistory.status == 'success'
-                    )
-                )).scalar()
-
-                # 检查是否有成功的playbyplay同步记录
-                playbyplay_synced = session.query(exists().where(
-                    and_(
-                        GameStatsSyncHistory.game_id == game_id,
-                        GameStatsSyncHistory.sync_type == 'playbyplay',
                         GameStatsSyncHistory.status == 'success'
                     )
                 )).scalar()
@@ -302,13 +310,8 @@ class SyncManager:
                     Statistics.game_id == game_id
                 )).scalar()
 
-                has_events = session.query(exists().where(
-                    Event.game_id == game_id
-                )).scalar()
-
-                # 数据库中有同步记录且有实际数据才算同步成功
-                return (boxscore_synced and playbyplay_synced and
-                        has_statistics and has_events)
+                # 只需要boxscore数据同步成功即可
+                return boxscore_synced and has_statistics
 
         except Exception as e:
             self.logger.error(f"检查比赛(ID:{game_id})同步状态失败: {e}", exc_info=True)
@@ -316,7 +319,7 @@ class SyncManager:
 
     def sync_all_game_stats(self, force_update: bool = False) -> Dict[str, Any]:
         """
-        全量同步所有已完成比赛的统计数据
+        全量同步所有已完成比赛的统计数据（串行方式）
 
         Args:
             force_update: 是否强制更新，默认为False
@@ -390,9 +393,84 @@ class SyncManager:
 
         return result
 
+    def sync_all_game_stats_parallel(self, force_update: bool = False, max_workers: int = 10,
+                                     batch_size: int = 50) -> Dict[str, Any]:
+        """
+        使用并行处理同步所有已完成比赛的统计数据
+
+        Args:
+            force_update: 是否强制更新
+            max_workers: 最大工作线程数
+            batch_size: 每批处理的比赛数量
+
+        Returns:
+            Dict: 同步结果
+        """
+        start_time = datetime.now()
+        self.logger.info(f"开始并行同步所有比赛统计数据，最大线程数: {max_workers}, 批次大小: {batch_size}")
+
+        result = {
+            "start_time": start_time.isoformat(),
+            "status": "success",
+            "details": {
+                "boxscore": {},
+                "playbyplay": {}
+            }
+        }
+
+        try:
+            # 查询所有已完成的比赛
+            with self.db_session.session_scope('nba') as session:
+                finished_games = session.query(Game).filter(
+                    Game.game_status == 3  # 已完成的比赛
+                ).all()
+
+                game_ids = [game.game_id for game in finished_games]
+
+                result["total_games"] = len(game_ids)
+                self.logger.info(f"找到{len(game_ids)}场已完成的比赛需要同步")
+
+                # 1. 首先并行同步所有boxscore数据
+                self.logger.info("开始并行同步所有Boxscore数据")
+                boxscore_result = self.boxscore_sync.batch_sync_boxscores(
+                    game_ids=game_ids,
+                    force_update=force_update,
+                    max_workers=max_workers,
+                    batch_size=batch_size
+                )
+                result["details"]["boxscore"] = boxscore_result
+
+                # 2. 然后并行同步所有playbyplay数据（根据需要）
+                self.logger.info("开始并行同步所有Play-by-Play数据")
+                playbyplay_result = self.playbyplay_sync.batch_sync_playbyplay(
+                    game_ids=game_ids,
+                    force_update=force_update,
+                    max_workers=max_workers,
+                    batch_size=batch_size
+                )
+                result["details"]["playbyplay"] = playbyplay_result
+
+                # 设置总体状态
+                if boxscore_result.get("status") != "completed":
+                    result["status"] = "partially_failed"
+
+        except Exception as e:
+            self.logger.error(f"并行同步所有比赛统计数据失败: {e}", exc_info=True)
+            result["status"] = "failed"
+            result["error"] = str(e)
+
+        # 完成统计
+        end_time = datetime.now()
+        result["end_time"] = end_time.isoformat()
+        result["duration"] = (end_time - start_time).total_seconds()
+
+        self.logger.info(f"并行同步所有比赛统计数据完成，状态: {result['status']}, 总耗时: {result['duration']}秒")
+
+        return result
+
     def sync_unsynchronized_game_stats(self) -> Dict[str, Any]:
         """
-        增量同步未同步过的比赛统计数据
+        增量同步未同步过的比赛统计数据（串行方式）
 
         Returns:
             Dict: 同步结果
@@ -488,5 +566,99 @@ class SyncManager:
         end_time = datetime.now()
         result["end_time"] = end_time.isoformat()
         result["duration"] = (end_time - start_time).total_seconds()
+
+        return result
+
+    def sync_remaining_game_stats_parallel(self, force_update: bool = False, max_workers: int = 10,
+                                           batch_size: int = 50) -> Dict[str, Any]:
+        """
+        使用并行处理同步剩余未同步的比赛统计数据
+
+        Args:
+            force_update: 是否强制更新
+            max_workers: 最大工作线程数
+            batch_size: 每批处理的比赛数量
+
+        Returns:
+            Dict: 同步结果
+        """
+        start_time = datetime.now()
+        self.logger.info(f"开始并行同步剩余未同步的比赛统计数据...")
+
+        result = {
+            "start_time": start_time.isoformat(),
+            "status": "success",
+            "details": {}
+        }
+
+        try:
+            # 1. 查询所有已完成的比赛ID
+            with self.db_session.session_scope('nba') as session:
+                finished_games = session.query(Game).filter(
+                    Game.game_status == 3  # 已完成的比赛
+                ).all()
+                all_game_ids = [game.game_id for game in finished_games]
+
+            # 2. 查询已同步的boxscore数据的比赛ID
+            with self.db_session.session_scope('game') as session:
+                synced_records = session.query(GameStatsSyncHistory.game_id).filter(
+                    GameStatsSyncHistory.sync_type == 'boxscore',
+                    GameStatsSyncHistory.status == 'success'
+                ).all()
+                synced_game_ids = {record.game_id for record in synced_records}
+
+            # 3. 计算需要同步的比赛ID
+            games_to_sync = [gid for gid in all_game_ids if gid not in synced_game_ids]
+
+            result["total_games"] = len(all_game_ids)
+            result["synced_games"] = len(synced_game_ids)
+            result["games_to_sync"] = len(games_to_sync)
+
+            self.logger.info(f"总计{len(all_game_ids)}场比赛，已同步{len(synced_game_ids)}场，"
+                             f"剩余{len(games_to_sync)}场需要同步")
+
+            # 4. 如果没有需要同步的比赛，直接返回
+            if not games_to_sync:
+                end_time = datetime.now()
+                result["end_time"] = end_time.isoformat()
+                result["duration"] = (end_time - start_time).total_seconds()
+                self.logger.info("所有比赛已同步，无需处理")
+                return result
+
+            # 5. 并行同步所有boxscore数据
+            self.logger.info(f"开始并行同步剩余{len(games_to_sync)}场比赛的Boxscore数据")
+            boxscore_result = self.boxscore_sync.batch_sync_boxscores(
+                game_ids=games_to_sync,
+                force_update=force_update,
+                max_workers=max_workers,
+                batch_size=batch_size
+            )
+            result["details"]["boxscore"] = boxscore_result
+
+            # 6. 并行同步所有playbyplay数据（根据需要）
+            self.logger.info(f"开始并行同步剩余{len(games_to_sync)}场比赛的Play-by-Play数据")
+            playbyplay_result = self.playbyplay_sync.batch_sync_playbyplay(
+                game_ids=games_to_sync,
+                force_update=force_update,
+                max_workers=max_workers,
+                batch_size=batch_size
+            )
+            result["details"]["playbyplay"] = playbyplay_result
+
+            # 设置总体状态
+            if boxscore_result.get("status") != "completed":
+                result["status"] = "partially_failed"
+
+        except Exception as e:
+            self.logger.error(f"并行同步剩余比赛统计数据失败: {e}", exc_info=True)
+            result["status"] = "failed"
+            result["error"] = str(e)
+
+        # 完成统计
+        end_time = datetime.now()
+        result["end_time"] = end_time.isoformat()
+        result["duration"] = (end_time - start_time).total_seconds()
+
+        self.logger.info(f"并行同步剩余比赛统计数据完成，状态: {result['status']}, 总耗时: {result['duration']}秒")
 
         return result
