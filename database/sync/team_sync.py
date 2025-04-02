@@ -1,4 +1,4 @@
-# sync/team_sync.py
+# database/sync/team_sync.py
 from datetime import datetime
 from typing import Dict, List, Optional
 from database.models.base_models import Team
@@ -63,9 +63,11 @@ class TeamSync:
             self.logger.error(f"同步球队详细信息失败: {e}")
             return False
 
-    def sync_team_logos(self) -> bool:
-        """
-        同步所有球队的Logo
+    def sync_team_logos(self, force_update: bool = False) -> bool:
+        """同步所有球队的Logo
+
+        Args:
+            force_update: 是否强制更新
 
         Returns:
             bool: 同步是否成功
@@ -74,17 +76,24 @@ class TeamSync:
             # 使用SQLAlchemy会话查询所有球队
             with self.db_session.session_scope('nba') as session:
                 teams = session.query(Team).order_by(Team.city, Team.nickname).all()
-                # 将ORM对象转换为字典以保持接口一致性
-                team_dicts = [
-                    {
-                        'team_id': team.team_id,
-                        'nickname': team.nickname,
-                        'city': team.city
-                    } for team in teams
-                ]
+                team_ids = [team.team_id for team in teams]
 
-            success_count = self._sync_logos_to_db(team_dicts)
-            self.logger.info(f"成功同步{success_count}支球队的Logo")
+            self.logger.info(f"开始同步{len(team_ids)}支球队Logo")
+
+            # 使用TeamFetcher批量获取Logo
+            logos_data = self.team_fetcher.get_multiple_team_logos(team_ids, force_update)
+
+            # 处理获取的结果
+            if not logos_data:
+                self.logger.warning("未获取到任何球队Logo")
+                return False
+
+            success_count = 0
+            for team_id, logo_data in logos_data.items():
+                if logo_data and self._import_team_logo(team_id, logo_data):
+                    success_count += 1
+
+            self.logger.info(f"成功同步{success_count}/{len(team_ids)}支球队的Logo")
             return success_count > 0
 
         except Exception as e:
@@ -170,40 +179,7 @@ class TeamSync:
             self.logger.error(f"保存球队logo失败: {e}")
             return False
 
-    def _sync_logos_to_db(self, teams: List[Dict]) -> int:
-        """同步所有球队的logo到数据库，考虑请求速率限制"""
-        success_count = 0
-        total_count = len(teams)
 
-        # 创建HTTPRequestManager实例
-        http_manager = HTTPRequestManager(timeout=10)
-
-        for i, team in enumerate(teams):
-            team_id = team.get('team_id')
-            if not team_id:
-                continue
-
-            self.logger.debug(f"同步球队Logo: {i + 1}/{total_count}, ID: {team_id}")
-
-            # 尝试不同的logo格式
-            logo_urls = [
-                f"https://cdn.nba.com/logos/nba/{team_id}/global/L/logo.svg",
-                f"https://cdn.nba.com/logos/nba/{team_id}/global/L/logo.png"
-            ]
-
-            for url in logo_urls:
-                try:
-                    # http_manager已内置请求间隔控制，无需额外添加延迟
-                    logo_data = http_manager.make_binary_request(url)
-                    if logo_data:
-                        if self._import_team_logo(team_id, logo_data):
-                            success_count += 1
-                            self.logger.info(f"同步球队(ID:{team_id})logo成功")
-                            break
-                except Exception as e:
-                    self.logger.error(f"获取球队(ID:{team_id})logo失败: {e}")
-
-        return success_count
 
     def _parse_team_details(self, team_details: Dict, team_id: int) -> Optional[Dict]:
         """

@@ -1046,6 +1046,7 @@ class GameDataAdapter:
 
     def _extract_core_data(self, game: 'Game', **kwargs) -> Dict[str, Any]:
         """提取并组合所有核心数据"""
+
         result = {}
 
         # 1. 获取比赛基本信息

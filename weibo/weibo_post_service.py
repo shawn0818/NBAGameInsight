@@ -4,6 +4,7 @@ from typing import List, Optional, Dict, Any, Union
 
 from weibo.weibo_picture_publisher import WeiboImagePublisher
 from weibo.weibo_video_publisher import WeiboVideoPublisher
+from weibo.weibo_content_generator import ContentType
 from utils.logger_handler import AppLogger
 
 
@@ -156,7 +157,7 @@ class WeiboPostService:
 
     # === 内容发布方法（使用内容生成器） ===
 
-    def post_team_video(self, video_path, game_data):
+    def post_team_video(self, video_path, game_data, team_id):
         """发布球队集锦视频到微博"""
         self.logger.info("开始发布球队集锦视频")
 
@@ -168,13 +169,7 @@ class WeiboPostService:
             return {"success": False, "message": "内容生成器未初始化"}
 
         try:
-            # 获取team_id
-            team_id = game_data.get("team_info", {}).get("team_id")
-            if not team_id:
-                self.logger.error("未能从game_data中获取team_id")
-                return {"success": False, "message": "未能获取team_id"}
-
-            # 使用统一内容生成接口获取内容
+            # 使用统一内容生成接口获取内容，传递原始Game对象和team_id
             content_package = self.content_generator.generate_content(
                 content_type=ContentType.TEAM_VIDEO.value,
                 game_data=game_data,
@@ -203,9 +198,9 @@ class WeiboPostService:
             self.logger.error(f"发布球队集锦视频失败: {e}", exc_info=True)
             return {"success": False, "message": f"发布失败: {str(e)}"}
 
-    def post_player_video(self, video_path, player_data, player_name):
+    def post_player_video(self, video_path, game_data, player_name=None, player_id=None):
         """发布球员集锦视频到微博"""
-        self.logger.info(f"开始发布{player_name}球员集锦视频")
+        self.logger.info(f"开始发布{'球员' if not player_name else player_name}集锦视频")
 
         if not self._check_file_exists(video_path, "球员集锦视频"):
             return {"success": False, "message": "视频文件不存在"}
@@ -215,17 +210,12 @@ class WeiboPostService:
             return {"success": False, "message": "内容生成器未初始化"}
 
         try:
-            # 获取player_id
-            player_id = player_data.get("player_info", {}).get("player_id")
-            if not player_id:
-                self.logger.error(f"未能获取{player_name}的player_id")
-                return {"success": False, "message": f"未能获取{player_name}的player_id"}
-
-            # 使用统一内容生成接口获取内容
+            # 使用统一内容生成接口获取内容，传递原始Game对象和player_id/player_name
             content_package = self.content_generator.generate_content(
                 content_type=ContentType.PLAYER_VIDEO.value,
-                game_data=player_data,
-                player_id=player_id
+                game_data=game_data,
+                player_id=player_id,
+                player_name=player_name
             )
 
             self.logger.info(
@@ -250,9 +240,9 @@ class WeiboPostService:
             self.logger.error(f"发布球员集锦视频失败: {e}", exc_info=True)
             return {"success": False, "message": f"发布失败: {str(e)}"}
 
-    def post_player_chart(self, chart_path, player_data, player_name):
+    def post_player_chart(self, chart_path, game_data, player_name=None, player_id=None):
         """发布球员投篮图到微博"""
-        self.logger.info(f"开始发布{player_name}投篮图")
+        self.logger.info(f"开始发布{'球员' if not player_name else player_name}投篮图")
 
         if not self._check_file_exists(chart_path, "投篮图"):
             return {"success": False, "message": "投篮图文件不存在"}
@@ -262,17 +252,12 @@ class WeiboPostService:
             return {"success": False, "message": "内容生成器未初始化"}
 
         try:
-            # 获取player_id
-            player_id = player_data.get("player_info", {}).get("player_id")
-            if not player_id:
-                self.logger.error(f"未能获取{player_name}的player_id")
-                return {"success": False, "message": f"未能获取{player_name}的player_id"}
-
-            # 使用统一内容生成接口获取内容
+            # 使用统一内容生成接口获取内容，传递原始Game对象和player_id/player_name
             content_package = self.content_generator.generate_content(
                 content_type=ContentType.PLAYER_CHART.value,
-                game_data=player_data,
-                player_id=player_id
+                game_data=game_data,
+                player_id=player_id,
+                player_name=player_name
             )
 
             self.logger.info(f"生成的内容：内容长度: {len(content_package['content'])}")
@@ -294,9 +279,9 @@ class WeiboPostService:
             self.logger.error(f"发布球员投篮图失败: {e}", exc_info=True)
             return {"success": False, "message": f"发布失败: {str(e)}"}
 
-    def post_team_chart(self, chart_path, team_data, team_name):
+    def post_team_chart(self, chart_path, game_data, team_name=None, team_id=None):
         """发布球队投篮图到微博"""
-        self.logger.info(f"开始发布{team_name}球队投篮图")
+        self.logger.info(f"开始发布{team_name if team_name else '球队'}投篮图")
 
         if not self._check_file_exists(chart_path, "球队投篮图"):
             return {"success": False, "message": "球队投篮图文件不存在"}
@@ -306,16 +291,20 @@ class WeiboPostService:
             return {"success": False, "message": "内容生成器未初始化"}
 
         try:
-            # 获取team_id
-            team_id = team_data.get("team_info", {}).get("team_id")
-            if not team_id:
-                self.logger.error(f"未能获取{team_name}的team_id")
-                return {"success": False, "message": f"未能获取{team_name}的team_id"}
+            # 确保有team_id
+            if not team_id and team_name and hasattr(self, 'nba_service'):
+                # 如果有team_name但没有team_id，尝试获取team_id
+                team_id = self.nba_service.get_team_id_by_name(team_name)
 
-            # 使用统一内容生成接口获取内容
+            if not team_id:
+                error_msg = f"未能获取{team_name if team_name else '球队'}的team_id"
+                self.logger.error(error_msg)
+                return {"success": False, "message": error_msg}
+
+            # 使用统一内容生成接口获取内容，传递原始Game对象和team_id
             content_package = self.content_generator.generate_content(
                 content_type=ContentType.TEAM_CHART.value,
-                game_data=team_data,
+                game_data=game_data,
                 team_id=team_id
             )
 
@@ -338,9 +327,9 @@ class WeiboPostService:
             self.logger.error(f"发布球队投篮图失败: {e}", exc_info=True)
             return {"success": False, "message": f"发布失败: {str(e)}"}
 
-    def post_player_rounds(self, round_gifs, player_data, player_name, nba_service):
+    def post_player_rounds(self, round_gifs, game_data, player_name=None, player_id=None, nba_service=None):
         """发布球员回合解说和GIF到微博"""
-        self.logger.info(f"开始发布{player_name}回合解说和GIF")
+        self.logger.info(f"开始发布{player_name if player_name else '球员'}回合解说和GIF")
         import random
         import time
 
@@ -354,17 +343,12 @@ class WeiboPostService:
 
         try:
             # 获取球员ID
-            player_id = nba_service.get_player_id_by_name(player_name)
-            if not player_id:
-                self.logger.error(f"未找到球员 {player_name} 的ID")
-                return {"success": False, "message": f"未找到球员 {player_name} 的ID"}
+            if not player_id and player_name and nba_service:
+                player_id = nba_service.get_player_id_by_name(player_name)
 
-            # 在调用generate_content之前，确保player_data包含完整的回合数据
-            if "rounds" not in player_data or not player_data.get("rounds"):
-                # 检查是否有events数据
-                if "events" in player_data and "data" in player_data["events"]:
-                    player_data["rounds"] = player_data["events"]["data"]
-                    self.logger.info(f"从events数据中导入了{len(player_data['rounds'])}个回合")
+            if not player_id:
+                self.logger.error(f"未找到球员 {player_name if player_name else ''} 的ID")
+                return {"success": False, "message": f"未找到球员 {player_name if player_name else ''} 的ID"}
 
             # 按事件ID顺序排序 - 使用整数排序
             sorted_rounds = sorted(
@@ -378,10 +362,10 @@ class WeiboPostService:
             round_ids = [int(event_id) for event_id, _ in sorted_rounds]
 
             # 使用统一内容生成接口批量生成回合解说
-            self.logger.info(f"正在为{player_name}(ID:{player_id})的相关回合生成中文解说内容...")
+            self.logger.info(f"正在为{player_name if player_name else str(player_id)}的相关回合生成中文解说内容...")
             content_result = self.content_generator.generate_content(
                 content_type=ContentType.ROUND_ANALYSIS.value,
-                game_data=player_data,
+                game_data=game_data,  # 传递原始Game对象
                 player_id=player_id,
                 round_ids=round_ids
             )
@@ -401,19 +385,14 @@ class WeiboPostService:
                     event_id_str = str(event_id)
                     round_content = all_round_analyses.get(event_id_str, "")
 
-                    # 使用RoundAnalysisService的方法格式化内容
-                    round_service = self.content_generator.services.get(ContentType.ROUND_ANALYSIS.value)
-                    if round_service:
-                        formatted_content = round_service.format_round_content(
-                            analysis_text=round_content,
-                            player_name=player_name,
-                            round_id=int(event_id),
-                            round_index=i + 1,
-                            total_rounds=len(sorted_rounds)
-                        )
-                    else:
-                        # 备用格式化方案
-                        formatted_content = f"{player_name}本场表现回顾{i + 1}/{len(sorted_rounds)}\n\n{round_content}\n\n#NBA# #湖人# #勒布朗# #詹姆斯#"
+                    # 格式化内容
+                    formatted_content = self._format_round_content(
+                        event_id=event_id,
+                        player_name=player_name,
+                        round_content=round_content,
+                        round_index=i + 1,
+                        total_rounds=len(sorted_rounds)
+                    )
 
                     # 检查文件是否存在
                     if not self._check_file_exists(gif_path, f"回合 #{event_id} 的GIF"):
@@ -465,25 +444,43 @@ class WeiboPostService:
             self.logger.error(f"发布球员回合解说和GIF失败: {e}", exc_info=True)
             return {"success": False, "message": f"发布失败: {str(e)}"}
 
-    def post_team_rating(self, team_data, team_name):
+    def _format_round_content(self, event_id, player_name, round_content, round_index, total_rounds):
+        """格式化回合内容"""
+        # 简单实现，可以根据需要扩展
+        formatted_content = f"{player_name}本场表现回顾{round_index}/{total_rounds}\n\n"
+
+        # 添加解说内容
+        if round_content:
+            formatted_content += f"{round_content}\n\n"
+        else:
+            formatted_content += "精彩表现！\n\n"
+
+        # 添加标签
+        formatted_content += "#NBA# #湖人# #勒布朗# #詹姆斯#"
+
+        return formatted_content
+
+    def post_team_rating(self, game_data, team_name=None, team_id=None):
         """发布球队赛后评级到微博"""
-        self.logger.info(f"开始发布{team_name}球队赛后评级")
+        self.logger.info(f"开始发布{team_name if team_name else '球队'}赛后评级")
 
         if not self.content_generator:
             self.logger.error("内容生成器未初始化，跳过发布")
             return {"success": False, "message": "内容生成器未初始化"}
 
         try:
-            # 获取team_id
-            team_id = team_data.get("team_info", {}).get("team_id")
-            if not team_id:
-                self.logger.error(f"未能获取{team_name}的team_id")
-                return {"success": False, "message": f"未能获取{team_name}的team_id"}
+            # 确保有team_id
+            if not team_id and team_name and hasattr(self, 'nba_service'):
+                team_id = self.nba_service.get_team_id_by_name(team_name)
 
-            # 使用统一内容生成接口获取内容
+            if not team_id:
+                self.logger.error(f"未能获取{team_name if team_name else '球队'}的team_id")
+                return {"success": False, "message": f"未能获取{team_name if team_name else '球队'}的team_id"}
+
+            # 使用统一内容生成接口获取内容，传递原始Game对象和team_id
             content_package = self.content_generator.generate_content(
                 content_type=ContentType.TEAM_RATING.value,
-                game_data=team_data,
+                game_data=game_data,  # 传递原始Game对象
                 team_id=team_id
             )
 
@@ -510,14 +507,14 @@ class WeiboPostService:
     # === 高级发布接口 ===
 
     def post_content(self, content_type: str, media_path: Union[str, Path, Dict[str, Path]],
-                     data: Dict[str, Any], **kwargs) -> Dict[str, Any]:
+                     data: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
         """统一发布接口
 
         Args:
             content_type: 内容类型，如"team_video"，"player_video"等
             media_path: 媒体文件路径(视频或图片)或多个GIF路径的字典(用于round_analysis)
-            data: 数据(游戏数据或球员数据)
-            **kwargs: 其他参数，如player_name, team_name, nba_service等
+            data: 原始数据(Game对象)或已适配数据(字典)
+            **kwargs: 其他参数，如player_name, team_name, team_id, player_id, nba_service等
 
         Returns:
             Dict: 包含成功状态和消息的字典
@@ -544,37 +541,46 @@ class WeiboPostService:
         try:
             # 根据内容类型调用对应方法
             if content_type == ContentType.TEAM_VIDEO.value:
-                result = self.post_team_video(media_path, data)
+                team_id = kwargs.get("team_id")
+                if not team_id:
+                    error_msg = "缺少team_id参数"
+                    self.logger.error(error_msg)
+                    return {"success": False, "message": error_msg}
+                result = self.post_team_video(media_path, data, team_id)
 
             elif content_type == ContentType.PLAYER_VIDEO.value:
                 player_name = kwargs.get("player_name")
-                if not player_name:
-                    error_msg = "缺少player_name参数"
+                player_id = kwargs.get("player_id")
+                if not player_name and not player_id:
+                    error_msg = "缺少player_name或player_id参数"
                     self.logger.error(error_msg)
                     return {"success": False, "message": error_msg}
-                result = self.post_player_video(media_path, data, player_name)
+                result = self.post_player_video(media_path, data, player_name, player_id)
 
             elif content_type == ContentType.PLAYER_CHART.value:
                 player_name = kwargs.get("player_name")
-                if not player_name:
-                    error_msg = "缺少player_name参数"
+                player_id = kwargs.get("player_id")
+                if not player_name and not player_id:
+                    error_msg = "缺少player_name或player_id参数"
                     self.logger.error(error_msg)
                     return {"success": False, "message": error_msg}
-                result = self.post_player_chart(media_path, data, player_name)
+                result = self.post_player_chart(media_path, data, player_name, player_id)
 
             elif content_type == ContentType.TEAM_CHART.value:
                 team_name = kwargs.get("team_name")
-                if not team_name:
-                    error_msg = "缺少team_name参数"
+                team_id = kwargs.get("team_id")
+                if not team_name and not team_id:
+                    error_msg = "缺少team_name或team_id参数"
                     self.logger.error(error_msg)
                     return {"success": False, "message": error_msg}
-                result = self.post_team_chart(media_path, data, team_name)
+                result = self.post_team_chart(media_path, data, team_name, team_id)
 
             elif content_type == ContentType.ROUND_ANALYSIS.value:
                 player_name = kwargs.get("player_name")
+                player_id = kwargs.get("player_id")
                 nba_service = kwargs.get("nba_service")
-                if not player_name or not nba_service:
-                    error_msg = "缺少player_name或nba_service参数"
+                if not (player_name or player_id) or not nba_service:
+                    error_msg = "缺少player_name/player_id或nba_service参数"
                     self.logger.error(error_msg)
                     return {"success": False, "message": error_msg}
                 # 对于round_analysis类型，media_path是GIF路径字典
@@ -582,15 +588,16 @@ class WeiboPostService:
                     error_msg = "回合GIF路径必须是字典类型"
                     self.logger.error(error_msg)
                     return {"success": False, "message": error_msg}
-                result = self.post_player_rounds(media_path, data, player_name, nba_service)
+                result = self.post_player_rounds(media_path, data, player_name, player_id, nba_service)
 
             elif content_type == ContentType.TEAM_RATING.value:
                 team_name = kwargs.get("team_name")
-                if not team_name:
-                    error_msg = "缺少team_name参数"
+                team_id = kwargs.get("team_id")
+                if not team_name and not team_id:
+                    error_msg = "缺少team_name或team_id参数"
                     self.logger.error(error_msg)
                     return {"success": False, "message": error_msg}
-                result = self.post_team_rating(data, team_name)
+                result = self.post_team_rating(data, team_name, team_id)
 
             else:
                 error_msg = f"不支持的内容类型: {content_type}"

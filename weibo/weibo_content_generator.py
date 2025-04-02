@@ -5,7 +5,9 @@ import re
 import time
 from utils.time_handler import TimeHandler
 from enum import Enum
+from nba.models.game_model import Game
 from nba.services.game_data_adapter import GameDataAdapter
+
 
 
 class ContentType(Enum):
@@ -49,18 +51,24 @@ class WeiboContentGenerator:
 
     # === 公开的内容生成接口 ===
 
-    def generate_content(self, content_type: str, game_data: Any, **kwargs) -> Dict[str, Any]:
+    def generate_content(self, content_type: str, game_data: Game, **kwargs) -> Dict[str, Any]:
         """统一内容生成接口
 
         Args:
             content_type: 内容类型，如"team_video"，"player_video"等
-            game_data: 比赛数据 (Game对象)
+            game_data: 比赛数据 (应始终为 Game 对象)
             **kwargs: 其他参数，如player_id, team_id等
 
         Returns:
             Dict: 包含内容的字典
         """
-        # 根据内容类型调用相应的方法
+
+        if not isinstance(game_data, Game):
+            self.logger.error(f"generate_content 预期接收 Game 对象，但收到了 {type(game_data)}")
+            # 可以根据需要决定是抛出异常还是返回错误字典
+            raise TypeError(f"generate_content 预期接收 Game 对象，但收到了 {type(game_data)}")
+
+        # 根据内容类型调用相应的方法，直接传递原始 game_data(Game 对象)
         if content_type == ContentType.TEAM_VIDEO.value:
             team_id = kwargs.get("team_id")
             if not team_id:
@@ -172,7 +180,7 @@ class WeiboContentGenerator:
                 return {"title": "NBA球员集锦", "content": ""}
 
             # 获取球员名称
-            player_name = adapted_data["player_info"]["name"]
+            player_name = adapted_data["player_info"]["basic"]["name"]
 
             # 首先获取团队数据，用于生成比赛标题
             team_id = adapted_data["team_info"]["team_id"]
@@ -222,14 +230,10 @@ class WeiboContentGenerator:
                 return {"title": "NBA球员投篮分析", "content": ""}
 
             # 获取球员名称
-            player_name = adapted_data["player_info"]["name"]
-
-            # 首先获取团队数据，用于生成比赛标题
-            team_id = adapted_data["team_info"]["team_id"]
-            team_data = self.adapter.adapt_for_team_content(game_data, team_id)
+            player_name = adapted_data["player_info"]["basic"]["name"]
 
             # 生成标题和投篮图文本
-            game_title = self.generate_game_title(team_data)
+            game_title = self.generate_game_title(adapted_data) # <--- 修改：直接传递 adapted_data
             shot_chart_title = f"{game_title} - {player_name}投篮分布"
             shot_chart_text = self.generate_shot_chart_text(adapted_data)
             hashtags = f"{ContentType.NBA_HASHTAG.value} {ContentType.BASKETBALL_HASHTAG.value} #{player_name}#"
@@ -326,7 +330,7 @@ class WeiboContentGenerator:
                 return {"analyses": {}}
 
             # 获取球员名称
-            player_name = adapted_data["player_info"]["name"]
+            player_name = adapted_data["player_info"]["basic"]["name"]
 
             # 批量生成回合解说
             analyses = self._batch_generate_round_analyses(adapted_data, round_ids, player_name)
@@ -414,22 +418,35 @@ class WeiboContentGenerator:
             key_players = []
             for player in top_players:
                 # 解析上场时间
-                minutes_str = player.get("minutes", "0:00")
+                minutes_value = player.get("minutes")  # 获取原始值
+                minutes_played = 0  # 初始化分钟数
                 try:
-                    # 处理格式如"12:30"的时间
-                    minutes_parts = minutes_str.split(":")
-                    minutes = int(minutes_parts[0])
-                    if minutes >= 10:
+                    if isinstance(minutes_value, str) and ":" in minutes_value:
+                        # 尝试解析 "MM:SS" 格式
+                        parts = minutes_value.split(":")
+                        if len(parts) >= 1:
+                            minutes_played = int(parts[0])
+                    elif isinstance(minutes_value, (int, float)):
+                        # 假设数字是总分钟数 (例如 25.5)
+                        # 如果是总秒数，需要除以 60: minutes_played = int(minutes_value / 60)
+                        minutes_played = int(minutes_value)  # 只取整数部分比较
+                    elif minutes_value is None or minutes_value == "0:00":
+                        minutes_played = 0
+                    else:
+                        # 记录未知的格式，但可能仍需处理或跳过
+                        self.logger.warning(
+                            f"未知的上场时间格式: {minutes_value} (类型: {type(minutes_value)}) 球员ID: {player.get('id')}")
+                        # 根据需要决定如何处理未知格式，这里暂时跳过
+                        # continue # 或者可以设置为0分钟
+
+                    # 根据计算出的分钟数判断是否添加到关键球员列表
+                    if minutes_played >= 10:
                         key_players.append(player)
-                except (ValueError, IndexError):
-                    # 如果解析失败，尝试直接转换为整数
-                    try:
-                        minutes = int(minutes_str)
-                        if minutes >= 10:
-                            key_players.append(player)
-                    except ValueError:
-                        # 如果还是失败，默认添加
-                        key_players.append(player)
+
+                except (ValueError, TypeError, AttributeError) as e:
+                    # 捕获解析过程中可能发生的其他错误
+                    self.logger.error(f"解析球员 {player.get('id')} 的上场时间 {minutes_value} 时出错: {e}",
+                                      exc_info=False)
 
             # 准备评级数据
             rating_data = {
@@ -525,9 +542,8 @@ class WeiboContentGenerator:
                 "请基于以下信息生成一个中文标题，要求：\n"
                 "1. 必须用中文表达，包括所有球队名称（{home_team} 和 {away_team}）；\n"
                 "2. 明确包含比赛最终比分并强调胜负结果（{home_score} : {away_score}）；注意胜负需要从湖人的视角看待。\n"
-                "3. 注意：只在数据中明确包含rivalry_info字段且available为true时，才提及两队对抗历史,可以简要融入系列赛情况；否则不要提及；\n"
-                "4. 标题字数控制在20字以内，简洁明了且适合社交媒体传播。\n"
-                "5. 可以参考古典书名/章节风格，并适度使用Emoji来吸引注意。\n"
+                "3. 标题字数控制在20字以内，简洁明了且适合社交媒体传播。\n"
+                "4. 可以参考古典书名/章节风格，并适度使用Emoji来吸引注意。\n"
                 "比赛信息：{game_info}"
             )
 
@@ -594,7 +610,7 @@ class WeiboContentGenerator:
                 "1. 详细总结比赛的关键数据（如得分、篮板、助攻等）；\n"
                 "2. 突出比赛过程中的关键转折点和重要时刻；\n"
                 "3. 提及湖人队表现突出的1-3名球员，尤其是球队在进攻、组织、防守端表现较好的球员，并结合数据进行分析；\n"
-                "4. 注意：只在数据中明确包含rivalry_info字段且available为true时，才提及两队对抗历史；否则不要提及；\n"
+                #"4. 注意：只在数据中明确包含rivalry_info字段且available为true时，才提及两队对抗历史；否则不要提及；\n"
                 "5. 使用生动语言，适合社交媒体发布，适当使用emoji。\n"
                 "6. 所有球队和球员名称均用中文，百分数只保留小数点后两位。\n"
                 "比赛信息：{summary_data}"
@@ -1040,7 +1056,7 @@ class WeiboContentGenerator:
             return f"第{period}节 {clock}"
 
     def _batch_generate_round_analyses(self, adapted_data: Dict[str, Any], round_ids: List[int], player_name: str) -> \
-            Dict[str, str]:
+    Dict[str, str]:
         """批量生成多个回合的解说内容 - 使用单独的prompt"""
         if self.debug_mode:
             self._log_start(f"批量回合解说({player_name}, {len(round_ids)}个回合)")
@@ -1059,7 +1075,23 @@ class WeiboContentGenerator:
             for round_id in round_ids:
                 for round_data in all_rounds:
                     if round_data["action_number"] == round_id:
-                        filtered_rounds.append(round_data)
+                        # 创建回合数据的简化副本，移除可能导致循环引用的字段
+                        simplified_round = {
+                            "action_number": round_data.get("action_number"),
+                            "action_type": round_data.get("action_type"),
+                            "player_name": round_data.get("player_name"),
+                            "description": round_data.get("description", ""),
+                            "period": round_data.get("period"),
+                            "clock": round_data.get("clock"),
+                            "score_home": round_data.get("score_home"),
+                            "score_away": round_data.get("score_away"),
+                            "shot_result": round_data.get("shot_result", ""),
+                            "shot_distance": round_data.get("shot_distance", ""),
+                            "assist_person_id": round_data.get("assist_person_id"),
+                            "assist_player_name_initial": round_data.get("assist_player_name_initial")
+                            # 注意：特意不包含context字段
+                        }
+                        filtered_rounds.append(simplified_round)
                         matched_ids.append(round_id)
                         break
 
@@ -1080,7 +1112,7 @@ class WeiboContentGenerator:
 
                 请为以下每个回合ID生成一段专业而详细的中文解说，要求：
                 1. 每段解说长度为100-150字之间，内容必须详尽丰富
-                2. 请结合该回合前后3个回合，用富有感情和现场感的语言描述回合中的动作、球员表现和场上情况，类似于NBA直播解说。
+                2. 请结合该回合前后的比赛情况，用富有感情和现场感的语言描述回合中的动作、球员表现和场上情况，类似于NBA直播解说。
                 3. 使用正确的篮球术语和专业词汇
                 4. 根据回合类型(投篮、助攻、防守等)强调不同的细节
                 5. 解说内容必须完全使用中文，包括术语、数字描述等全部用中文表达
@@ -1109,7 +1141,7 @@ class WeiboContentGenerator:
                 num_rounds=len(filtered_rounds),
                 player_name=player_name,
                 round_ids=[rd.get('action_number') for rd in filtered_rounds],
-                round_data=json.dumps(filtered_rounds, ensure_ascii=False)
+                round_data=json.dumps(filtered_rounds, ensure_ascii=False)  # 这里使用简化后的数据
             )
 
             # 发送批量请求

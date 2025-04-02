@@ -1,13 +1,12 @@
-# sync/schedule_sync.py
+# database/sync/schedule_sync.py
 from typing import Dict, List, Optional, Any
 from datetime import datetime
-from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from nba.fetcher.schedule_fetcher import ScheduleFetcher
 from utils.logger_handler import AppLogger
 from utils.time_handler import TimeHandler
-from database.models.base_models import Game, Team, Player
+from database.models.base_models import Game
 from database.db_session import DBSession
 
 
@@ -22,7 +21,7 @@ class ScheduleSync:
         self.db_session = DBSession.get_instance()
         self.schedule_repository = schedule_repository  # 可选，用于查询
         self.schedule_fetcher = schedule_fetcher or ScheduleFetcher()
-        self.logger = AppLogger.get_logger(__name__, app_name='nba')
+        self.logger = AppLogger.get_logger(__name__, app_name='sqlite')
         self.time_handler = TimeHandler()
 
     def _get_existing_count(self, season: str) -> int:

@@ -1,4 +1,4 @@
-# repositories/team_repository.py
+# database/repositories/team_repository.py
 from typing import Dict, List, Optional
 from database.models.base_models import Team
 from database.db_session import DBSession
@@ -15,7 +15,18 @@ class TeamRepository:
     def __init__(self):
         """初始化球队数据访问对象"""
         self.db_session = DBSession.get_instance()
-        self.logger = AppLogger.get_logger(__name__, app_name='nba')
+        self.logger = AppLogger.get_logger(__name__, app_name='sqlite')
+
+    @staticmethod
+    def _to_dict(model_instance):
+        """将模型实例转换为字典"""
+        if model_instance is None:
+            return None
+
+        result = {}
+        for column in model_instance.__table__.columns:
+            result[column.name] = getattr(model_instance, column.name)
+        return result
 
     def get_team_id_by_name(self, name: str) -> Optional[int]:
         """
@@ -277,10 +288,3 @@ class TeamRepository:
         except Exception as e:
             self.logger.error(f"检查球队详细信息失败: {e}")
             return False
-
-    def _to_dict(self, model_instance):
-        """将模型实例转换为字典"""
-        result = {}
-        for column in model_instance.__table__.columns:
-            result[column.name] = getattr(model_instance, column.name)
-        return result

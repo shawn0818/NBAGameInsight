@@ -1,4 +1,4 @@
-# sync/player_sync.py
+# database/sync/player_sync.py
 from typing import Dict, List
 from nba.fetcher.player_fetcher import PlayerFetcher
 from utils.logger_handler import AppLogger
@@ -17,7 +17,7 @@ class PlayerSync:
         self.db_session = DBSession.get_instance()
         self.player_repository = player_repository  # 可选，用于查询
         self.player_fetcher = player_fetcher or PlayerFetcher()
-        self.logger = AppLogger.get_logger(__name__, app_name='nba')
+        self.logger = AppLogger.get_logger(__name__, app_name='sqlite')
 
     def sync_players(self, force_update: bool = False) -> bool:
         """

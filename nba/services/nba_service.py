@@ -751,140 +751,6 @@ class NBAService(BaseService):
             self.logger.error(f"获取比赛数据失败: {str(e)}", exc_info=True)
             return None
 
-    def sync_all_game_stats(self, force_update: bool = False) -> Dict[str, Any]:
-        """全量同步比赛统计数据
-
-        Args:
-            force_update: 是否强制更新
-
-        Returns:
-            Dict[str, Any]: 同步结果
-        """
-        try:
-            with self._ensure_service('db_service') as db_service:
-                return db_service.sync_manager.sync_all_game_stats(force_update)
-        except ServiceNotAvailableError as e:
-            self.logger.error(f"同步统计数据失败: {str(e)}")
-            return {"status": "failed", "error": str(e)}
-        except Exception as e:
-            self.logger.error(f"同步统计数据失败: {str(e)}", exc_info=True)
-            return {"status": "failed", "error": str(e)}
-
-    def sync_unsynchronized_game_stats(self) -> Dict[str, Any]:
-        """增量同步未同步过的比赛统计数据
-
-        Returns:
-            Dict[str, Any]: 同步结果
-        """
-        try:
-            with self._ensure_service('db_service') as db_service:
-                return db_service.sync_manager.sync_unsynchronized_game_stats()
-        except ServiceNotAvailableError as e:
-            self.logger.error(f"增量同步统计数据失败: {str(e)}")
-            return {"status": "failed", "error": str(e)}
-        except Exception as e:
-            self.logger.error(f"增量同步统计数据失败: {str(e)}", exc_info=True)
-            return {"status": "failed", "error": str(e)}
-
-    def sync_core_data(self, force_update: bool = False) -> Dict[str, Any]:
-        """同步nba.db的所有核心数据
-
-        Args:
-            force_update: 是否强制更新
-
-        Returns:
-            Dict[str, Any]: 同步结果
-        """
-        try:
-            with self._ensure_service('db_service') as db_service:
-                return db_service._sync_core_data(force_update)
-        except ServiceNotAvailableError as e:
-            self.logger.error(f"同步核心数据失败: {str(e)}")
-            return {"status": "failed", "error": str(e)}
-        except Exception as e:
-            self.logger.error(f"同步核心数据失败: {str(e)}", exc_info=True)
-            return {"status": "failed", "error": str(e)}
-
-    def sync_new_season(self, season: str, force_update: bool = False) -> Dict[str, Any]:
-        """同步新赛季数据
-
-        Args:
-            season: 赛季标识，例如 "2025-26"
-            force_update: 是否强制更新
-
-        Returns:
-            Dict[str, Any]: 同步结果
-        """
-        try:
-            with self._ensure_service('db_service') as db_service:
-                # 同步赛程
-                schedule_result = db_service.sync_manager.sync_schedules(force_update=force_update)
-                return {"status": "success", "details": {"schedules": schedule_result}}
-        except ServiceNotAvailableError as e:
-            self.logger.error(f"同步新赛季数据失败: {str(e)}")
-            return {"status": "failed", "error": str(e)}
-        except Exception as e:
-            self.logger.error(f"同步新赛季数据失败: {str(e)}", exc_info=True)
-            return {"status": "failed", "error": str(e)}
-
-    def sync_all_data_parallel(self, force_update: bool = False, max_workers: int = 10,
-                               batch_size: int = 50) -> Dict[str, Any]:
-        """并行全量同步数据
-
-        使用多线程提高同步效率，显著加快数据同步速度
-
-        Args:
-            force_update: 是否强制更新所有数据
-            max_workers: 最大工作线程数
-            batch_size: 每批处理的比赛数量
-
-        Returns:
-            Dict[str, Any]: 同步结果摘要
-        """
-        try:
-            with self._ensure_service('db_service') as db_service:
-                # 调用db_service的并行同步方法
-                return db_service.sync_all_data_parallel(
-                    force_update=force_update,
-                    max_workers=max_workers,
-                    batch_size=batch_size
-                )
-        except ServiceNotAvailableError as e:
-            self.logger.error(f"并行同步数据失败: {str(e)}")
-            return {"status": "failed", "error": str(e)}
-        except Exception as e:
-            self.logger.error(f"并行同步数据失败: {str(e)}", exc_info=True)
-            return {"status": "failed", "error": str(e)}
-
-    def sync_remaining_data_parallel(self, force_update: bool = False, max_workers: int = 10,
-                                     batch_size: int = 50) -> Dict[str, Any]:
-        """并行增量同步剩余未同步的比赛数据
-
-        仅处理尚未同步的比赛，使用多线程提高效率
-
-        Args:
-            force_update: 是否强制更新
-            max_workers: 最大工作线程数
-            batch_size: 每批处理的比赛数量
-
-        Returns:
-            Dict[str, Any]: 同步结果摘要
-        """
-        try:
-            with self._ensure_service('db_service') as db_service:
-                # 调用db_service的并行同步方法
-                return db_service.sync_remaining_data_parallel(
-                    force_update=force_update,
-                    max_workers=max_workers,
-                    batch_size=batch_size
-                )
-        except ServiceNotAvailableError as e:
-            self.logger.error(f"并行增量同步数据失败: {str(e)}")
-            return {"status": "failed", "error": str(e)}
-        except Exception as e:
-            self.logger.error(f"并行增量同步数据失败: {str(e)}", exc_info=True)
-            return {"status": "failed", "error": str(e)}
-
     def get_team_id_by_name(self, team_name: str) -> Optional[int]:
         """获取球队ID
 
@@ -928,6 +794,59 @@ class NBAService(BaseService):
         except Exception as e:
             self.logger.error(f"获取球员ID失败: {str(e)}", exc_info=True)
             return None
+
+    def sync_remaining_data_parallel(self, force_update: bool = False, max_workers: int = 2,
+                                     batch_size: int = 6, reverse_order: bool = False) -> Dict[str, Any]:
+        """并行增量同步剩余未同步的比赛统计数据 (gamedb)
+
+        这是日常/手动更新比赛统计数据的主要方法。
+
+        Args:
+            force_update: 是否强制更新已同步过的数据。
+            max_workers: 最大工作线程数。
+            batch_size: 每批处理的比赛数量。
+            reverse_order: 是否优先处理最新的比赛。
+
+        Returns:
+            Dict[str, Any]: 同步结果摘要。
+        """
+        try:
+            with self._ensure_service('db_service') as db_service:
+                # Directly call the corresponding method in DatabaseService
+                return db_service.sync_remaining_data_parallel(
+                    force_update=force_update,
+                    max_workers=max_workers,
+                    batch_size=batch_size,
+                    reverse_order=reverse_order
+                )
+        except ServiceNotAvailableError as e:
+            self.logger.error(f"并行增量同步数据失败: {str(e)}")
+            return {"status": "failed", "error": str(e)}
+        except Exception as e:
+            self.logger.error(f"并行增量同步数据失败: {str(e)}", exc_info=True)
+            return {"status": "failed", "error": str(e)}
+
+    def sync_new_season_core_data(self, force_update: bool = True) -> Dict[str, Any]:
+        """同步新赛季的核心数据 (nba.db)
+
+        用于赛季开始时，强制更新球队、球员信息，并同步当前赛季的赛程。
+
+        Args:
+            force_update: 是否强制更新，对于新赛季同步，通常应为True。
+
+        Returns:
+            Dict[str, Any]: 同步结果摘要。
+        """
+        try:
+            with self._ensure_service('db_service') as db_service:
+                # Directly call the corresponding method in DatabaseService
+                return db_service.sync_new_season_core_data(force_update=force_update)
+        except ServiceNotAvailableError as e:
+            self.logger.error(f"同步新赛季核心数据失败: {str(e)}")
+            return {"status": "failed", "error": str(e)}
+        except Exception as e:
+            self.logger.error(f"同步新赛季核心数据失败: {str(e)}", exc_info=True)
+            return {"status": "failed", "error": str(e)}
 
     ## =============4.3 简化的API，委托到各专业服务=================
 

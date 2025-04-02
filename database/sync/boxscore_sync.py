@@ -1,4 +1,4 @@
-# sync/boxscore_sync.py
+# database/sync/boxscore_sync.py
 import concurrent
 import json
 import threading
@@ -9,7 +9,6 @@ from typing import Dict, List, Optional, Any, Tuple, Set
 
 from nba.fetcher.game_fetcher import GameFetcher
 from utils.logger_handler import AppLogger
-from utils.batch_process_controller import BatchProcessController
 from database.db_session import DBSession
 from database.models.stats_models import Statistics, GameStatsSyncHistory
 
@@ -26,7 +25,8 @@ class BoxscoreSync:
         self.db_session = DBSession.get_instance()
         self.game_fetcher = game_fetcher or GameFetcher()
         self.logger = AppLogger.get_logger(__name__, app_name='sqlite')
-
+        # 获取game_fetcher中的http_manager
+        self.http_manager = self.game_fetcher.http_manager
         # 添加全局并发控制
         self.global_semaphore = threading.Semaphore(max_global_concurrency)  # 全局最大并发请求数
         self.active_threads = 0
@@ -146,8 +146,8 @@ class BoxscoreSync:
             self.logger.info("所有比赛已同步，无需处理")
             return result
 
-        # 创建批次调度器
-        scheduler = BatchProcessController(batch_interval=batch_interval)
+        # 设置http_manager的批次间隔
+        self.http_manager.set_batch_interval(batch_interval)
 
         # 分批处理
         batches = [games_to_sync[i:i + batch_size] for i in range(0, len(games_to_sync), batch_size)]
@@ -156,7 +156,7 @@ class BoxscoreSync:
         # 处理每一批
         for batch_idx, batch_game_ids in enumerate(batches):
             # 等待批次间隔
-            scheduler.wait_for_next_batch()
+            self.http_manager.wait_for_next_batch()
 
             batch_start_time = datetime.now()
             self.logger.info(f"开始处理第{batch_idx + 1}/{len(batches)}批，包含{len(batch_game_ids)}场比赛")

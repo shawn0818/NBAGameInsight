@@ -19,7 +19,7 @@ class AIModel(Enum):
     # OpenRouter 模型
     GPT4 = "openai/gpt-4"
     CLAUDE = "anthropic/claude-3.7-sonnet"
-    GEMINI = "google/gemini-pro"
+    GEMINI = "google/gemini-2.5-pro-exp-03-25:free"
     GEMINI_FLASH = "google/gemini-2.0-flash-001"
     # Deepseek 模型
     DEEPSEEK_CHAT = "deepseek-chat"
@@ -36,7 +36,7 @@ class AIConfig:
     # 请求相关配置
     max_retries: int = 3
     retry_delay: int = 3  # 秒
-    timeout: int = 60  # 秒
+    timeout: int = 100  # 秒
     temperature: float = 0.7
     max_tokens: Optional[int] = None
     # 高级配置
