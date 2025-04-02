@@ -118,6 +118,87 @@ class TeamFetcher(BaseNBAFetcher):
         # 将字符串键转换为整数键以匹配返回类型声明
         return {int(k): v for k, v in string_key_results.items()}
 
+    # 在TeamFetcher中添加获取球队Logo的方法
+    def get_team_logo(self, team_id: int, force_update: bool = False) -> Optional[bytes]:
+        """获取球队Logo
+
+        Args:
+            team_id: 球队ID
+            force_update: 是否强制更新缓存
+
+        Returns:
+            Optional[bytes]: Logo二进制数据
+        """
+        if not isinstance(team_id, int) or team_id <= 0:
+            raise ValueError("team_id must be a positive integer")
+
+        cache_key = self._get_cache_key('logo', team_id)
+
+        # 如果不强制更新，尝试获取缓存
+        if not force_update:
+            binary_prefix = f"{self.__class__.__name__.lower()}_binary"
+            cached_data = self.cache_manager.get_binary(
+                prefix=binary_prefix,
+                identifier=cache_key
+            )
+            if cached_data:
+                self.logger.debug(f"使用缓存的球队(ID:{team_id})Logo")
+                return cached_data
+
+        self.logger.info(f"正在获取球队(ID:{team_id})Logo")
+
+        # 尝试不同的logo格式
+        logo_urls = [
+            f"https://cdn.nba.com/logos/nba/{team_id}/global/L/logo.svg",
+            f"https://cdn.nba.com/logos/nba/{team_id}/global/L/logo.png"
+        ]
+
+        for url in logo_urls:
+            try:
+                logo_data = self.http_manager.make_binary_request(url)
+                if logo_data:
+                    # 存入缓存
+                    binary_prefix = f"{self.__class__.__name__.lower()}_binary"
+                    self.cache_manager.set_binary(
+                        prefix=binary_prefix,
+                        identifier=cache_key,
+                        data=logo_data,
+                        metadata={"team_id": team_id, "url": url}
+                    )
+                    return logo_data
+            except Exception as e:
+                self.logger.error(f"获取球队(ID:{team_id})logo失败: {e}")
+
+        return None
+
+    def get_multiple_team_logos(self, team_ids: Optional[List[int]] = None,
+                                force_update: bool = False) -> Dict[int, Optional[bytes]]:
+        """批量获取多支球队Logo，支持断点续传
+
+        Args:
+            team_ids: 球队ID列表
+            force_update: 是否强制更新
+
+        Returns:
+            Dict[int, Optional[bytes]]: 球队Logo数据字典
+        """
+        # 如果未提供team_ids，则使用所有球队
+        if team_ids is None:
+            team_ids = self.team_config.ALL_TEAM_LIST
+
+        self.logger.info(f"批量获取{len(team_ids)}支球队Logo")
+
+        # 使用批量获取框架
+        string_key_results = self.batch_fetch(
+            ids=team_ids,
+            fetch_func=lambda team_id: self.get_team_logo(team_id, force_update),
+            task_name="multiple_team_logos",
+            batch_size=5
+        )
+
+        # 将字符串键转换为整数键
+        return {int(k): v for k, v in string_key_results.items()}
+
     def cleanup_cache(self, team_id: Optional[int] = None, older_than: Optional[timedelta] = None) -> None:
         """清理缓存数据
 

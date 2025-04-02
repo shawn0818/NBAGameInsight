@@ -1,4 +1,4 @@
-# repositories/playbyplay_repository.py
+# database/repositories/playbyplay_repository.py
 from typing import Dict, List, Optional
 from sqlalchemy import and_
 from database.models.stats_models import Event
@@ -9,35 +9,25 @@ from utils.logger_handler import AppLogger
 class PlayByPlayRepository:
     """
     比赛回合数据访问对象 - 专注于查询操作
+    使用SQLAlchemy ORM进行数据访问
     """
 
     def __init__(self):
         """初始化比赛回合数据访问对象"""
         self.db_session = DBSession.get_instance()
-        self.logger = AppLogger.get_logger(__name__, app_name='nba')
+        self.logger = AppLogger.get_logger(__name__, app_name='sqlite')
 
-    def get_playbyplay(self, game_id: str) -> Optional[Dict]:
-        """
-        获取比赛回合数据
-
-        Args:
-            game_id: 比赛ID
-
-        Returns:
-            Optional[Dict]: 比赛回合数据，未找到时返回None
-        """
-        try:
-            with self.db_session.session_scope('game') as session:
-                event = session.query(Event).filter(Event.game_id == game_id).first()
-
-                if event:
-                    # 将ORM对象转换为字典
-                    return {c.name: getattr(event, c.name) for c in event.__table__.columns}
-                return None
-
-        except Exception as e:
-            self.logger.error(f"获取比赛回合数据失败: {e}")
+    @staticmethod
+    def _to_dict(model_instance):
+        """将模型实例转换为字典"""
+        if model_instance is None:
             return None
+
+        result = {}
+        for column in model_instance.__table__.columns:
+            result[column.name] = getattr(model_instance, column.name)
+        return result
+
 
     def get_play_actions(self, game_id: str, period: Optional[int] = None) -> List[Dict]:
         """
@@ -64,11 +54,9 @@ class PlayByPlayRepository:
 
                 actions = query.all()
 
-                # 将ORM对象转换为字典
                 result = []
                 for action in actions:
-                    action_dict = {c.name: getattr(action, c.name) for c in action.__table__.columns}
-                    result.append(action_dict)
+                    result.append(PlayByPlayRepository._to_dict(action))
 
                 return result
 
@@ -96,11 +84,9 @@ class PlayByPlayRepository:
                     )
                 ).order_by(Event.period, Event.action_number).all()
 
-                # 将ORM对象转换为字典
                 result = []
                 for action in actions:
-                    action_dict = {c.name: getattr(action, c.name) for c in action.__table__.columns}
-                    result.append(action_dict)
+                    result.append(PlayByPlayRepository._to_dict(action))
 
                 return result
 
@@ -128,14 +114,13 @@ class PlayByPlayRepository:
                     )
                 ).order_by(Event.period, Event.action_number).all()
 
-                # 将ORM对象转换为字典
                 result = []
                 for action in actions:
-                    action_dict = {c.name: getattr(action, c.name) for c in action.__table__.columns}
-                    result.append(action_dict)
+                    result.append(PlayByPlayRepository._to_dict(action))
 
                 return result
 
         except Exception as e:
             self.logger.error(f"获取比赛得分回合失败: {e}")
             return []
+

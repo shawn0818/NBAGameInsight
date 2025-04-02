@@ -1,7 +1,6 @@
-# stats_models.py
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Text, Index
+# database/models/stats_models.py
+from sqlalchemy import Column, Integer, String, Float, DateTime, Text, Index
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
 from datetime import datetime
 
 # 创建基础模型类 - 用于game.db

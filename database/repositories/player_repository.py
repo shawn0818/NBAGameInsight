@@ -1,9 +1,10 @@
-# repositories/player_repository.py
-from typing import Dict, List, Optional
+# database/repositories/player_repository.py
+from typing import Optional
 from sqlalchemy import or_, func
 from database.models.base_models import Player
 from database.db_session import DBSession
 from utils.logger_handler import AppLogger
+from fuzzywuzzy import process
 
 
 class PlayerRepository:
@@ -15,7 +16,18 @@ class PlayerRepository:
     def __init__(self):
         """初始化球员数据访问对象"""
         self.db_session = DBSession.get_instance()
-        self.logger = AppLogger.get_logger(__name__, app_name='nba')
+        self.logger = AppLogger.get_logger(__name__, app_name='sqlite')
+
+    @staticmethod
+    def _to_dict(model_instance):
+        """将模型实例转换为字典"""
+        if model_instance is None:
+            return None
+
+        result = {}
+        for column in model_instance.__table__.columns:
+            result[column.name] = getattr(model_instance, column.name)
+        return result
 
     def get_player_id_by_name(self, name: str) -> Optional[int]:
         """
@@ -94,7 +106,7 @@ class PlayerRepository:
                     return matches[0].person_id
 
                 # 4. 如果有多个匹配，使用fuzzywuzzy进一步确定最佳匹配
-                from fuzzywuzzy import process
+
 
                 # 为每个匹配创建一个包含所有可能匹配字段的组合字符串
                 match_strings = []
@@ -157,26 +169,3 @@ class PlayerRepository:
         except Exception as e:
             self.logger.error(f"通过ID获取球员名称失败: {e}")
             return None
-
-    def get_all_players(self) -> List[Dict]:
-        """
-        获取所有球员信息
-
-        Returns:
-            List[Dict]: 所有球员信息列表
-        """
-        try:
-            with self.db_session.session_scope('nba') as session:
-                players = session.query(Player).order_by(Player.display_first_last).all()
-
-                # 将ORM对象转换为字典
-                result = []
-                for player in players:
-                    player_dict = {c.name: getattr(player, c.name) for c in player.__table__.columns}
-                    result.append(player_dict)
-
-                return result
-
-        except Exception as e:
-            self.logger.error(f"获取所有球员数据失败: {e}")
-            return []

@@ -1,4 +1,5 @@
-"""NBA 数据服务主程序 - 重构优化版
+# main.py
+"""NBA 数据服务主程序 - 精简同步版
 
 实现以下核心功能：
 1. 比赛基础信息查询
@@ -7,6 +8,7 @@
 4. 发布内容到微博
 5. AI分析比赛数据
 6. 球队赛后评级
+7. 核心数据同步管理
 
 用法:
     python main.py [options]
@@ -57,15 +59,11 @@ class RunMode(Enum):
     WEIBO_TEAM_RATING = "weibo-team-rating"  # 只发布球队赛后评级
 
     # 综合模式
-    ALL = "all"  # 执行所有功能
+    ALL = "all"  # 执行所有功能 (不含同步)
 
-    # 同步相关模式
-    SYNC_STATS_FULL = "sync-stats-full"  # 全量更新统计数据
-    SYNC_STATS_INCREMENTAL = "sync-stats-incremental"  # 增量更新统计数据
-    SYNC_NBA_FULL = "sync-nba-full"  # 全量更新nbadb基础数据
-    SYNC_NEW_SEASON = "sync-new-season"  # 新赛季数据同步
-    SYNC_STATS_PARALLEL = "sync-stats-parallel"  # 并行全量更新统计数据
-    SYNC_REMAINING_PARALLEL = "sync-remaining-parallel"  # 并行增量更新统计数据
+    # 同步相关模式 (精简后)
+    SYNC = "sync"  # 增量并行同步比赛统计数据 (gamedb)
+    SYNC_NEW_SEASON = "sync-new-season"  # 手动触发新赛季核心数据更新 (nba.db)
 
     @classmethod
     def get_weibo_modes(cls) -> Set["RunMode"]:
@@ -85,9 +83,8 @@ class RunMode(Enum):
     def get_sync_modes(cls) -> Set["RunMode"]:
         """获取所有数据同步相关模式"""
         return {
-            cls.SYNC_STATS_FULL, cls.SYNC_STATS_INCREMENTAL,
-            cls.SYNC_NBA_FULL, cls.SYNC_NEW_SEASON,
-            cls.SYNC_STATS_PARALLEL, cls.SYNC_REMAINING_PARALLEL
+            cls.SYNC,
+            cls.SYNC_NEW_SEASON
         }
 
 
@@ -103,10 +100,9 @@ class AppConfig:
     no_weibo: bool = False
 
     # 同步相关配置
-    force_update: bool = False
-    new_season: str = ""
-    max_workers: int = 8
-    batch_size: int = 50
+    force_update: bool = False # 主要用于 sync 模式强制更新统计数据
+    max_workers: int = 2
+    batch_size: int = 6
 
     # 路径相关配置
     config_file: Optional[Path] = None
@@ -123,7 +119,6 @@ class AppConfig:
             debug=args.debug,
             no_weibo=args.no_weibo,
             force_update=args.force_update,
-            new_season=args.new_season,
             max_workers=args.max_workers,
             batch_size=args.batch_size,
             config_file=Path(args.config) if args.config else None
@@ -763,25 +758,69 @@ class WeiboCommand(BaseWeiboCommand):
         if not self._check_required_files(app, RunMode.WEIBO):
             return False
 
-        # 获取游戏数据
+        # 获取游戏数据 - 获取原始Game对象
         game = app.get_game_data()
         if not game:
             print("× 获取比赛数据失败")
             return False
 
-        # 执行统一发布
-        result = app.weibo_service.post_all_content(
-            app.nba_service,
-            app.video_paths,
-            app.chart_paths,
-            app.config.player
-        )
+        # 获取team_id和player_id
+        team_id = app.get_team_id(app.config.team)
+        player_id = None
+        if app.config.player:
+            player_id = app.get_player_id(app.config.player)
 
-        if result:
-            print("\n✓ 所有内容已成功发布到微博!")
+        # 执行统一发布
+        results = []
+
+        # 发布球队集锦视频
+        if "team_video" in app.video_paths:
+            result = app.weibo_service.post_content(
+                content_type="team_video",
+                media_path=app.video_paths["team_video"],
+                data=game,  # 传递原始Game对象
+                team_id=team_id,
+                team_name=app.config.team
+            )
+            results.append(result)
+            print(
+                f"  {'✓' if result.get('success') else '×'} 球队集锦视频发布{'成功' if result.get('success') else '失败'}")
+
+        # 如果指定了球员，发布球员相关内容
+        if player_id:
+            # 发布球员集锦视频
+            if "player_video" in app.video_paths:
+                result = app.weibo_service.post_content(
+                    content_type="player_video",
+                    media_path=app.video_paths["player_video"],
+                    data=game,  # 传递原始Game对象
+                    player_id=player_id,
+                    player_name=app.config.player
+                )
+                results.append(result)
+                print(
+                    f"  {'✓' if result.get('success') else '×'} 球员集锦视频发布{'成功' if result.get('success') else '失败'}")
+
+            # 发布球员投篮图
+            if "player_chart" in app.chart_paths:
+                result = app.weibo_service.post_content(
+                    content_type="player_chart",
+                    media_path=app.chart_paths["player_chart"],
+                    data=game,  # 传递原始Game对象
+                    player_id=player_id,
+                    player_name=app.config.player
+                )
+                results.append(result)
+                print(
+                    f"  {'✓' if result.get('success') else '×'} 球员投篮图发布{'成功' if result.get('success') else '失败'}")
+
+        # 判断总体成功状态
+        success_count = sum(1 for r in results if r.get("success"))
+        if results and success_count > 0:
+            print(f"  ✓ 成功发布 {success_count}/{len(results)} 个内容")
             return True
         else:
-            print("\n× 部分或全部内容发布失败，请查看日志获取详细信息")
+            print("  × 所有内容发布失败")
             return False
 
 
@@ -796,31 +835,25 @@ class WeiboTeamCommand(BaseWeiboCommand):
         if not self._check_required_files(app, RunMode.WEIBO_TEAM):
             return False
 
-        # 获取基础数据
+        # 获取基础数据 - 获取原始Game对象
         game = app.get_game_data()
         if not game:
             print("× 获取比赛信息失败")
             return False
 
-        # 获取球队数据
+        # 获取球队ID
         team_id = app.get_team_id(app.config.team)
         if not team_id:
             print(f"× 未找到球队ID: {app.config.team}")
             return False
 
-        # 获取结构化数据
-        team_data = app.get_team_data(game, team_id)
-        if not team_data or "error" in team_data:
-            error_msg = team_data.get("error", "未知错误") if team_data else "获取数据失败"
-            print(f"× 获取球队AI友好数据失败: {error_msg}")
-            return False
-
-        # 发布球队集锦视频
+        # 发布球队集锦视频 - 传递原始Game对象和team_id
         if "team_video" in app.video_paths:
             result = app.weibo_service.post_content(
                 content_type="team_video",
                 media_path=app.video_paths["team_video"],
-                data=team_data
+                data=game,  # 传递原始Game对象
+                team_id=team_id  # 传递team_id而不是已适配的数据
             )
 
             if result and result.get("success"):
@@ -845,31 +878,25 @@ class WeiboPlayerCommand(BaseWeiboCommand):
         if not self._check_required_files(app, RunMode.WEIBO_PLAYER):
             return False
 
-        # 获取基础数据
+        # 获取基础数据 - 获取原始Game对象
         game = app.get_game_data()
         if not game:
             print("× 获取比赛信息失败")
             return False
 
-        # 获取球员数据
+        # 获取球员ID
         player_id = app.get_player_id(app.config.player)
         if not player_id:
             print(f"× 未找到球员: {app.config.player}")
             return False
 
-        # 获取结构化数据
-        player_data = app.get_player_data(game, player_id)
-        if not player_data or "error" in player_data:
-            error_msg = player_data.get("error", "未知错误") if player_data else "获取数据失败"
-            print(f"× 获取球员AI友好数据失败: {error_msg}")
-            return False
-
-        # 发布球员集锦视频
+        # 发布球员集锦视频 - 传递原始Game对象和player_id
         if "player_video" in app.video_paths:
             result = app.weibo_service.post_content(
                 content_type="player_video",
                 media_path=app.video_paths["player_video"],
-                data=player_data,
+                data=game,  # 传递原始Game对象
+                player_id=player_id,  # 传递player_id
                 player_name=app.config.player
             )
 
@@ -895,31 +922,25 @@ class WeiboChartCommand(BaseWeiboCommand):
         if not self._check_required_files(app, RunMode.WEIBO_CHART):
             return False
 
-        # 获取基础数据
+        # 获取基础数据 - 获取原始Game对象
         game = app.get_game_data()
         if not game:
             print("× 获取比赛信息失败")
             return False
 
-        # 获取球员数据
+        # 获取球员ID
         player_id = app.get_player_id(app.config.player)
         if not player_id:
             print(f"× 未找到球员: {app.config.player}")
             return False
 
-        # 获取结构化数据
-        player_data = app.get_shot_chart_data(game, player_id, is_team=False)
-        if not player_data or "error" in player_data:
-            error_msg = player_data.get("error", "未知错误") if player_data else "获取数据失败"
-            print(f"× 获取球员投篮图数据失败: {error_msg}")
-            return False
-
-        # 发布球员投篮图
+        # 发布球员投篮图 - 传递原始Game对象和player_id
         if "player_chart" in app.chart_paths:
             result = app.weibo_service.post_content(
                 content_type="player_chart",
                 media_path=app.chart_paths["player_chart"],
-                data=player_data,
+                data=game,  # 传递原始Game对象
+                player_id=player_id,
                 player_name=app.config.player
             )
 
@@ -945,31 +966,25 @@ class WeiboTeamChartCommand(BaseWeiboCommand):
         if not self._check_required_files(app, RunMode.WEIBO_TEAM_CHART):
             return False
 
-        # 获取基础数据
+        # 获取基础数据 - 获取原始Game对象
         game = app.get_game_data()
         if not game:
             print("× 获取比赛信息失败")
             return False
 
-        # 获取球队数据
+        # 获取球队ID
         team_id = app.get_team_id(app.config.team)
         if not team_id:
             print(f"× 未找到球队ID: {app.config.team}")
             return False
 
-        # 获取结构化数据
-        team_data = app.get_shot_chart_data(game, team_id, is_team=True)
-        if not team_data or "error" in team_data:
-            error_msg = team_data.get("error", "未知错误") if team_data else "获取数据失败"
-            print(f"× 获取球队投篮图数据失败: {error_msg}")
-            return False
-
-        # 发布球队投篮图
+        # 发布球队投篮图 - 传递原始Game对象和team_id
         if "team_chart" in app.chart_paths:
             result = app.weibo_service.post_content(
                 content_type="team_chart",
                 media_path=app.chart_paths["team_chart"],
-                data=team_data,
+                data=game,  # 传递原始Game对象
+                team_id=team_id,
                 team_name=app.config.team
             )
 
@@ -995,13 +1010,13 @@ class WeiboRoundCommand(BaseWeiboCommand):
         if not self._check_required_files(app, RunMode.WEIBO_ROUND):
             return False
 
-        # 获取基础数据
+        # 获取基础数据 - 获取原始Game对象
         game = app.get_game_data()
         if not game:
             print("× 获取比赛信息失败")
             return False
 
-        # 获取球员数据
+        # 获取球员ID
         player_id = app.get_player_id(app.config.player)
         if not player_id:
             print(f"× 未找到球员: {app.config.player}")
@@ -1010,20 +1025,15 @@ class WeiboRoundCommand(BaseWeiboCommand):
         # 提取回合ID列表
         round_ids = [int(event_id) for event_id in app.round_gifs.keys() if event_id.isdigit()]
 
-        # 获取结构化数据
-        player_data = app.get_round_analysis_data(game, player_id, round_ids)
-        if not player_data or "error" in player_data:
-            error_msg = player_data.get("error", "未知错误") if player_data else "获取数据失败"
-            print(f"× 获取球员回合分析数据失败: {error_msg}")
-            return False
-
-        # 发布球员回合解说和GIF
+        # 发布球员回合解说和GIF - 传递原始Game对象、player_id和round_ids
         result = app.weibo_service.post_content(
             content_type="round_analysis",
             media_path=app.round_gifs,
-            data=player_data,
+            data=game,  # 传递原始Game对象
+            player_id=player_id,
             player_name=app.config.player,
-            nba_service=app.nba_service
+            nba_service=app.nba_service,
+            round_ids=round_ids
         )
 
         if result and result.get("success"):
@@ -1041,38 +1051,31 @@ class WeiboTeamRatingCommand(BaseWeiboCommand):
     def execute(self, app: 'NBACommandLineApp') -> bool:
         self._log_section("微博发布球队赛后评级")
 
-        # 获取基础数据
+        # 获取基础数据 - 获取原始Game对象
         game = app.get_game_data()
         if not game:
             print("× 获取比赛信息失败")
             return False
 
-        # 获取球队数据
+        # 获取球队ID
         team_id = app.get_team_id(app.config.team)
         if not team_id:
             print(f"× 未能获取{app.config.team}的team_id")
             return False
 
-        # 获取结构化数据
-        team_data = app.get_team_data(game, team_id)
-        if not team_data or "error" in team_data:
-            error_msg = team_data.get("error", "未知错误") if team_data else "获取数据失败"
-            print(f"× 获取球队AI友好数据失败: {error_msg}")
-            return False
-
         # 检查比赛是否已结束
-        status = team_data.get("game_info", {}).get("status", {}).get("state", "").lower()
-        if status not in ["finished", "final", "end", "ended"]:
+        game_status = getattr(game.game_data, "game_status", 0)
+        if game_status != 3:  # 3表示比赛已结束
             print("× 比赛尚未结束，无法生成赛后评级")
             return False
 
-        # 发布球队赛后评级
+        # 发布球队赛后评级 - 传递原始Game对象和team_id
         result = app.weibo_service.post_content(
             content_type=ContentType.TEAM_RATING.value,
             media_path=None,  # 纯文本发布不需要媒体文件
-            data=team_data,
-            team_name=app.config.team,
-            team_id=team_id
+            data=game,  # 传递原始Game对象
+            team_id=team_id,
+            team_name=app.config.team
         )
 
         if result and result.get("success"):
@@ -1088,84 +1091,95 @@ class BaseSyncCommand(NBACommand):
     pass
 
 
-class SyncStatsFullCommand(BaseSyncCommand):
-    """全量更新统计数据命令"""
+class SyncCommand(BaseSyncCommand):
+    """增量并行同步比赛统计数据命令 (gamedb)"""
 
     @error_handler
     def execute(self, app: 'NBACommandLineApp') -> bool:
-        self._log_section("全量更新比赛统计数据")
-        print("开始同步所有已完成比赛的统计数据，这可能需要较长时间...")
+        self._log_section("增量并行同步比赛统计数据 (gamedb)")
+        print("开始使用多线程并行同步未同步过的比赛统计数据...")
+        print("这将优先处理最新的比赛。")
+        if app.config.force_update:
+            print("注意：已启用 --force-update，将强制重新同步所有找到的比赛，即使它们之前已同步。")
 
-        # 调用同步管理器进行全量统计数据同步
-        result = app.nba_service.sync_all_game_stats(force_update=app.config.force_update)
+        # 获取并行配置
+        max_workers = app.config.max_workers
+        batch_size = app.config.batch_size
+        print(f"最大线程数: {max_workers}, 批次大小: {batch_size}")
 
-        if result.get("status") == "success":
-            total = result.get("details", {}).get("total_games", 0)
-            synced = result.get("details", {}).get("synced_games", 0)
-            skipped = result.get("details", {}).get("skipped_games", 0)
-            failed = result.get("details", {}).get("failed_games", 0)
-            success_rate = result.get("details", {}).get("success_rate", 0)
+        # 调用并行同步方法
+        result = app.nba_service.sync_remaining_data_parallel(
+            force_update=app.config.force_update,
+            max_workers=max_workers,
+            batch_size=batch_size,
+            reverse_order=True # 默认使用倒序处理
+        )
 
-            print(f"\n统计数据同步完成！")
-            print(f"总共处理: {total}场比赛")
-            print(f"成功同步: {synced}场比赛")
-            print(f"已跳过  : {skipped}场比赛")
-            print(f"同步失败: {failed}场比赛")
-            print(f"成功率  : {success_rate}%")
+        # 显示结果摘要
+        if result.get("status") in ["success", "partially_failed", "completed"]: # "completed" is also a success state
+            total_games = result.get("total_games", 0)
+            synced_games = result.get("synced_games", 0)
+            to_sync = result.get("games_to_sync", 0)
+            no_playbyplay = result.get("no_playbyplay_data", 0)
+
+            print(f"\n数据库状态:")
+            print(f"总比赛数 : {total_games}场")
+            print(f"已同步   : {synced_games}场 (含{no_playbyplay}场无PlayByPlay数据)")
+            print(f"本次待同步: {to_sync}场")
+
+            # Boxscore结果
+            boxscore = result.get("details", {}).get("boxscore", {})
+            successful_games = boxscore.get("successful_games", 0)
+            failed_games = boxscore.get("failed_games", 0)
+            skipped_games = boxscore.get("skipped_games", 0)
+
+            print(f"\nBoxscore数据同步结果:")
+            print(f"成功同步: {successful_games}场")
+            print(f"已跳过  : {skipped_games}场 (因已同步且未强制更新)")
+            print(f"同步失败: {failed_games}场")
+
+            # PlayByPlay结果
+            playbyplay = result.get("details", {}).get("playbyplay", {})
+            pp_successful = playbyplay.get("successful_games", 0)
+            pp_failed = playbyplay.get("failed_games", 0)
+            pp_no_data = playbyplay.get("no_data_games", 0)
+            pp_skipped = playbyplay.get("skipped_games", 0)
+
+
+            print(f"\nPlay-by-Play数据同步结果:")
+            print(f"成功同步: {pp_successful}场")
+            print(f"无数据  : {pp_no_data}场")
+            print(f"已跳过  : {pp_skipped}场")
+            print(f"同步失败: {pp_failed}场")
 
             duration = result.get("duration", 0)
-            print(f"总耗时  : {duration:.2f}秒")
-            return True
+            print(f"\n总耗时  : {duration:.2f}秒")
+            # 只要没有返回 "failed" 状态，就认为命令执行成功
+            return result.get("status") != "failed"
         else:
             error = result.get("error", "未知错误")
-            print(f"× 统计数据同步失败: {error}")
+            print(f"× 增量并行同步失败: {error}")
             return False
 
 
-class SyncStatsIncrementalCommand(BaseSyncCommand):
-    """增量更新统计数据命令"""
+class NewSeasonCommand(BaseSyncCommand):
+    """新赛季核心数据同步命令 (nba.db)"""
 
     @error_handler
     def execute(self, app: 'NBACommandLineApp') -> bool:
-        self._log_section("增量更新比赛统计数据")
-        print("开始同步未同步过的比赛统计数据...")
-
-        # 调用同步管理器进行增量统计数据同步
-        result = app.nba_service.sync_unsynchronized_game_stats()
-
-        if result.get("status") == "success":
-            total = result.get("details", {}).get("total_games", 0)
-            synced = result.get("details", {}).get("synced_games", 0)
-            failed = result.get("details", {}).get("failed_games", 0)
-            success_rate = result.get("details", {}).get("success_rate", 0)
-
-            print(f"\n增量统计数据同步完成！")
-            print(f"发现未同步: {total}场比赛")
-            print(f"成功同步 : {synced}场比赛")
-            print(f"同步失败 : {failed}场比赛")
-            print(f"成功率   : {success_rate}%")
-
-            duration = result.get("duration", 0)
-            print(f"总耗时   : {duration:.2f}秒")
-            return True
-        else:
-            error = result.get("error", "未知错误")
-            print(f"× 增量统计数据同步失败: {error}")
-            return False
+        self._log_section("新赛季核心数据同步 (nba.db)")
+        print("开始同步新赛季核心数据：强制更新球队、球员，并同步当前赛季赛程...")
+        if not app.config.force_update:
+             print("提示: 未使用 --force-update，将只更新不存在或需要更新的数据。建议新赛季使用 --force-update。")
 
 
-class SyncNBAFullCommand(BaseSyncCommand):
-    """全量更新nbadb基础数据命令"""
+        # 调用NBA服务同步新赛季核心数据
+        # force_update 默认为 True，但允许命令行覆盖
+        result = app.nba_service.db_service.sync_new_season_core_data(
+            force_update=app.config.force_update
+        )
 
-    @error_handler
-    def execute(self, app: 'NBACommandLineApp') -> bool:
-        self._log_section("全量更新NBA基础数据库")
-        print("开始同步球队、球员和所有赛季赛程数据，这可能需要较长时间...")
-
-        # 调用数据库服务进行核心数据同步
-        result = app.nba_service.sync_core_data(force_update=app.config.force_update)
-
-        if result.get("status") == "success":
+        if result.get("status") in ["success", "partially_failed"]:
             # 显示球队同步结果
             teams_result = result.get("details", {}).get("teams", {})
             if teams_result.get("status") == "success":
@@ -1182,177 +1196,20 @@ class SyncNBAFullCommand(BaseSyncCommand):
 
             # 显示赛程同步结果
             schedules_result = result.get("details", {}).get("schedules", {})
-            all_seasons = schedules_result.get("details", {}).get("all_seasons", {})
-            seasons_count = all_seasons.get("count", 0)
+            current_season_detail = schedules_result.get("details", {}).get("current_season", {})
+            schedules_count = current_season_detail.get("count", 0)
 
             if schedules_result.get("status") == "success":
-                print(f"✓ 赛程数据同步成功，共同步{seasons_count}场比赛")
+                print(f"✓ 当前赛季赛程数据同步成功，共处理 {schedules_count} 场比赛")
             else:
-                print(f"× 赛程数据同步失败: {schedules_result.get('error', '未知错误')}")
+                print(f"× 当前赛季赛程数据同步失败: {schedules_result.get('error', '未知错误')}")
 
             duration = result.get("duration", 0)
             print(f"\n总耗时: {duration:.2f}秒")
-            return True
+            return result.get("status") != "failed"
         else:
             error = result.get("error", "未知错误")
-            print(f"× NBA基础数据同步失败: {error}")
-            return False
-
-
-class SyncStatsParallelCommand(BaseSyncCommand):
-    """并行全量更新统计数据命令"""
-
-    @error_handler
-    def execute(self, app: 'NBACommandLineApp') -> bool:
-        self._log_section("并行全量更新比赛统计数据")
-        print("开始使用多线程并行同步所有已完成比赛的统计数据...")
-
-        # 获取并行配置
-        max_workers = app.config.max_workers
-        batch_size = app.config.batch_size
-
-        print(f"最大线程数: {max_workers}, 批次大小: {batch_size}")
-
-        # 调用并行同步方法
-        result = app.nba_service.sync_all_data_parallel(
-            force_update=app.config.force_update,
-            max_workers=max_workers,
-            batch_size=batch_size
-        )
-
-        if result.get("status") in ["success", "partially_failed"]:
-            # 显示核心数据同步结果
-            core_data = result.get("core_data", {})
-            if core_data.get("status") == "success":
-                print("\n✓ 核心数据(球队/球员/赛程)同步成功")
-            else:
-                print(f"\n× 核心数据同步部分失败: {core_data.get('error', '未知错误')}")
-
-            # 显示比赛统计数据同步结果
-            game_stats = result.get("game_stats", {})
-
-            # Boxscore结果
-            boxscore = game_stats.get("details", {}).get("boxscore", {})
-            total_games = boxscore.get("total_games", 0)
-            successful_games = boxscore.get("successful_games", 0)
-            failed_games = boxscore.get("failed_games", 0)
-            skipped_games = boxscore.get("skipped_games", 0)
-
-            print(f"\nBoxscore统计数据同步结果:")
-            print(f"总共处理: {total_games}场比赛")
-            print(f"成功同步: {successful_games}场比赛")
-            print(f"已跳过  : {skipped_games}场比赛")
-            print(f"同步失败: {failed_games}场比赛")
-
-            # PlayByPlay结果
-            playbyplay = game_stats.get("details", {}).get("playbyplay", {})
-            pp_successful = playbyplay.get("successful_games", 0)
-            pp_failed = playbyplay.get("failed_games", 0)
-            pp_no_data = playbyplay.get("no_data_games", 0)
-
-            print(f"\nPlay-by-Play数据同步结果:")
-            print(f"成功同步: {pp_successful}场比赛")
-            print(f"无数据  : {pp_no_data}场比赛")
-            print(f"同步失败: {pp_failed}场比赛")
-
-            duration = game_stats.get("duration", 0)
-            print(f"\n总耗时  : {duration:.2f}秒")
-            return True
-        else:
-            error = result.get("error", "未知错误")
-            print(f"× 并行统计数据同步失败: {error}")
-            return False
-
-
-class SyncRemainingParallelCommand(BaseSyncCommand):
-    """并行增量更新剩余统计数据命令"""
-
-    @error_handler
-    def execute(self, app: 'NBACommandLineApp') -> bool:
-        self._log_section("并行增量更新剩余比赛统计数据")
-        print("开始使用多线程并行同步未同步过的比赛统计数据...")
-
-        # 获取并行配置
-        max_workers = app.config.max_workers
-        batch_size = app.config.batch_size
-
-        print(f"最大线程数: {max_workers}, 批次大小: {batch_size}")
-
-        # 调用并行同步方法
-        result = app.nba_service.sync_remaining_data_parallel(
-            force_update=app.config.force_update,
-            max_workers=max_workers,
-            batch_size=batch_size
-        )
-
-        if result.get("status") in ["success", "partially_failed"]:
-            total_games = result.get("total_games", 0)
-            synced_games = result.get("synced_games", 0)
-            to_sync = result.get("games_to_sync", 0)
-
-            # Boxscore结果
-            boxscore = result.get("details", {}).get("boxscore", {})
-            successful_games = boxscore.get("successful_games", 0)
-            failed_games = boxscore.get("failed_games", 0)
-            skipped_games = boxscore.get("skipped_games", 0)
-
-            print(f"\n增量同步统计:")
-            print(f"总比赛数 : {total_games}场")
-            print(f"已同步   : {synced_games}场")
-            print(f"待同步   : {to_sync}场")
-
-            print(f"\nBoxscore数据同步结果:")
-            print(f"成功同步: {successful_games}场")
-            print(f"已跳过  : {skipped_games}场")
-            print(f"同步失败: {failed_games}场")
-
-            # PlayByPlay结果
-            playbyplay = result.get("details", {}).get("playbyplay", {})
-            pp_successful = playbyplay.get("successful_games", 0)
-            pp_failed = playbyplay.get("failed_games", 0)
-            pp_no_data = playbyplay.get("no_data_games", 0)
-
-            print(f"\nPlay-by-Play数据同步结果:")
-            print(f"成功同步: {pp_successful}场比赛")
-            print(f"无数据  : {pp_no_data}场比赛")
-            print(f"同步失败: {pp_failed}场比赛")
-
-            duration = result.get("duration", 0)
-            print(f"\n总耗时  : {duration:.2f}秒")
-            return True
-        else:
-            error = result.get("error", "未知错误")
-            print(f"× 并行增量同步失败: {error}")
-            return False
-
-
-class NewSeasonCommand(BaseSyncCommand):
-    """新赛季数据同步命令"""
-
-    @error_handler
-    def execute(self, app: 'NBACommandLineApp') -> bool:
-        new_season = app.config.new_season
-        if not new_season:
-            print("× 未指定新赛季标识，请使用 --new-season 参数指定，例如 '2025-26'")
-            return False
-
-        self._log_section(f"新赛季({new_season})数据同步")
-        print(f"开始同步{new_season}赛季数据...")
-
-        # 调用NBA服务同步新赛季
-        result = app.nba_service.sync_new_season(season=new_season, force_update=app.config.force_update)
-
-        if result.get("status") == "success":
-            schedules_count = result.get("details", {}).get("schedules", {}).get("count", 0)
-            print(f"✓ 新赛季({new_season})数据同步成功！")
-            print(f"成功同步 {schedules_count} 场比赛")
-
-            duration = result.get("duration", 0)
-            print(f"总耗时: {duration:.2f}秒")
-            return True
-        else:
-            error = result.get("error", "未知错误")
-            print(f"× 新赛季({new_season})数据同步失败: {error}")
+            print(f"× 新赛季核心数据同步失败: {error}")
             return False
 
 
@@ -1395,15 +1252,12 @@ class NBACommandFactory:
             RunMode.WEIBO_ROUND: WeiboRoundCommand(),
             RunMode.WEIBO_TEAM_RATING: WeiboTeamRatingCommand(),
             RunMode.AI: AICommand(),
-            RunMode.SYNC_STATS_FULL: SyncStatsFullCommand(),
-            RunMode.SYNC_STATS_INCREMENTAL: SyncStatsIncrementalCommand(),
-            RunMode.SYNC_NBA_FULL: SyncNBAFullCommand(),
+            # 精简后的同步命令
+            RunMode.SYNC: SyncCommand(),
             RunMode.SYNC_NEW_SEASON: NewSeasonCommand(),
-            RunMode.SYNC_STATS_PARALLEL: SyncStatsParallelCommand(),
-            RunMode.SYNC_REMAINING_PARALLEL: SyncRemainingParallelCommand(),
         }
 
-        # ALL模式组合所有命令
+        # ALL模式组合所有非同步命令
         if mode == RunMode.ALL:
             commands = [
                 InfoCommand(),
@@ -1450,9 +1304,7 @@ class ServiceManager:
         )
 
         # 视频配置
-        video_config = VideoConfig(
-            output_dir=NBAConfig.PATHS.VIDEO_DIR
-        )
+        video_config = VideoConfig() # 使用默认配置
 
         # 视频处理配置
         video_process_config = VideoProcessConfig()
@@ -1463,7 +1315,7 @@ class ServiceManager:
             video_config=video_config,
             video_process_config=video_process_config,
             env="default",
-            create_tables=True
+            create_tables=True # 确保表结构存在
         )
 
         self._services['nba_service'] = service
@@ -1661,13 +1513,13 @@ class NBACommandLineApp:
         self.service_manager = ServiceManager(config, self.logger)
 
         # 初始化服务与数据
-        self.nba_service = None
-        self.weibo_service = None
-        self.ai_processor = None
-        self.content_generator = None
-        self.video_paths = {}
-        self.chart_paths = {}
-        self.round_gifs = {}
+        self.nba_service: Optional[NBAService] = None
+        self.weibo_service: Optional[WeiboPostService] = None
+        self.ai_processor: Optional[AIProcessor] = None
+        self.content_generator: Optional[WeiboContentGenerator] = None
+        self.video_paths: Dict[str, Path] = {}
+        self.chart_paths: Dict[str, Path] = {}
+        self.round_gifs: Dict[str, Path] = {}
 
     def _load_environment(self) -> None:
         """加载环境变量"""
@@ -1679,7 +1531,16 @@ class NBACommandLineApp:
 
         # 设置 Python 默认编码为 UTF-8
         import locale
-        locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
+        try:
+            # 尝试设置更通用的UTF-8 locale
+            locale.setlocale(locale.LC_ALL, 'C.UTF-8')
+        except locale.Error:
+            try:
+                # 回退到特定平台的UTF-8 locale
+                locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
+            except locale.Error:
+                self.logger.warning("无法设置UTF-8 locale，可能导致编码问题")
+
 
         # 按优先级加载环境变量
         env_local = self.config.root_dir / '.env.local'
@@ -1687,16 +1548,16 @@ class NBACommandLineApp:
         env_config = self.config.config_file
 
         if env_config and env_config.exists():
-            load_dotenv(env_config)
+            load_dotenv(env_config, override=True) # 允许配置文件覆盖
             self.logger.info(f"从 {env_config} 加载环境变量")
         elif env_local.exists():
-            load_dotenv(env_local)
+            load_dotenv(env_local, override=True) # 允许本地文件覆盖
             self.logger.info("从 .env.local 加载环境变量")
         elif env_default.exists():
             load_dotenv(env_default)
             self.logger.info("从 .env 加载环境变量")
         else:
-            self.logger.warning("未找到环境变量文件，使用默认配置")
+            self.logger.warning("未找到环境变量文件，使用默认配置或系统环境变量")
 
     def init_services(self) -> None:
         """初始化所有服务"""
@@ -1704,6 +1565,10 @@ class NBACommandLineApp:
             # 初始化NBA服务
             self.nba_service = self.service_manager.init_nba_service()
             self._verify_nba_service_status()
+
+            # 检查核心数据库状态 (仅在非同步模式下提示)
+            if self.config.mode not in RunMode.get_sync_modes():
+                self._check_database_status()
 
             # 初始化AI处理器
             self.ai_processor = self.service_manager.init_ai_processor()
@@ -1764,12 +1629,44 @@ class NBACommandLineApp:
                 error_msg = service_health.get('error', '未知错误')
                 self.logger.warning(f"{display_name}不可用: {error_msg}")
 
+    def _check_database_status(self) -> None:
+        """检查数据库状态，提供用户提示"""
+        try:
+            # 检查核心数据库是否为空
+            if self.nba_service.db_service._is_nba_database_empty():
+                print("\n提示: 检测到核心数据库(nbadb)为空。")
+                print("      首次运行会自动进行初始化同步。")
+                print("      如果初始化失败，请稍后手动运行 'sync-new-season' 模式。")
+
+
+            # 检查统计数据库状态
+            stats_progress = self.nba_service.db_service.get_sync_progress()
+            if stats_progress and "error" not in stats_progress:
+                total = stats_progress.get("total_games", 0)
+                synced = stats_progress.get("synced_games", 0)
+                remaining = stats_progress.get("remaining_games", 0)
+                progress = stats_progress.get("progress_percentage", 0)
+
+                if remaining > 0:
+                    print(f"\n提示: 统计数据库(gamedb)同步进度: {progress:.1f}% ({synced}/{total})")
+                    print(f"      剩余 {remaining} 场比赛未同步统计数据。")
+                    print("      建议运行 'sync' 模式更新数据库：")
+                    print("      python main.py --mode sync\n")
+                else:
+                     print("\n✓ 统计数据库(gamedb)已同步所有已完成比赛。")
+
+        except Exception as e:
+            self.logger.warning(f"检查数据库状态时出错: {e}")
+            # 继续初始化，不中断流程
+
     def get_game_data(self) -> Any:
         """获取比赛数据"""
         try:
             game = self.nba_service.get_game(self.config.team, date=self.config.date)
             if not game:
-                self.logger.error(f"获取比赛数据失败: 未找到{self.config.team}的比赛数据")
+                self.logger.error(f"获取比赛数据失败: 未找到{self.config.team}的比赛数据 (日期: {self.config.date})")
+                print(f"× 获取比赛数据失败: 未找到球队 '{self.config.team}' 在日期 '{self.config.date}' 的比赛数据。")
+                print("  请检查球队名称和日期是否正确，或运行 'sync' 模式更新赛程。")
             return game
         except Exception as e:
             self.logger.error(f"获取比赛数据失败: {e}", exc_info=True)
@@ -1779,11 +1676,11 @@ class NBACommandLineApp:
         """获取比赛AI友好数据"""
         try:
             if not game:
-                return None
+                return {} # 返回空字典而不是None
 
             if not self.nba_service.adapter_service:
                 self.logger.error("数据适配器服务不可用")
-                return None
+                return {"error": "数据适配器服务不可用"}
 
             return self.nba_service.adapter_service.prepare_ai_data(game)
         except Exception as e:
@@ -1793,7 +1690,10 @@ class NBACommandLineApp:
     def get_team_id(self, team_name: str) -> Optional[int]:
         """获取球队ID"""
         try:
-            return self.nba_service.get_team_id_by_name(team_name)
+            team_id = self.nba_service.get_team_id_by_name(team_name)
+            if not team_id:
+                 print(f"× 未在数据库中找到球队 '{team_name}'。请确保球队名称正确或运行 'sync-new-season' 更新核心数据。")
+            return team_id
         except Exception as e:
             self.logger.error(f"获取球队ID失败: {e}", exc_info=True)
             raise DataFetchError(f"获取球队ID失败: {e}")
@@ -1801,7 +1701,13 @@ class NBACommandLineApp:
     def get_player_id(self, player_name: str) -> Optional[int]:
         """获取球员ID"""
         try:
-            return self.nba_service.get_player_id_by_name(player_name)
+            player_id = self.nba_service.get_player_id_by_name(player_name)
+            if not player_id:
+                 print(f"× 未在数据库中找到球员 '{player_name}'。请确保球员名称正确或运行 'sync-new-season' 更新核心数据。")
+            elif isinstance(player_id, list):
+                 print(f"× 找到多个名为 '{player_name}' 的球员，请提供更精确的名称。")
+                 return None # 不明确时返回None
+            return player_id
         except Exception as e:
             self.logger.error(f"获取球员ID失败: {e}", exc_info=True)
             raise DataFetchError(f"获取球员ID失败: {e}")
@@ -1814,7 +1720,7 @@ class NBACommandLineApp:
 
             if not self.nba_service.adapter_service:
                 self.logger.error("数据适配器服务不可用")
-                return {}
+                return {"error": "数据适配器服务不可用"}
 
             return self.nba_service.adapter_service.adapt_for_team_content(game, team_id)
         except Exception as e:
@@ -1829,7 +1735,7 @@ class NBACommandLineApp:
 
             if not self.nba_service.adapter_service:
                 self.logger.error("数据适配器服务不可用")
-                return {}
+                return {"error": "数据适配器服务不可用"}
 
             return self.nba_service.adapter_service.adapt_for_player_content(game, player_id)
         except Exception as e:
@@ -1844,7 +1750,7 @@ class NBACommandLineApp:
 
             if not self.nba_service.adapter_service:
                 self.logger.error("数据适配器服务不可用")
-                return {}
+                return {"error": "数据适配器服务不可用"}
 
             return self.nba_service.adapter_service.adapt_for_shot_chart(game, entity_id, is_team)
         except Exception as e:
@@ -1859,7 +1765,7 @@ class NBACommandLineApp:
 
             if not self.nba_service.adapter_service:
                 self.logger.error("数据适配器服务不可用")
-                return {}
+                return {"error": "数据适配器服务不可用"}
 
             return self.nba_service.adapter_service.adapt_for_round_analysis(game, player_id, round_ids)
         except Exception as e:
@@ -1880,26 +1786,26 @@ class NBACommandLineApp:
             # 获取基础信息
             team_id = self.get_team_id(self.config.team)
             if not team_id:
-                print(f"× 未能获取球队ID: {self.config.team}")
+                # get_team_id 内部已打印错误信息
                 return False
 
             player_id = None
             if self.config.player and mode in [RunMode.WEIBO_PLAYER, RunMode.WEIBO_CHART, RunMode.WEIBO_ROUND]:
                 player_id = self.get_player_id(self.config.player)
                 if not player_id:
-                    print(f"× 未能获取球员ID: {self.config.player}")
+                    # get_player_id 内部已打印错误信息
                     return False
 
             # 获取比赛数据
             game = self.get_game_data()
             if not game:
-                print("× 未找到比赛数据")
+                # get_game_data 内部已打印错误信息
                 return False
 
             # 获取比赛ID
             game_data = self.get_game_ai_data(game)
-            if not game_data:
-                print("× 未能获取比赛结构化数据")
+            if not game_data or "error" in game_data:
+                print(f"× 未能获取比赛结构化数据: {game_data.get('error', '未知错误')}")
                 return False
 
             game_id = game_data.get("game_info", {}).get("basic", {}).get("game_id")
@@ -1944,10 +1850,12 @@ class NBACommandLineApp:
             # 检查球员投篮图
             if mode in [RunMode.WEIBO, RunMode.WEIBO_CHART] and "player_chart" not in self.chart_paths and player_id:
                 pictures_dir = base_dir / "pictures"
-                player_chart = list(pictures_dir.glob(f"player_impact_{game_id}_{player_id}.png"))
-                if player_chart:
-                    self.chart_paths["player_chart"] = player_chart[0]
-                    print(f"✓ 找到球员投篮图: {player_chart[0]}")
+                # 尝试两种可能的命名格式
+                player_chart_files = list(pictures_dir.glob(f"player_impact_{game_id}_{player_id}.png")) + \
+                                     list(pictures_dir.glob(f"player_shots_{game_id}_{player_id}.png"))
+                if player_chart_files:
+                    self.chart_paths["player_chart"] = player_chart_files[0] # 取找到的第一个
+                    print(f"✓ 找到球员投篮图: {player_chart_files[0]}")
                 else:
                     print("× 未找到球员投篮图，请先运行 --mode chart 生成图表")
                     result = False
@@ -1967,11 +1875,11 @@ class NBACommandLineApp:
             if mode in [RunMode.WEIBO, RunMode.WEIBO_ROUND] and not self.round_gifs and player_id:
                 gif_dir = base_dir / "gifs" / f"player_{player_id}_{game_id}_rounds"
                 if gif_dir.exists():
-                    gifs = list(gif_dir.glob(f"round_*_{player_id}.gif"))
+                    gifs = list(gif_dir.glob(f"event_*_game_{game_id}_player{player_id}_*.gif"))
                     if gifs:
                         # 将找到的GIF添加到round_gifs字典中
                         for gif in gifs:
-                            match = re.search(r'round_(\d+)_', gif.name)
+                            match = re.search(r'event_(\d+)_game_', gif.name)
                             if match:
                                 event_id = match.group(1)
                                 self.round_gifs[event_id] = gif
@@ -1987,8 +1895,8 @@ class NBACommandLineApp:
 
         except Exception as e:
             self.logger.error(f"检查微博发布所需文件时出错: {e}", exc_info=True)
-        print(f"× 检查微博发布所需文件时出错: {e}")
-        return False
+            print(f"× 检查微博发布所需文件时出错: {e}")
+            return False
 
 
     def run(self) -> int:
@@ -2013,6 +1921,11 @@ class NBACommandLineApp:
 
             self.logger.info("=== 应用程序运行完成 ===")
 
+        except ServiceInitError as e:
+             self.logger.critical(f"服务初始化失败，无法运行: {e}")
+             print(f"\n错误: 服务初始化失败，无法运行: {e}")
+             print("请检查配置和依赖项。")
+             result_code = 1 # 服务初始化失败，返回错误码
         except Exception as e:
             self.logger.error(f"应用程序运行失败: {e}", exc_info=True)
             print(f"\n应用程序运行失败: {e}\n请查看日志获取详细信息")
@@ -2037,19 +1950,18 @@ def parse_arguments() -> argparse.Namespace:
 
     parser.add_argument("--team", default="Lakers", help="指定默认球队，默认为 Lakers")
     parser.add_argument("--player", default="LeBron James", help="指定默认球员，默认为 LeBron James")
-    parser.add_argument("--date", default="last", help="指定比赛日期，默认为 last 表示最近一场比赛")
+    parser.add_argument("--date", default="last", help="指定比赛日期 (YYYY-MM-DD 或 'last')，默认为 last")
     parser.add_argument("--mode", choices=[m.value for m in RunMode], default=RunMode.ALL.value,
-                        help="指定运行模式，默认为 all")
-    parser.add_argument("--no-weibo", action="store_true", help="不发布到微博")
+                        help=f"指定运行模式 (默认为 all)。可用模式: {', '.join([m.value for m in RunMode])}")
+    parser.add_argument("--no-weibo", action="store_true", help="禁用微博发布功能 (即使在 weibo* 或 all 模式下)")
     parser.add_argument("--debug", action="store_true", help="启用调试模式，输出详细日志")
-    parser.add_argument("--config", help="指定配置文件")
+    parser.add_argument("--config", help="指定 .env 配置文件路径")
     # 同步相关参数
-    parser.add_argument("--new-season", default="", help="指定新赛季标识，例如 '2025-26'，用于更新数据库新赛季数据")
-    parser.add_argument("--force-update", action="store_true", help="强制更新，即使数据已存在")
+    parser.add_argument("--force-update", action="store_true", help="强制更新数据 (主要用于 sync 和 sync-new-season 模式)")
 
-    # 新增并行同步参数
-    parser.add_argument("--max-workers", type=int, default=8, help="并行同步时的最大线程数，默认为8")
-    parser.add_argument("--batch-size", type=int, default=50, help="并行同步时的批处理大小，默认为50")
+    # 并行同步参数
+    parser.add_argument("--max-workers", type=int, default=8, help="并行同步时的最大线程数 (默认为 8)")
+    parser.add_argument("--batch-size", type=int, default=50, help="并行同步时的批处理大小 (默认为 50)")
 
     return parser.parse_args()
 

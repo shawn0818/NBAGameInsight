@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Optional, Any, Union, List, Callable
@@ -115,6 +116,89 @@ class CacheManager:
             temp_path.replace(cache_path)
         except Exception as e:
             self.logger.error(f"写入缓存失败: {e}")
+            raise
+        finally:
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except Exception as e:
+                    self.logger.error(f"删除临时文件失败: {e}")
+
+    def get_binary(self, prefix: str, identifier: str, cache_key: Any = None) -> Optional[bytes]:
+        """获取二进制缓存数据
+
+        Args:
+            prefix: 缓存前缀
+            identifier: 缓存标识符
+            cache_key: 用于动态确定缓存时长的key
+        """
+        if not prefix or not identifier:
+            raise ValueError("prefix and identifier cannot be empty")
+
+        cache_path = self.config.get_cache_path(prefix, identifier)
+        if not cache_path.exists():
+            return None
+
+        try:
+            # 检查缓存是否过期
+            if cache_key is not None:
+                # 读取元数据文件来检查时间戳
+                meta_path = cache_path.with_suffix('.meta')
+                if meta_path.exists():
+                    with meta_path.open('r', encoding='utf-8') as f:
+                        metadata = json.load(f)
+                        timestamp = datetime.fromtimestamp(metadata.get('timestamp', 0))
+                        duration = self.config.get_duration(cache_key)
+                        if datetime.now() - timestamp >= duration:
+                            return None
+
+            # 读取二进制数据
+            with cache_path.open('rb') as f:
+                return f.read()
+
+        except Exception as e:
+            self.logger.error(f"读取二进制缓存失败: {e}")
+
+        return None
+
+    def set_binary(self, prefix: str, identifier: str, data: bytes, metadata: Optional[Dict] = None) -> None:
+        """设置二进制缓存数据
+
+        Args:
+            prefix: 缓存前缀
+            identifier: 缓存标识符
+            data: 要缓存的二进制数据
+            metadata: 额外的元数据
+        """
+        if not prefix or not identifier:
+            raise ValueError("prefix and identifier cannot be empty")
+        if not isinstance(data, bytes):
+            raise TypeError("data must be bytes")
+
+        cache_path = self.config.get_cache_path(prefix, identifier)
+
+        # 使用临时文件写入二进制数据
+        temp_path = cache_path.with_suffix('.tmp')
+        try:
+            with open(temp_path, 'wb') as f:
+                f.write(data)
+
+            # 如果有元数据，写入单独的元数据文件
+            if metadata is not None:
+                meta_data = {
+                    'timestamp': datetime.now().timestamp(),
+                    'last_updated': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'metadata': metadata
+                }
+                meta_path = temp_path.with_suffix('.meta')
+                with open(meta_path, 'w', encoding='utf-8') as f:
+                    json.dump(meta_data, f, indent=2, ensure_ascii=False)   # type: ignore
+                meta_path.replace(cache_path.with_suffix('.meta'))
+
+            # 原子替换主数据文件
+            temp_path.replace(cache_path)
+        except Exception as e:
+            self.logger.error(f"写入二进制缓存失败: {e}")
             raise
         finally:
             if temp_path.exists():
@@ -388,23 +472,19 @@ class BaseNBAFetcher:
                               batch_size: int = 20,
                               save_interval: int = 50) -> Dict[str, Any]:
         """
-        批量获取数据的内部实现，支持断点续传
-
-        Args:
-            ids: 要获取的ID列表
-            fetch_func: 获取单个ID数据的函数
-            task_name: 任务名称，用于区分不同任务的进度
-            batch_size: 批处理大小
-            save_interval: 保存进度的间隔
-
-        Returns:
-            Dict: 获取结果，key为ID，value为获取的数据
+        批量获取数据的内部实现，支持断点续传和整体速率控制
         """
         # 创建进度跟踪器
         tracker = BatchRequestTracker(
             task_name=task_name,
             cache_root=self.config.cache_config.root_path
         )
+
+        # 添加速率控制变量
+        window_start_time = time.time()
+        window_duration = 60  # 60秒窗口期
+        max_requests_per_window = 60  # 每分钟最大请求数
+        window_request_count = 0
 
         # 创建ID到类型的映射，以便在处理后恢复原始类型
         id_type_map = {str(id_): type(id_) for id_ in ids}
@@ -424,6 +504,23 @@ class BaseNBAFetcher:
 
             for item_id_str in batch_ids_str:
                 try:
+                    # 窗口速率控制
+                    current_time = time.time()
+                    if current_time - window_start_time > window_duration:
+                        # 重置窗口
+                        window_start_time = current_time
+                        window_request_count = 0
+                        self.logger.info("重置请求速率窗口")
+
+                    if window_request_count >= max_requests_per_window:
+                        # 达到窗口最大请求数，等待到下一个窗口
+                        wait_time = window_duration - (current_time - window_start_time) + 1  # 额外1秒安全边际
+                        self.logger.info(f"达到窗口请求上限，等待{wait_time:.2f}秒")
+                        if wait_time > 0:
+                            time.sleep(wait_time)
+                        window_start_time = time.time()
+                        window_request_count = 0
+
                     # 尝试将字符串ID转换回原始类型
                     original_type = id_type_map.get(item_id_str, int)  # 默认假设为int类型
                     try:
@@ -439,22 +536,41 @@ class BaseNBAFetcher:
                     # 调用提供的获取函数，使用转换后的ID
                     data = fetch_func(item_id)
 
+                    # 累加窗口请求计数
+                    window_request_count += 1
+
                     if data:
                         # 保存结果使用字符串ID作为键（与tracker兼容）
                         results[item_id_str] = data
                         tracker.mark_completed(item_id_str)
                     else:
                         tracker.mark_failed(item_id_str, "返回数据为空")
+
+                    processed += 1
+                    # 定期保存进度
+                    if processed % save_interval == 0:
+                        tracker.save_progress()
+                        stats = tracker.get_stats()
+                        self.logger.info(f"进度: {stats['completion_percentage']}% ({stats['progress']})")
+
+                        # 添加当前窗口请求速率日志
+                        elapsed_window = time.time() - window_start_time
+                        if elapsed_window > 0:
+                            rate = window_request_count / elapsed_window
+                            self.logger.info(
+                                f"当前请求速率: {rate:.2f}请求/秒 ({window_request_count}/{elapsed_window:.1f}秒)")
+
                 except Exception as e:
                     self.logger.error(f"处理ID {item_id_str} 时出错: {str(e)}")
                     tracker.mark_failed(item_id_str, str(e))
 
-                processed += 1
-                # 定期保存进度
-                if processed % save_interval == 0:
-                    tracker.save_progress()
-                    stats = tracker.get_stats()
-                    self.logger.info(f"进度: {stats['completion_percentage']}% ({stats['progress']})")
+                    # 即使发生错误也计入请求计数
+                    window_request_count += 1
+
+                    processed += 1
+                    # 错误发生后也保存进度
+                    if processed % save_interval == 0:
+                        tracker.save_progress()
 
             # 每批次结束后保存进度
             tracker.save_progress()

@@ -1,4 +1,4 @@
-# repositories/schedule_repository.py
+# database/repositories/schedule_repository.py
 from datetime import datetime, date, timezone
 from typing import Dict, List, Optional, Union
 from sqlalchemy import or_,  desc
@@ -16,7 +16,18 @@ class ScheduleRepository:
     def __init__(self):
         """初始化赛程数据访问对象"""
         self.db_session = DBSession.get_instance()
-        self.logger = AppLogger.get_logger(__name__, app_name='nba')
+        self.logger = AppLogger.get_logger(__name__, app_name='sqlite')
+
+    @staticmethod
+    def _to_dict(model_instance):
+        """将模型实例转换为字典"""
+        if model_instance is None:
+            return None
+
+        result = {}
+        for column in model_instance.__table__.columns:
+            result[column.name] = getattr(model_instance, column.name)
+        return result
 
     def get_game_id(self, team_id: int, date_query: Union[str, datetime.date, datetime, None] = 'today') -> Optional[str]:
         """
@@ -85,27 +96,7 @@ class ScheduleRepository:
             self.logger.error(f"获取比赛ID失败: {e}")
             return None
 
-    def get_schedule_by_id(self, game_id: str) -> Optional[Dict]:
-        """
-        通过ID获取赛程信息
 
-        Args:
-            game_id: 比赛ID
-
-        Returns:
-            Optional[Dict]: 赛程信息字典，未找到时返回None
-        """
-        try:
-            with self.db_session.session_scope('nba') as session:
-                game = session.query(Game).filter(Game.game_id == game_id).first()
-
-                if game:
-                    return self._to_dict(game)
-                return None
-
-        except Exception as e:
-            self.logger.error(f"获取赛程(ID:{game_id})数据失败: {e}")
-            return None
 
     def get_schedules_by_date(self, target_date: Union[str, date, datetime]) -> List[Dict]:
         """
@@ -255,12 +246,3 @@ class ScheduleRepository:
             self.logger.error(f"获取赛季({season})赛程数量失败: {e}")
             return 0
 
-    def _to_dict(self, model_instance):
-        """将模型实例转换为字典"""
-        if model_instance is None:
-            return None
-
-        result = {}
-        for column in model_instance.__table__.columns:
-            result[column.name] = getattr(model_instance, column.name)
-        return result

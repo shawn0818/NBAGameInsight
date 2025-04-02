@@ -1,5 +1,5 @@
-# base_models.py
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Text, BLOB
+# database/models/base_models.py
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, BLOB
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -146,10 +146,11 @@ class Game(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     # 关系
-    home_team = relationship("Team", foreign_keys=[home_team_id], back_populates="home_games")
-    away_team = relationship("Team", foreign_keys=[away_team_id], back_populates="away_games")
-    points_leader = relationship("Player", foreign_keys=[points_leader_id])
-    points_leader_team = relationship("Team", foreign_keys=[points_leader_team_id])
+    home_team = relationship("Team", foreign_keys="Game.home_team_id", back_populates="home_games")
+    away_team = relationship("Team", foreign_keys="Game.away_team_id", back_populates="away_games")
+    points_leader = relationship("Player", foreign_keys="Game.points_leader_id")
+    points_leader_team = relationship("Team", foreign_keys="Game.points_leader_team_id")
+
 
     def __repr__(self):
         return f"<Game {self.game_id} {self.home_team_name} vs {self.away_team_name}>"
