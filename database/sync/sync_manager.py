@@ -1,10 +1,11 @@
+# database/sync/sync_manager.py
 from typing import Dict, Any
 from datetime import datetime
 from sqlalchemy import and_, exists
 import time
 
 from utils.logger_handler import AppLogger
-from utils.batch_process_controller import BatchProcessController
+from utils.http_handler import HTTPRequestManager
 from database.db_session import DBSession
 
 # 导入所有同步器
@@ -29,6 +30,9 @@ class SyncManager:
 
         # 使用较小的全局并发数
         self.max_global_concurrency = max_global_concurrency
+
+        # 初始化专用于段控制的http_manager
+        self.segment_http_manager = HTTPRequestManager(headers={"User-Agent": "SegmentController"})
 
         # 初始化所有同步器
         self.schedule_sync = ScheduleSync()
@@ -623,8 +627,8 @@ class SyncManager:
         total_segments = max(len(boxscore_segments), len(playbyplay_segments))
         result["segment_stats"]["total"] = total_segments
 
-        # 创建段间控制器
-        segment_controller = BatchProcessController(batch_interval=900, adaptive=True)  # 15分钟基础间隔
+        #设置段控制器的批次间隔
+        self.segment_http_manager.set_batch_interval(900, adaptive=True)  # 15分钟基础间隔
 
         # 逐段处理
         for segment_idx in range(total_segments):
@@ -632,7 +636,7 @@ class SyncManager:
 
             # 如果不是第一个段，使用控制器等待
             if segment_idx > 0:
-                segment_controller.wait_for_next_batch()
+                self.segment_http_manager.wait_for_next_batch()
 
             # 第一段使用提供的参数，后续段使用更保守的参数
             current_batch_size = batch_size if segment_idx == 0 else min(20, batch_size)

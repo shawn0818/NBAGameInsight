@@ -1,4 +1,4 @@
-# sync/playbyplay_sync.py
+# database/sync/playbyplay_sync.py
 import random
 from datetime import datetime
 from typing import Dict, List, Any, Tuple, Set, Optional
@@ -9,7 +9,6 @@ import time
 from requests.exceptions import ReadTimeout, ProxyError
 from nba.fetcher.game_fetcher import GameFetcher
 from utils.logger_handler import AppLogger
-from utils.batch_process_controller import BatchProcessController
 from database.models.stats_models import Event, GameStatsSyncHistory
 from database.db_session import DBSession
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -26,6 +25,9 @@ class PlayByPlaySync:
         self.playbyplay_repository = playbyplay_repository
         self.game_fetcher = game_fetcher or GameFetcher()
         self.logger = AppLogger.get_logger(__name__, app_name='sqlite')
+
+        # 获取game_fetcher中的http_manager引用或创建新的
+        self.http_manager = self.game_fetcher.http_manager
 
         # 添加全局并发控制 - 默认降低并发
         self.global_semaphore = threading.Semaphore(max_global_concurrency)
@@ -201,6 +203,7 @@ class PlayByPlaySync:
             result["duration"] = (datetime.now() - start_time).total_seconds()
             return result
 
+
         # 将比赛分批处理，保持原始排序顺序
         batches = [game_ids[i:i + batch_size] for i in range(0, len(game_ids), batch_size)]
         self.logger.info(f"将{len(game_ids)}场比赛分为{len(batches)}批进行处理")
@@ -210,8 +213,8 @@ class PlayByPlaySync:
             if batch:
                 self.logger.info(f"批次{i + 1}的前5个比赛ID: {batch[:min(5, len(batch))]}")
 
-        # 使用批次控制器控制批次间隔
-        batch_controller = BatchProcessController(batch_interval=batch_interval, adaptive=True)
+        # 设置http_manager的批次间隔
+        self.http_manager.set_batch_interval(batch_interval, adaptive=True)
 
         # 逐批处理 - 批次间严格按顺序，批次内并行
         for batch_idx, batch_game_ids in enumerate(batches):
@@ -261,7 +264,7 @@ class PlayByPlaySync:
 
             # 批次处理完成，等待下一批次
             if batch_idx < len(batches) - 1:  # 不是最后一批
-                batch_controller.wait_for_next_batch()
+                self.http_manager.wait_for_next_batch()
 
 
         # 完成统计
