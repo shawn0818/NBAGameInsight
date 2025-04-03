@@ -1,9 +1,9 @@
 from dataclasses import dataclass
-from typing import Dict, Optional, Any, Tuple, List
+from typing import Dict, Optional, Any, Tuple, List, Callable
 from datetime import timedelta
 from enum import Enum
 from .base_fetcher import BaseNBAFetcher, BaseRequestConfig, BaseCacheConfig
-from config import  NBAConfig
+from config import NBAConfig
 
 
 class GameStatusEnum(Enum):
@@ -33,6 +33,7 @@ class GameConfig:
         GameStatusEnum.IN_PROGRESS: timedelta(seconds=0),
         GameStatusEnum.FINISHED: timedelta(days=1)
     }
+
 
 @dataclass
 class GameDataResponse:
@@ -76,6 +77,84 @@ class GameFetcher(BaseNBAFetcher):
         # 初始化基类
         super().__init__(base_config)
         self.game_config = game_config
+
+    def _get_endpoint_data(
+            self,
+            game_id: str,
+            endpoint: str,
+            params: Dict[str, Any],
+            cache_key_prefix: str,
+            description: str,
+            force_update: bool = False
+    ) -> Optional[Dict[str, Any]]:
+        """通用方法获取NBA比赛的不同类型数据
+
+        Args:
+            game_id: 比赛ID
+            endpoint: API端点
+            params: 请求参数
+            cache_key_prefix: 缓存键前缀
+            description: 数据描述(用于日志)
+            force_update: 是否强制更新缓存
+
+        Returns:
+            Dict: 获取的数据
+        """
+        try:
+            # 完整缓存键
+            cache_key = f"{cache_key_prefix}_{game_id}"
+
+            # 使用fetch_data方法获取数据
+            data = self.fetch_data(
+                endpoint=endpoint,
+                params=params,
+                cache_key=cache_key,
+                force_update=force_update
+            )
+
+            if not data:
+                self.logger.error(f"无法获取比赛{game_id}的{description}")
+                return None
+
+            return data
+        except Exception as e:
+            self.logger.error(f"获取{description}失败: {e}")
+            return None
+
+    def _batch_get_data(
+            self,
+            game_ids: List[str],
+            get_function: Callable[[str, bool], Optional[Dict[str, Any]]],
+            task_name: str,
+            description: str,
+            force_update: bool = False
+    ) -> Dict[str, Dict[str, Any]]:
+        """通用批量获取方法
+
+        Args:
+            game_ids: 比赛ID列表
+            get_function: 单个数据获取函数
+            task_name: 批处理任务名称
+            description: 数据描述(用于日志)
+            force_update: 是否强制更新缓存
+
+        Returns:
+            Dict: 批量获取结果
+        """
+        self.logger.info(f"批量获取{len(game_ids)}场比赛的{description}")
+
+        # 定义单个获取函数
+        def fetch_single(game_id):
+            return get_function(game_id, force_update)
+
+        # 使用基类的批量获取方法
+        results = self.batch_fetch(
+            ids=game_ids,
+            fetch_func=fetch_single,
+            task_name=task_name
+        )
+
+        return results
 
     def get_game_data(self, game_id: str, force_update: bool = False) -> Optional[GameDataResponse]:
         """获取完整的比赛数据"""
@@ -177,32 +256,14 @@ class GameFetcher(BaseNBAFetcher):
         Returns:
             Dict: 比赛摘要数据
         """
-        try:
-            # 使用endpoint和params
-            endpoint = "boxscoresummaryv2"
-            params = {
-                "GameID": game_id
-            }
-
-            cache_key = f"boxscore_summary_v2_{game_id}"
-
-            # 使用fetch_data方法获取数据
-            data = self.fetch_data(
-                endpoint=endpoint,
-                params=params,
-                cache_key=cache_key,
-                force_update=force_update
-            )
-
-            if not data:
-                self.logger.error(f"无法获取比赛{game_id}的摘要信息")
-                return None
-
-            return data
-        except Exception as e:
-            self.logger.error(f"获取比赛摘要信息失败: {e}")
-            return None
-
+        return self._get_endpoint_data(
+            game_id=game_id,
+            endpoint="boxscoresummaryv2",
+            params={"GameID": game_id},
+            cache_key_prefix="boxscore_summary_v2",
+            description="比赛摘要信息",
+            force_update=force_update
+        )
 
     def get_boxscore_traditional(self, game_id: str, force_update: bool = False) -> Optional[Dict[str, Any]]:
         """获取比赛的传统盒子分数统计
@@ -214,35 +275,20 @@ class GameFetcher(BaseNBAFetcher):
         Returns:
             Dict: 传统盒子分数统计数据
         """
-        try:
-            # 使用endpoint和params，而不是完整URL
-            endpoint = "boxscoretraditionalv3"
-            params = {
+        return self._get_endpoint_data(
+            game_id=game_id,
+            endpoint="boxscoretraditionalv3",
+            params={
                 "GameID": game_id,
                 "EndPeriod": 0,
                 "EndRange": 28800,
                 "StartPeriod": 0,
                 "StartRange": 0
-            }
-
-            cache_key = f"boxscore_traditional_{game_id}"
-
-            # 使用fetch_data方法获取数据
-            data = self.fetch_data(
-                endpoint=endpoint,
-                params=params,
-                cache_key=cache_key,
-                force_update=force_update
-            )
-
-            if not data:
-                self.logger.error(f"无法获取比赛{game_id}的传统盒子分数统计")
-                return None
-
-            return data
-        except Exception as e:
-            self.logger.error(f"获取传统盒子分数统计失败: {e}")
-            return None
+            },
+            cache_key_prefix="boxscore_traditional",
+            description="传统盒子分数统计",
+            force_update=force_update
+        )
 
     def get_playbyplay(self, game_id: str, force_update: bool = False) -> Optional[Dict[str, Any]]:
         """获取比赛的详细回放数据(V3版本)
@@ -254,33 +300,18 @@ class GameFetcher(BaseNBAFetcher):
         Returns:
             Dict: 比赛回放数据
         """
-        try:
-            # 使用endpoint和params，而不是完整URL
-            endpoint = "playbyplayv3"
-            params = {
+        return self._get_endpoint_data(
+            game_id=game_id,
+            endpoint="playbyplayv3",
+            params={
                 "GameID": game_id,
                 "StartPeriod": 0,
                 "EndPeriod": 0
-            }
-
-            cache_key = f"playbyplay_v3_{game_id}"
-
-            # 使用fetch_data方法获取数据
-            data = self.fetch_data(
-                endpoint=endpoint,
-                params=params,
-                cache_key=cache_key,
-                force_update=force_update
-            )
-
-            if not data:
-                self.logger.error(f"无法获取比赛{game_id}的回放数据(V3)")
-                return None
-
-            return data
-        except Exception as e:
-            self.logger.error(f"获取回放数据(V3)失败: {e}")
-            return None
+            },
+            cache_key_prefix="playbyplay_v3",
+            description="比赛回放数据(V3)",
+            force_update=force_update
+        )
 
     def batch_get_boxscore_traditional(self, game_ids: List[str], force_update: bool = False) -> Dict[
         str, Dict[str, Any]]:
@@ -293,20 +324,13 @@ class GameFetcher(BaseNBAFetcher):
         Returns:
             Dict: 以比赛ID为键，统计数据为值的字典
         """
-        self.logger.info(f"批量获取{len(game_ids)}场比赛的传统盒子分数统计")
-
-        # 定义单个获取函数
-        def fetch_single(game_id):
-            return self.get_boxscore_traditional(game_id, force_update)
-
-        # 使用基类的批量获取方法
-        results = self.batch_fetch(
-            ids=game_ids,
-            fetch_func=fetch_single,
-            task_name="boxscore_traditional_batch"
+        return self._batch_get_data(
+            game_ids=game_ids,
+            get_function=self.get_boxscore_traditional,
+            task_name="boxscore_traditional_batch",
+            description="传统盒子分数统计",
+            force_update=force_update
         )
-
-        return results
 
     def batch_get_playbyplay(self, game_ids: List[str], force_update: bool = False) -> Dict[str, Dict[str, Any]]:
         """批量获取多场比赛的详细回放数据(V3版本)
@@ -318,20 +342,13 @@ class GameFetcher(BaseNBAFetcher):
         Returns:
             Dict: 以比赛ID为键，回放数据为值的字典
         """
-        self.logger.info(f"批量获取{len(game_ids)}场比赛的详细回放数据(V3)")
-
-        # 定义单个获取函数
-        def fetch_single(game_id):
-            return self.get_playbyplay(game_id, force_update)
-
-        # 使用基类的批量获取方法
-        results = self.batch_fetch(
-            ids=game_ids,
-            fetch_func=fetch_single,
-            task_name="playbyplay_v3_batch"
+        return self._batch_get_data(
+            game_ids=game_ids,
+            get_function=self.get_playbyplay,
+            task_name="playbyplay_v3_batch",
+            description="详细回放数据(V3)",
+            force_update=force_update
         )
-
-        return results
 
     def get_boxscore_misc(self, game_id: str, force_update: bool = False) -> Optional[Dict[str, Any]]:
         """获取NBA比赛的Box Score杂项统计信息
@@ -346,35 +363,20 @@ class GameFetcher(BaseNBAFetcher):
         Returns:
             Dict: Box Score杂项统计数据
         """
-        try:
-            # 使用endpoint和params
-            endpoint = "boxscoremiscv3"
-            params = {
+        return self._get_endpoint_data(
+            game_id=game_id,
+            endpoint="boxscoremiscv3",
+            params={
                 "GameID": game_id,
                 "EndPeriod": 0,
                 "EndRange": 28800,
                 "StartPeriod": 0,
                 "StartRange": 0
-            }
-
-            cache_key = f"boxscore_misc_v3_{game_id}"
-
-            # 使用fetch_data方法获取数据
-            data = self.fetch_data(
-                endpoint=endpoint,
-                params=params,
-                cache_key=cache_key,
-                force_update=force_update
-            )
-
-            if not data:
-                self.logger.error(f"无法获取比赛{game_id}的Box Score杂项统计信息")
-                return None
-
-            return data
-        except Exception as e:
-            self.logger.error(f"获取Box Score杂项统计信息失败: {e}")
-            return None
+            },
+            cache_key_prefix="boxscore_misc_v3",
+            description="Box Score杂项统计信息",
+            force_update=force_update
+        )
 
     def batch_get_boxscore_misc(self, game_ids: List[str], force_update: bool = False) -> Dict[str, Dict[str, Any]]:
         """批量获取多场比赛的Box Score杂项统计信息
@@ -386,20 +388,13 @@ class GameFetcher(BaseNBAFetcher):
         Returns:
             Dict: 以比赛ID为键，杂项统计数据为值的字典
         """
-        self.logger.info(f"批量获取{len(game_ids)}场比赛的Box Score杂项统计信息")
-
-        # 定义单个获取函数
-        def fetch_single(game_id):
-            return self.get_boxscore_misc(game_id, force_update)
-
-        # 使用基类的批量获取方法
-        results = self.batch_fetch(
-            ids=game_ids,
-            fetch_func=fetch_single,
-            task_name="boxscore_misc_v3_batch"
+        return self._batch_get_data(
+            game_ids=game_ids,
+            get_function=self.get_boxscore_misc,
+            task_name="boxscore_misc_v3_batch",
+            description="Box Score杂项统计信息",
+            force_update=force_update
         )
-
-        return results
 
     def clear_cache(
             self,
