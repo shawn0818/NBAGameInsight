@@ -349,7 +349,8 @@ class HTTPRequestManager:
         session.mount('https://', adapter)
         return session
 
-    def _get_random_user_agent(self):
+    @staticmethod
+    def _get_random_user_agent():
         """获取随机用户代理"""
         user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36",
@@ -361,7 +362,7 @@ class HTTPRequestManager:
 
     def _refresh_headers(self):
         """刷新请求头"""
-        self.headers['user-agent'] = self._get_random_user_agent()
+        self.headers['user-agent'] = HTTPRequestManager._get_random_user_agent()
         self.headers['cache-control'] = f"no-cache, no-store, must-revalidate, max-age=0"
 
     def _reset_session(self):
@@ -451,7 +452,7 @@ class HTTPRequestManager:
         # 避免与窗口管理器的强制等待重叠
         if not self.recent_force_wait or time.time() - self.last_force_wait_time > 300:
             for threshold, action in sorted(self._batch_thresholds.items()):
-                if self.total_requests >= threshold and self.total_requests < threshold + 5:
+                if threshold <= self.total_requests < threshold + 5:
                     wait_time = action["delay"]
                     self.logger.warning(action["message"])
 
@@ -577,9 +578,12 @@ class HTTPRequestManager:
             )
 
         # 如果启用自适应模式，根据已处理批次数动态调整间隔
+        # 初始化变量，确保在任何情况下都有值
+        needs_long_pause = False
+        pause_time = 0
+
         if self.adaptive_batch:
             # 检查是否需要长暂停
-            needs_long_pause = False
             for threshold in self.long_pause_thresholds:
                 if self.batch_count == threshold["batch"]:
                     # 如果最近有强制等待，减少长暂停时间
@@ -634,7 +638,6 @@ class HTTPRequestManager:
             extra_delay = random.uniform(0.5, 2.0)  # 降低上限
             self.logger.debug(f"添加额外随机延迟: {extra_delay:.1f}秒")
             time.sleep(extra_delay)
-
         return interval  # 返回实际应用的间隔，便于调试
 
     def reset_batch_count(self):
