@@ -104,6 +104,51 @@ class GameDataParser:
             self.logger.error(f"解析比赛数据时出错: {str(e)}", exc_info=True)
             return None
 
+    def _parse_date_safely(self, date_str, default_value=None):
+        """安全解析多种格式的日期字符串
+
+        Args:
+            date_str: 日期字符串
+            default_value: 解析失败时的默认值
+
+        Returns:
+            datetime: 解析后的日期时间对象
+        """
+        if not date_str:
+            return default_value or datetime.now()
+
+        try:
+            return datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+        except ValueError as e:
+            self.logger.debug(f"日期不是ISO格式: {e}")
+            try:
+                return datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%S")
+            except ValueError as e:
+                self.logger.warning(f"无法解析日期 '{date_str}': {e}，使用默认值")
+                return default_value or datetime.now()
+
+    def _convert_field_name(self, field_name, prefix_to_remove=None):
+        """转换字段名称，从snake_case到camelCase
+
+        Args:
+            field_name: 输入的字段名
+            prefix_to_remove: 需要移除的前缀
+
+        Returns:
+            str: 转换后的字段名
+        """
+        if prefix_to_remove and field_name.startswith(prefix_to_remove):
+            field_name = field_name.replace(prefix_to_remove, "")
+
+        # 转换为驼峰命名
+        parts = field_name.split('_')
+        camel_case = parts[0]
+        for part in parts[1:]:
+            if part:
+                camel_case += part[0].upper() + part[1:]
+
+        return camel_case
+
     def _parse_rivalry_info(self, boxscore_summary: Dict[str, Any], game_data: Dict[str, Any]) -> None:
         """解析球队对抗历史信息并添加到game_data中"""
         try:
@@ -124,89 +169,13 @@ class GameDataParser:
 
                 # 处理LastMeeting数据
                 if result_name == "LastMeeting":
-                    for i, header in enumerate(headers):
-                        field_name = self._convert_to_snake_case(header)
-                        value = row[i]
-
-                        # 特殊处理lastGameId，确保是字符串类型
-                        if field_name == "last_game_id":
-                            rivalry_data["lastGameId"] = str(value)
-                        # 日期字段特殊处理
-                        elif field_name == "last_game_date_est":
-                            try:
-                                rivalry_data["lastGameDateEst"] = datetime.fromisoformat(value.replace('Z', '+00:00'))
-                            except:
-                                try:
-                                    rivalry_data["lastGameDateEst"] = datetime.strptime(value, "%Y-%m-%dT%H:%M:%S")
-                                except:
-                                    rivalry_data["lastGameDateEst"] = datetime.now()
-                        # ID和分数字段特殊处理，确保是整数
-                        elif field_name in ["last_game_home_team_id", "last_game_visitor_team_id",
-                                            "last_game_home_team_points", "last_game_visitor_team_points"]:
-                            try:
-                                key = field_name.replace("last_game_", "lastGame").replace("_", "")
-                                # 首字母大写
-                                key = key[0].lower() + key[1:]
-                                rivalry_data[key] = int(value)
-                            except:
-                                key = field_name.replace("last_game_", "lastGame").replace("_", "")
-                                key = key[0].lower() + key[1:]
-                                rivalry_data[key] = 0
-                        # 确保队伍简写字段正确处理
-                        elif header == "LAST_GAME_VISITOR_TEAM_CITY1":
-                            rivalry_data["lastGameVisitorTeamAbbreviation"] = value
-                        # 普通文本字段
-                        elif field_name in ["last_game_home_team_city", "last_game_home_team_name",
-                                            "last_game_home_team_abbreviation", "last_game_visitor_team_city",
-                                            "last_game_visitor_team_name"]:
-                            key = field_name.replace("last_game_", "lastGame").replace("_", "")
-                            key = key[0].lower() + key[1:]
-                            rivalry_data[key] = value
-
+                    self._parse_last_meeting(headers, row, rivalry_data)
                 # 处理SeasonSeries数据
                 elif result_name == "SeasonSeries":
-                    for i, header in enumerate(headers):
-                        if header == "GAME_ID":
-                            rivalry_data["gameId"] = str(row[i])
-                        elif header == "HOME_TEAM_ID":
-                            rivalry_data["homeTeamId"] = int(row[i])
-                        elif header == "VISITOR_TEAM_ID":
-                            rivalry_data["visitorTeamId"] = int(row[i])
-                        elif header == "GAME_DATE_EST":
-                            try:
-                                rivalry_data["gameDateEst"] = datetime.fromisoformat(row[i].replace('Z', '+00:00'))
-                            except:
-                                try:
-                                    rivalry_data["gameDateEst"] = datetime.strptime(row[i], "%Y-%m-%dT%H:%M:%S")
-                                except:
-                                    rivalry_data["gameDateEst"] = datetime.now()
-                        elif header == "HOME_TEAM_WINS":
-                            rivalry_data["homeTeamWins"] = int(row[i])
-                        elif header == "HOME_TEAM_LOSSES":
-                            rivalry_data["homeTeamLosses"] = int(row[i])
-                        elif header == "SERIES_LEADER":
-                            rivalry_data["seriesLeader"] = row[i] if row[i] else ""
+                    self._parse_season_series(headers, row, rivalry_data)
 
             # 确保所有必需字段都存在
-            required_fields = [
-                "gameId", "homeTeamId", "visitorTeamId", "gameDateEst",
-                "homeTeamWins", "homeTeamLosses", "lastGameId", "lastGameDateEst",
-                "lastGameHomeTeamId", "lastGameHomeTeamCity", "lastGameHomeTeamName",
-                "lastGameHomeTeamAbbreviation", "lastGameHomeTeamPoints",
-                "lastGameVisitorTeamId", "lastGameVisitorTeamCity", "lastGameVisitorTeamName",
-                "lastGameVisitorTeamAbbreviation", "lastGameVisitorTeamPoints"
-            ]
-
-            for field in required_fields:
-                if field not in rivalry_data:
-                    if "Id" in field or "Points" in field or "Wins" in field or "Losses" in field:
-                        rivalry_data[field] = 0
-                    elif "Date" in field:
-                        rivalry_data[field] = datetime.now()
-                    elif field == "gameId" or field == "lastGameId":
-                        rivalry_data[field] = ""  # 确保ID字段是字符串
-                    else:
-                        rivalry_data[field] = ""
+            self._ensure_required_rivalry_fields(rivalry_data)
 
             # 确保lastGameId是字符串类型
             if "lastGameId" in rivalry_data and not isinstance(rivalry_data["lastGameId"], str):
@@ -216,8 +185,116 @@ class GameDataParser:
             self.logger.debug(f"成功解析球队对抗历史信息，字段数量: {len(rivalry_data)}")
 
         except Exception as e:
-            self.logger.error(f"解析球队对抗历史信息时出错: {str(e)}")
+            self.logger.error(f"解析球队对抗历史信息时出错: {str(e)}", exc_info=True)
             game_data["rivalryInfo"] = None
+
+    def _parse_last_meeting(self, headers, row, rivalry_data):
+        """解析LastMeeting数据
+
+        Args:
+            headers: 字段头
+            row: 数据行
+            rivalry_data: 存储结果的字典
+        """
+        for i, header in enumerate(headers):
+            field_name = self._convert_to_snake_case(header)
+            value = row[i]
+
+            # 特殊处理lastGameId，确保是字符串类型
+            if field_name == "last_game_id":
+                rivalry_data["lastGameId"] = str(value) if value else ""
+            # 日期字段特殊处理
+            elif field_name == "last_game_date_est":
+                rivalry_data["lastGameDateEst"] = self._parse_date_safely(value)
+            # ID和分数字段特殊处理，确保是整数
+            elif field_name in ["last_game_home_team_id", "last_game_visitor_team_id",
+                                "last_game_home_team_points", "last_game_visitor_team_points"]:
+                try:
+                    key = field_name.replace("last_game_", "lastGame").replace("_", "")
+                    # 首字母小写
+                    key = key[0].lower() + key[1:]
+                    rivalry_data[key] = int(value) if value is not None else 0
+                except (ValueError, TypeError) as e:
+                    self.logger.debug(f"无法将 '{value}' 转换为整数: {e}")
+                    key = field_name.replace("last_game_", "lastGame").replace("_", "")
+                    key = key[0].lower() + key[1:]
+                    rivalry_data[key] = 0
+            # 确保队伍简写字段正确处理
+            elif header == "LAST_GAME_VISITOR_TEAM_CITY1":
+                rivalry_data["lastGameVisitorTeamAbbreviation"] = value if value else ""
+            # 普通文本字段
+            elif field_name in ["last_game_home_team_city", "last_game_home_team_name",
+                                "last_game_home_team_abbreviation", "last_game_visitor_team_city",
+                                "last_game_visitor_team_name"]:
+                key = field_name.replace("last_game_", "lastGame").replace("_", "")
+                key = key[0].lower() + key[1:]
+                rivalry_data[key] = value if value else ""
+
+    def _parse_season_series(self, headers, row, rivalry_data):
+        """解析SeasonSeries数据
+
+        Args:
+            headers: 字段头
+            row: 数据行
+            rivalry_data: 存储结果的字典
+        """
+        for i, header in enumerate(headers):
+            if header == "GAME_ID":
+                rivalry_data["gameId"] = str(row[i]) if row[i] else ""
+            elif header == "HOME_TEAM_ID":
+                try:
+                    rivalry_data["homeTeamId"] = int(row[i]) if row[i] else 0
+                except (ValueError, TypeError) as e:
+                    self.logger.debug(f"无法将 '{row[i]}' 转换为整数: {e}")
+                    rivalry_data["homeTeamId"] = 0
+            elif header == "VISITOR_TEAM_ID":
+                try:
+                    rivalry_data["visitorTeamId"] = int(row[i]) if row[i] else 0
+                except (ValueError, TypeError) as e:
+                    self.logger.debug(f"无法将 '{row[i]}' 转换为整数: {e}")
+                    rivalry_data["visitorTeamId"] = 0
+            elif header == "GAME_DATE_EST":
+                rivalry_data["gameDateEst"] = self._parse_date_safely(row[i])
+            elif header == "HOME_TEAM_WINS":
+                try:
+                    rivalry_data["homeTeamWins"] = int(row[i]) if row[i] else 0
+                except (ValueError, TypeError) as e:
+                    self.logger.debug(f"无法将 '{row[i]}' 转换为整数: {e}")
+                    rivalry_data["homeTeamWins"] = 0
+            elif header == "HOME_TEAM_LOSSES":
+                try:
+                    rivalry_data["homeTeamLosses"] = int(row[i]) if row[i] else 0
+                except (ValueError, TypeError) as e:
+                    self.logger.debug(f"无法将 '{row[i]}' 转换为整数: {e}")
+                    rivalry_data["homeTeamLosses"] = 0
+            elif header == "SERIES_LEADER":
+                rivalry_data["seriesLeader"] = row[i] if row[i] else ""
+
+    def _ensure_required_rivalry_fields(self, rivalry_data):
+        """确保所有必需字段都存在
+
+        Args:
+            rivalry_data: 需要检查和补充的数据字典
+        """
+        required_fields = [
+            "gameId", "homeTeamId", "visitorTeamId", "gameDateEst",
+            "homeTeamWins", "homeTeamLosses", "lastGameId", "lastGameDateEst",
+            "lastGameHomeTeamId", "lastGameHomeTeamCity", "lastGameHomeTeamName",
+            "lastGameHomeTeamAbbreviation", "lastGameHomeTeamPoints",
+            "lastGameVisitorTeamId", "lastGameVisitorTeamCity", "lastGameVisitorTeamName",
+            "lastGameVisitorTeamAbbreviation", "lastGameVisitorTeamPoints"
+        ]
+
+        for field in required_fields:
+            if field not in rivalry_data:
+                if "Id" in field or "Points" in field or "Wins" in field or "Losses" in field:
+                    rivalry_data[field] = 0
+                elif "Date" in field:
+                    rivalry_data[field] = datetime.now()
+                elif field == "gameId" or field == "lastGameId":
+                    rivalry_data[field] = ""  # 确保ID字段是字符串
+                else:
+                    rivalry_data[field] = ""
 
     def _convert_to_snake_case(self, text: str) -> str:
         """将驼峰命名转换为蛇形命名"""
@@ -225,11 +302,7 @@ class GameDataParser:
 
     def _parse_datetime(self, date_str: str) -> datetime:
         """解析日期时间字符串为datetime对象"""
-        try:
-            return datetime.fromisoformat(date_str.replace('Z', '+00:00'))
-        except ValueError:
-            # 尝试其他格式
-            return datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%S")
+        return self._parse_date_safely(date_str)
 
     def _process_game_data(self, game_data: Dict[str, Any]) -> GameData:
         try:
@@ -287,7 +360,7 @@ class GameDataParser:
                     self.logger.error(f"TeamRivalryInfo验证错误: {ve}")
                     data['rivalryInfo'] = None
                 except Exception as e:
-                    self.logger.error(f"处理球队对抗历史信息时出错: {str(e)}")
+                    self.logger.error(f"处理球队对抗历史信息时出错: {str(e)}", exc_info=True)
                     data['rivalryInfo'] = None
 
             # 创建 GameData 实例
@@ -302,8 +375,8 @@ class GameDataParser:
             return GameData(
                 homeTeam=self._process_team_stats({}),
                 awayTeam=self._process_team_stats({}),
-                statistics=None, # 保证数据结构正确
-                rivalryInfo = None # 处理数据出错的情况下,保证数据结构正确
+                statistics=None,  # 保证数据结构正确
+                rivalryInfo=None  # 处理数据出错的情况下,保证数据结构正确
             )
 
     def _process_team_stats(self, team_data: Dict[str, Any]) -> TeamInGame:
@@ -333,12 +406,16 @@ class GameDataParser:
             return TeamInGame(**team_data)
 
         except Exception as e:
-            self.logger.error(f"处理球队数据时出错: {str(e)}")
+            self.logger.error(f"处理球队数据时出错: {str(e)}", exc_info=True)
             raise  # 让上层处理错误
 
     def _process_player_stats(self, player_data: Dict[str, Any]) -> Optional[PlayerInGame]:
         """处理球员统计数据"""
         try:
+            if not player_data or not isinstance(player_data, dict):
+                self.logger.warning("无效的球员数据")
+                return None
+
             # 1. 处理基础统计数据
             if 'statistics' not in player_data:
                 player_data['statistics'] = {}
@@ -352,8 +429,43 @@ class GameDataParser:
             return PlayerInGame(**player_data)
 
         except Exception as e:
-            self.logger.error(f"处理球员数据时出错: {str(e)}")
+            self.logger.error(f"处理球员数据时出错: {str(e)}", exc_info=True)
             return None
+
+    def _process_team_event(self, event_type, event_data):
+        """处理团队事件
+
+        Args:
+            event_type: 事件类型
+            event_data: 事件数据
+
+        Returns:
+            BaseEvent: 事件对象
+        """
+        # 共同处理团队事件的基本字段
+        event_data.update({
+            'playerName': 'TEAM',
+            'playerNameI': 'TEAM'
+        })
+
+        # 针对不同事件类型的特殊处理
+        if event_type == 'foul':
+            return FoulEvent(**event_data)
+        elif event_type == 'turnover':
+            event_data['turnoverTotal'] = 1
+            return TurnoverEvent(**event_data)
+        elif event_type == 'rebound':
+            event_data.update({
+                'reboundTotal': 1,
+                'reboundDefensiveTotal': 1 if event_data['subType'] == 'defensive' else 0,
+                'reboundOffensiveTotal': 1 if event_data['subType'] == 'offensive' else 0
+            })
+            return ReboundEvent(**event_data)
+        elif event_type == 'violation':
+            return ViolationEvent(**event_data)
+
+        # 默认返回基本事件
+        return BaseEvent(**event_data)
 
     def _process_event(self, event_data: Dict[str, Any]) -> Optional[BaseEvent]:
         """处理单个事件数据"""
@@ -363,50 +475,14 @@ class GameDataParser:
 
             event_type = event_data['actionType']
 
-            # 处理团队技术犯规
-            if (event_type == 'foul' and
-                    event_data.get('subType') == 'technical' and
-                    'TEAM' in event_data.get('description', '').upper()):
-                event_data.update({
-                    'playerName': 'TEAM',
-                    'playerNameI': 'TEAM'
-                })
-                return FoulEvent(**event_data)
-
-            # 处理团队失误事件
-            if event_type == 'turnover' and event_data.get('qualifiers', []) == ['team']:
-                event_data.update({
-                    'playerName': 'TEAM',
-                    'playerNameI': 'TEAM',
-                    'turnoverTotal': 1
-                })
-                return TurnoverEvent(**event_data)
-
-            # 处理团队篮板事件
-            elif event_type == 'rebound' and 'team' in event_data.get('qualifiers', []):
-                event_data.update({
-                    'playerName': 'TEAM',
-                    'playerNameI': 'TEAM',
-                    'reboundTotal': 1,
-                    'reboundDefensiveTotal': 1 if event_data['subType'] == 'defensive' else 0,
-                    'reboundOffensiveTotal': 1 if event_data['subType'] == 'offensive' else 0
-                })
-                return ReboundEvent(**event_data)
-
-            # 处理团队违例事件
-            elif event_type == 'violation' and 'team' in event_data.get('qualifiers', []):
-                event_data.update({
-                    'playerName': 'TEAM',
-                    'playerNameI': 'TEAM'
-                })
-                return ViolationEvent(**event_data)
+            # 处理团队相关事件
+            if self._is_team_event(event_type, event_data):
+                return self._process_team_event(event_type, event_data)
 
             # 处理投篮事件
-            elif event_type in ['2pt', '3pt']:
+            if event_type in ['2pt', '3pt']:
                 if 'shotResult' not in event_data:
-                    event_data['shotResult'] = (
-                        'Made' if 'pointsTotal' in event_data else 'Missed'
-                    )
+                    event_data['shotResult'] = 'Made' if 'pointsTotal' in event_data else 'Missed'
                 return ShotEvent(**event_data)
 
             # 处理抢断事件
@@ -431,25 +507,7 @@ class GameDataParser:
 
             # 处理换人事件
             elif event_type == 'substitution':
-                # 根据 subType 设置进出场球员信息
-                if event_data['subType'] == 'out':
-                    event_data.update({
-                        'incomingPlayerName': event_data['playerName'],
-                        'incomingPlayerNameI': event_data['playerNameI'],
-                        'incomingPersonId': event_data['personId'],
-                        'outgoingPlayerName': event_data['playerName'],
-                        'outgoingPlayerNameI': event_data['playerNameI'],
-                        'outgoingPersonId': event_data['personId']
-                    })
-                else:  # subType == 'in'
-                    event_data.update({
-                        'incomingPlayerName': event_data['playerName'],
-                        'incomingPlayerNameI': event_data['playerNameI'],
-                        'incomingPersonId': event_data['personId'],
-                        'outgoingPlayerName': event_data['playerName'],
-                        'outgoingPlayerNameI': event_data['playerNameI'],
-                        'outgoingPersonId': event_data['personId']
-                    })
+                return self._process_substitution_event(event_data)
 
             # 其他事件类型
             event_class = self.EVENT_TYPE_MAP.get(event_type)
@@ -463,8 +521,69 @@ class GameDataParser:
             self.logger.error(f"事件数据验证错误: {ve.errors()}")
             return None
         except Exception as e:
-            self.logger.error(f"处理事件时出错: {str(e)}")
+            self.logger.error(f"处理事件时出错: {str(e)}", exc_info=True)
             return None
+
+    def _is_team_event(self, event_type, event_data):
+        """判断是否为团队事件
+
+        Args:
+            event_type: 事件类型
+            event_data: 事件数据
+
+        Returns:
+            bool: 是否为团队事件
+        """
+        # 团队技术犯规
+        if (event_type == 'foul' and
+                event_data.get('subType') == 'technical' and
+                'TEAM' in event_data.get('description', '').upper()):
+            return True
+
+        # 团队失误事件
+        if event_type == 'turnover' and event_data.get('qualifiers', []) == ['team']:
+            return True
+
+        # 团队篮板事件
+        if event_type == 'rebound' and 'team' in event_data.get('qualifiers', []):
+            return True
+
+        # 团队违例事件
+        if event_type == 'violation' and 'team' in event_data.get('qualifiers', []):
+            return True
+
+        return False
+
+    def _process_substitution_event(self, event_data):
+        """处理换人事件
+
+        Args:
+            event_data: 换人事件数据
+
+        Returns:
+            SubstitutionEvent: 换人事件对象
+        """
+        # 根据 subType 设置进出场球员信息
+        if event_data['subType'] == 'out':
+            event_data.update({
+                'incomingPlayerName': event_data['playerName'],
+                'incomingPlayerNameI': event_data['playerNameI'],
+                'incomingPersonId': event_data['personId'],
+                'outgoingPlayerName': event_data['playerName'],
+                'outgoingPlayerNameI': event_data['playerNameI'],
+                'outgoingPersonId': event_data['personId']
+            })
+        else:  # subType == 'in'
+            event_data.update({
+                'incomingPlayerName': event_data['playerName'],
+                'incomingPlayerNameI': event_data['playerNameI'],
+                'incomingPersonId': event_data['personId'],
+                'outgoingPlayerName': event_data['playerName'],
+                'outgoingPlayerNameI': event_data['playerNameI'],
+                'outgoingPersonId': event_data['personId']
+            })
+
+        return SubstitutionEvent(**event_data)
 
     def _process_player_status(self, player: Dict[str, Any]) -> None:
         """处理球员状态相关字段"""
@@ -524,7 +643,7 @@ class GameDataParser:
                     if event:
                         actions.append(event)
                 except Exception as e:
-                    self.logger.error(f"处理事件时出错: {e}, 事件数据: {action_data}")
+                    self.logger.error(f"处理事件时出错: {e}, 事件数据: {action_data}", exc_info=True)
                     continue
 
             self.logger.info(f"成功解析 {len(actions)} 个事件")
@@ -539,7 +658,7 @@ class GameDataParser:
             return play_by_play
 
         except Exception as e:
-            self.logger.error(f"解析回放数据时出错: {e}")
+            self.logger.error(f"解析回放数据时出错: {e}", exc_info=True)
             return None
 
     def _get_event_class(self, event_type: str) -> Optional[type]:
@@ -605,5 +724,5 @@ class GameDataParser:
             return True
 
         except Exception as e:
-            self.logger.error(f"验证比赛数据时出错: {e}")
+            self.logger.error(f"验证比赛数据时出错: {e}", exc_info=True)
             return False
