@@ -4,7 +4,7 @@ import random
 from dataclasses import dataclass
 import requests
 from enum import Enum
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 from requests.adapters import HTTPAdapter
 
 
@@ -157,16 +157,16 @@ class RequestWindowManager:
 
         self.logger = logging.getLogger(__name__)
 
-    def register_request(self):
+    def register_request(self) -> Dict[str, Union[float, str, None]]:
         """注册一次请求并检查是否需要限流
 
         采用更智能的三级限流策略：预警减速、部分暂停和强制等待
 
         Returns:
-            Dict: 包含等待信息的字典，包括等待时间、原因和窗口信息
+            Dict[str, Union[float, str, None]]: 包含等待信息的字典，包括等待时间、原因和窗口信息
         """
         current_time = time.time()
-        result = {
+        result: Dict[str, Union[float, str, None]] = {
             "wait_time": 0,
             "action": "none",
             "window": None,
