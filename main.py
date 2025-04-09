@@ -64,6 +64,7 @@ class RunMode(Enum):
     # 同步相关模式 (精简后)
     SYNC = "sync"  # 增量并行同步比赛统计数据 (gamedb)
     SYNC_NEW_SEASON = "sync-new-season"  # 手动触发新赛季核心数据更新 (nba.db)
+    SYNC_PLAYER_DETAILS = "sync-player-details"  # 同步球员详细信息
 
     @classmethod
     def get_weibo_modes(cls) -> Set["RunMode"]:
@@ -1213,6 +1214,56 @@ class NewSeasonCommand(BaseSyncCommand):
             return False
 
 
+class SyncPlayerDetailsCommand(BaseSyncCommand):
+    """同步球员详细信息命令"""
+
+    @error_handler
+    def execute(self, app: 'NBACommandLineApp') -> bool:
+        self._log_section("同步球员详细信息")
+        print("开始同步球员详细信息...")
+
+        # 是否只同步活跃球员
+        only_active = not app.config.force_update
+        if not only_active:
+            print("注意：已启用 --force-update，将同步所有球员的详细信息，而不仅是可能活跃的球员")
+        else:
+            print("默认只同步可能活跃球员的详细信息（基于to_year判断），使用 --force-update 可同步所有球员")
+
+        # 调用同步方法
+        result = app.nba_service.db_service.sync_player_details(
+            force_update=app.config.force_update,
+            only_active=only_active
+        )
+
+        # 显示结果摘要
+        if result.get("status") in ["success", "partially_completed"]:
+            total = result.get("total", 0)
+            success = result.get("success", 0)
+            failed = result.get("failed", 0)
+
+            print(f"\n同步结果:")
+            print(f"总计: {total}名球员")
+            print(f"成功: {success}名")
+            print(f"失败: {failed}名")
+
+            # 显示活跃状态统计
+            active_count = sum(1 for detail in result.get("details", [])
+                               if detail.get("is_active", False) and detail.get("status") == "success")
+            inactive_count = success - active_count
+
+            print(f"活跃球员: {active_count}名")
+            print(f"非活跃球员: {inactive_count}名")
+
+            duration = result.get("duration", 0)
+            print(f"\n总耗时: {duration:.2f}秒")
+
+            return result.get("status") == "success"
+        else:
+            error = result.get("error", "未知错误")
+            print(f"× 同步球员详细信息失败: {error}")
+            return False
+
+
 class CompositeCommand(NBACommand):
     """组合命令，执行多个命令"""
 
@@ -1255,6 +1306,7 @@ class NBACommandFactory:
             # 精简后的同步命令
             RunMode.SYNC: SyncCommand(),
             RunMode.SYNC_NEW_SEASON: NewSeasonCommand(),
+            RunMode.SYNC_PLAYER_DETAILS: SyncPlayerDetailsCommand(),
         }
 
         # ALL模式组合所有非同步命令
