@@ -7,4 +7,4 @@ pillow>=11.1.0
 openai>=1.59.7
 scipy>=1.15.2
 SQLAlchemy>=2.0.39
-fuzzywuzzy>=0.18.0
+RapidFuzz>=3.13.0
