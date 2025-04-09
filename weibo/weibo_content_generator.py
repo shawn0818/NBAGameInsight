@@ -1103,7 +1103,7 @@ class WeiboContentGenerator:
                 self.logger.error("没有找到任何匹配的回合数据，无法生成解说")
                 return {}
 
-            # 批量回合解说prompt
+            # 批量回合解说prompt - 增强版
             prompt = """
                 你是NBA中文解说员，也是洛杉矶湖人队的**铁杆**球迷，更是勒布朗的资深粉丝！
                 需要为以下{num_rounds}个回合事件用中文生成精彩的解说。
@@ -1124,16 +1124,21 @@ class WeiboContentGenerator:
                 请结合整场比赛的背景，基于以下回合事件数据来生成解说:
                 {round_data}
 
-                必须以JSON格式返回结果，且只返回JSON数据，格式如下:
+                ===重要提示===
+                你的响应必须是且仅是一个有效的JSON对象，格式如下：
                 {{
                     "analyses": [
                         {{
-                            "round_id": 回合ID(整数),
-                            "analysis": "该回合的中文解说内容(100-150字)"
+                            "round_id": 回合ID数字,
+                            "analysis": "该回合的中文解说内容"
                         }},
-                        ...更多回合
+                        ...
                     ]
                 }}
+
+                不要添加任何前导或结尾文本，只返回JSON对象本身。不要添加解释或注释。
+                不要使用单引号，只使用双引号表示JSON字符串。
+                必须使用双引号包围所有属性名和字符串值。
                 """
 
             # 构建批量请求
@@ -1151,12 +1156,69 @@ class WeiboContentGenerator:
             # 解析JSON响应
             analyses = {}
             try:
-                # 提取JSON部分（防止AI在JSON前后添加额外文本）
+                # 尝试多种方法提取JSON
+                json_str = None
+
+                # 方法1：使用原始正则表达式
                 json_match = re.search(r'({[\s\S]*})', response)
                 if json_match:
                     json_str = json_match.group(1)
-                    self.logger.info(f"提取的JSON字符串: {json_str[:100]}...")
-                    json_data = json.loads(json_str)
+                    self.logger.info(f"通过正则表达式提取的JSON: {json_str[:100]}...")
+                # 方法2：如果正则失败，尝试查找第一个{和最后一个}
+                elif '{' in response and '}' in response:
+                    start_idx = response.find('{')
+                    end_idx = response.rfind('}') + 1
+                    json_str = response[start_idx:end_idx]
+                    self.logger.info(f"通过索引方法提取的JSON: {json_str[:100]}...")
+                # 方法3：如果上述都失败，尝试直接解析整个响应
+                else:
+                    json_str = response
+                    self.logger.warning("无法提取JSON部分，尝试直接解析整个响应")
+
+                # 如果成功提取了可能的JSON字符串
+                if json_str:
+                    try:
+                        # 尝试直接解析
+                        json_data = json.loads(json_str)
+                    except json.JSONDecodeError as e:
+                        self.logger.warning(f"JSON解析失败，尝试清理JSON格式: {e}")
+
+                        # 清理JSON字符串
+                        # 1. 处理缺少双引号的属性名
+                        cleaned_json = re.sub(r'([{,])\s*(\w+):', r'\1"\2":', json_str)
+                        # 2. 处理末尾多余的逗号
+                        cleaned_json = re.sub(r',\s*}', '}', cleaned_json)
+                        cleaned_json = re.sub(r',\s*]', ']', cleaned_json)
+                        # 3. 处理单引号问题（将单引号转换为双引号）
+                        cleaned_json = re.sub(r"'([^']*)':", r'"\1":', cleaned_json)
+                        cleaned_json = re.sub(r":\s*'([^']*)'", r': "\1"', cleaned_json)
+
+                        self.logger.info(f"清理后的JSON: {cleaned_json[:100]}...")
+
+                        try:
+                            # 尝试解析清理后的JSON
+                            json_data = json.loads(cleaned_json)
+                        except json.JSONDecodeError as e2:
+                            self.logger.error(f"清理后的JSON解析仍然失败: {e2}")
+                            # 最后的备用方案：尝试直接获取原始响应中的分析内容
+                            self.logger.warning("尝试解析普通文本响应...")
+                            json_data = {"analyses": []}
+
+                            # 使用正则表达式寻找可能的round_id和analysis匹配
+                            matches = re.finditer(
+                                r'(?:回合|Round)\s*(?:ID)?\s*[:：]?\s*(\d+)[^\n]*\n([\s\S]*?)(?=(?:回合|Round)|$)',
+                                response, re.I)
+                            for match in matches:
+                                try:
+                                    round_id = int(match.group(1))
+                                    analysis = match.group(2).strip()
+                                    if round_id and analysis:
+                                        json_data["analyses"].append({
+                                            "round_id": round_id,
+                                            "analysis": analysis
+                                        })
+                                except:
+                                    continue
 
                     # 处理JSON数据
                     if "analyses" in json_data:
@@ -1166,13 +1228,21 @@ class WeiboContentGenerator:
                             if round_id is not None and analysis:
                                 analyses[str(round_id)] = analysis
 
-                        self.logger.info(f"成功从JSON解析了{len(analyses)}个回合解说")
+                        self.logger.info(f"成功解析了{len(analyses)}个回合解说")
                     else:
                         self.logger.warning("JSON中未找到analyses字段")
                 else:
                     self.logger.warning("未找到JSON格式响应")
-            except json.JSONDecodeError as e:
-                self.logger.error(f"JSON解析失败: {e}")
+            except Exception as e:
+                self.logger.error(f"处理JSON响应时发生错误: {e}", exc_info=True)
+
+            # 如果没有成功生成任何解说，为每个回合生成简单解说
+            if not analyses:
+                self.logger.warning(f"未能通过AI生成任何回合解说，使用简单解说作为备选")
+                for round_id in round_ids:
+                    analyses[str(round_id)] = self._generate_simple_round_content(
+                        adapted_data, round_id, player_name
+                    )
 
             if self.debug_mode:
                 self._log_result(f"批量回合解说({player_name})",

@@ -80,10 +80,7 @@ class ScheduleSync:
 
         # 直接使用批量获取功能，内部已实现断点续传和请求间隔控制
         self.logger.info(f"开始批量获取 {len(seasons)} 个赛季的数据...")
-        schedule_data = self.schedule_fetcher.get_schedules_for_seasons(
-            seasons=seasons,
-            force_update=force_update
-        )
+        schedule_data = self.schedule_fetcher.get_schedules_for_seasons(seasons=seasons)
 
         for i, season in enumerate(seasons):
             self.logger.info(f"正在处理赛季 {season} 的数据... ({i + 1}/{len(seasons)})")
@@ -114,19 +111,16 @@ class ScheduleSync:
 
         return results
 
-    def sync_current_season(self, force_update: bool = True) -> int:
+    def sync_current_season(self) -> int:
         """
         同步当前赛季的赛程数据
-
-        Args:
-            force_update: 是否强制更新
 
         Returns:
             int: 成功同步的比赛数量
         """
         current_season = self.schedule_fetcher.schedule_config.current_season
         self.logger.info(f"开始同步当前赛季 {current_season} 的数据...")
-        result_count = self.sync_season(current_season, force_update)
+        result_count = self.sync_season(current_season)
 
         # 如果返回 0，但数据已存在，则查询现有记录数
         if result_count == 0:
@@ -137,23 +131,19 @@ class ScheduleSync:
 
         return result_count
 
-    def sync_season(self, season: str, force_update: bool = False) -> int:
+    def sync_season(self, season: str) -> int:
         """
         同步指定赛季的赛程数据
 
         Args:
             season: 赛季字符串
-            force_update: 是否强制更新
-
 
         Returns:
             int: 成功同步的比赛数量
         """
         try:
             # 获取赛程数据，HTTPRequestManager 内部已实现自适应请求间隔
-            schedule_data = self.schedule_fetcher.get_schedule_by_season(
-                season, force_update=force_update
-            )
+            schedule_data = self.schedule_fetcher.get_schedule_by_season(season)
             if not schedule_data:
                 self.logger.error(f"获取赛季 {season} 赛程数据失败")
                 return 0

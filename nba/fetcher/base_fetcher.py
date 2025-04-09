@@ -5,7 +5,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Optional, Any, Union, List, Callable
 
-
 from utils.http_handler import HTTPRequestManager, RetryConfig
 from utils.logger_handler import AppLogger
 
@@ -76,6 +75,7 @@ class CacheManager:
             duration = self.config.get_duration(cache_key)
 
             if datetime.now() - timestamp < duration:
+                # 这里获取的就是缓存数据的data字段下，原本应该是api请求的数据。
                 return cache_data.get('data')
 
         except json.JSONDecodeError as e:
@@ -112,93 +112,10 @@ class CacheManager:
         temp_path = cache_path.with_suffix('.tmp')
         try:
             with open(temp_path, 'w', encoding='utf-8') as f:
-                json.dump(cache_data, f, indent=2, ensure_ascii=False) # type: ignore
+                json.dump(cache_data, f, indent=2, ensure_ascii=False)  # type: ignore
             temp_path.replace(cache_path)
         except Exception as e:
             self.logger.error(f"写入缓存失败: {e}")
-            raise
-        finally:
-            if temp_path.exists():
-                try:
-                    temp_path.unlink()
-                except Exception as e:
-                    self.logger.error(f"删除临时文件失败: {e}")
-
-    def get_binary(self, prefix: str, identifier: str, cache_key: Any = None) -> Optional[bytes]:
-        """获取二进制缓存数据
-
-        Args:
-            prefix: 缓存前缀
-            identifier: 缓存标识符
-            cache_key: 用于动态确定缓存时长的key
-        """
-        if not prefix or not identifier:
-            raise ValueError("prefix and identifier cannot be empty")
-
-        cache_path = self.config.get_cache_path(prefix, identifier)
-        if not cache_path.exists():
-            return None
-
-        try:
-            # 检查缓存是否过期
-            if cache_key is not None:
-                # 读取元数据文件来检查时间戳
-                meta_path = cache_path.with_suffix('.meta')
-                if meta_path.exists():
-                    with meta_path.open('r', encoding='utf-8') as f:
-                        metadata = json.load(f)
-                        timestamp = datetime.fromtimestamp(metadata.get('timestamp', 0))
-                        duration = self.config.get_duration(cache_key)
-                        if datetime.now() - timestamp >= duration:
-                            return None
-
-            # 读取二进制数据
-            with cache_path.open('rb') as f:
-                return f.read()
-
-        except Exception as e:
-            self.logger.error(f"读取二进制缓存失败: {e}")
-
-        return None
-
-    def set_binary(self, prefix: str, identifier: str, data: bytes, metadata: Optional[Dict] = None) -> None:
-        """设置二进制缓存数据
-
-        Args:
-            prefix: 缓存前缀
-            identifier: 缓存标识符
-            data: 要缓存的二进制数据
-            metadata: 额外的元数据
-        """
-        if not prefix or not identifier:
-            raise ValueError("prefix and identifier cannot be empty")
-        if not isinstance(data, bytes):
-            raise TypeError("data must be bytes")
-
-        cache_path = self.config.get_cache_path(prefix, identifier)
-
-        # 使用临时文件写入二进制数据
-        temp_path = cache_path.with_suffix('.tmp')
-        try:
-            with open(temp_path, 'wb') as f:
-                f.write(data)
-
-            # 如果有元数据，写入单独的元数据文件
-            if metadata is not None:
-                meta_data = {
-                    'timestamp': datetime.now().timestamp(),
-                    'last_updated': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    'metadata': metadata
-                }
-                meta_path = temp_path.with_suffix('.meta')
-                with open(meta_path, 'w', encoding='utf-8') as f:
-                    json.dump(meta_data, f, indent=2, ensure_ascii=False)   # type: ignore
-                meta_path.replace(cache_path.with_suffix('.meta'))
-
-            # 原子替换主数据文件
-            temp_path.replace(cache_path)
-        except Exception as e:
-            self.logger.error(f"写入二进制缓存失败: {e}")
             raise
         finally:
             if temp_path.exists():
@@ -331,21 +248,23 @@ class BatchRequestTracker:
             'completion_percentage': round(len(self.completed_ids) / total * 100, 2) if total else 0
         }
 
+
 class BaseRequestConfig:
     """基础请求配置"""
 
     def __init__(
-        self,
-        cache_config: BaseCacheConfig,
-        base_url: Optional[str] = None,  # 改为可选参数
-        retry_config: Optional[RetryConfig] = None,
-        request_timeout: int = 30
+            self,
+            cache_config: BaseCacheConfig,
+            base_url: Optional[str] = None,  # 改为可选参数
+            retry_config: Optional[RetryConfig] = None,
+            request_timeout: int = 30
     ):
         # base_url 现在是可选的
         self.base_url = base_url
         self.cache_config = cache_config
         self.retry_config = retry_config or RetryConfig()
         self.request_timeout = request_timeout
+
 
 class BaseNBAFetcher:
     """NBA数据获取基类"""
@@ -354,25 +273,23 @@ class BaseNBAFetcher:
     def _get_default_headers() -> Dict[str, str]:
         """获取默认请求头"""
         return {
-        "accept": "*/*",
-        "accept-encoding": "gzip, deflate, br, zstd",
-        "accept-language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
-        "cache-control": "no-cache",
-        "connection": "keep-alive",
-        "dnt": "1",
-        "pragma": "no-cache",
-        "sec-ch-ua": '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"Windows"',
-        "sec-fetch-dest": "empty",
-        "sec-fetch-mode": "cors",
-        "sec-fetch-site": "same-site",
-        "origin": "https://www.nba.com",
-        "referer": "https://www.nba.com/",
-        "x-nba-stats-token": "true", #特殊认证标头,有时候没有会403
-        "x-nba-stats-origin": "stats",#特殊认证标头，有时候没有会403
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36',
-    }
+            "accept": "*/*",
+            "accept-encoding": "gzip, deflate, br, zstd",
+            "accept-language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+            "cache-control": "no-cache",
+            "connection": "keep-alive",
+            "dnt": "1",
+            "pragma": "no-cache",
+            "sec-ch-ua": '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-site",
+            "origin": "https://www.nba.com",
+            "referer": "https://www.nba.com/",
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36',
+        }
 
     def __init__(self, config: BaseRequestConfig):
         """初始化"""
@@ -396,83 +313,118 @@ class BaseNBAFetcher:
                    cache_status_key: Any = None,
                    force_update: bool = False,
                    metadata: Optional[Dict] = None) -> Optional[Dict]:
-        """获取数据
-
-        Args:
-            url: 完整的请求URL
-            endpoint: API端点
-            params: URL参数
-            data: POST数据
-            cache_key: 缓存键
-            cache_status_key: 用于确定缓存时长的状态键
-            force_update: 是否强制更新
-            metadata: 额外的缓存元数据
         """
+        获取数据，并在内部记录数据来源 (缓存 或 API)，不改变接口。
+        """
+
+        # 检查必要参数是否存在
         if url is None and endpoint is None:
-            raise ValueError("Must provide either url or endpoint")
+            raise ValueError("必须提供 url or endpoint")
 
-        # 如果有缓存key且不强制更新，尝试获取缓存数据
+        # 1. 检查缓存 (仅当提供了 cache_key 且未强制更新时)
         if cache_key and not force_update:
-            cached_data = self.cache_manager.get(
-                prefix=self.__class__.__name__.lower(),
-                identifier=cache_key,
-                cache_key=cache_status_key
-            )
-            if cached_data is not None:
-                # 直接返回data字段内容
-                return cached_data.get('data') if isinstance(cached_data,
-                                                             dict) and 'data' in cached_data else cached_data
-
-        # 获取新数据
-        try:
-            if endpoint is not None:
-                # 构建基础URL（不包含查询参数）
-                base_url = self.config.base_url
-                if base_url:
-                    request_url = f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
+            try:
+                cached_data = self.cache_manager.get(
+                    prefix=self.__class__.__name__.lower(),
+                    identifier=cache_key,
+                    cache_key=cache_status_key
+                )
+                if cached_data is not None:
+                    # --- 缓存命中日志 ---
+                    self.logger.info(f"数据来源[缓存命中]: {self.__class__.__name__} - Key: {cache_key}")
+                    return cached_data
                 else:
-                    request_url = endpoint
+                    # --- 缓存未命中日志 (Debug级别) ---
+                    self.logger.debug(f"数据来源[缓存未命中]: {self.__class__.__name__} - Key: {cache_key}")
+            except Exception as e:
+                # 记录错误，但允许继续尝试API请求
+                self.logger.error(f"读取缓存失败 ({cache_key}): {e}")
 
-                # 让HTTP库处理参数编码
-                data = self.http_manager.make_request(
-                    url=request_url,
-                    params=params,
-                    data=data
-                )
+        # --- 如果代码执行到这里，说明需要从API获取数据 ---
+        # 2.准备 API 请求，构建URL
+        request_url = url
+        if endpoint is not None and self.config.base_url:
+            request_url = f"{self.config.base_url.rstrip('/')}/{endpoint.lstrip('/')}"
+        elif endpoint is not None:
+            request_url = endpoint
+
+        # 3. 执行 API 请求
+        try:
+            # 3.1 调用 http_manager 发起请求，参数 'data' 用于 POST 请求体
+            api_response = self.http_manager.make_request(
+                url=request_url,
+                params=params,
+                data=data  # 将传入的 data 用于请求体
+            )
+
+            # --- API 请求日志 ---
+            # 分析当前请求的上下文
+            if not cache_key:
+                log_reason = "未指定缓存"
+            elif force_update:
+                log_reason = "强制更新"
             else:
+                log_reason = "缓存未命中或过期"
 
-                data = self.http_manager.make_request(
-                    url=url,
-                    data=data
-                )
+            # 增加请求上下文信息
+            context_info = []
+            if cache_key:
+                context_info.append(f"键:{cache_key}")
+            if url:
+                context_info.append(f"URL:{url.split('/')[-1] if '/' in url else url}")
+            elif endpoint:
+                context_info.append(f"端点:{endpoint.split('/')[-1] if '/' in endpoint else endpoint}")
 
-            # 如果获取成功且需要缓存，则更新缓存
-            if data is not None and cache_key:
+            # 合并上下文信息
+            context_str = " | ".join(context_info) if context_info else ""
+
+            # 构建日志消息
+            log_msg = f"数据来源[API请求]: {self.__class__.__name__} | 原因: {log_reason}"
+            if context_str:
+                log_msg += f" | {context_str}"
+
+            self.logger.info(log_msg)
+
+            # 3.2 如果获取成功且需要缓存，则更新缓存
+            if api_response is not None and cache_key:
                 try:
                     self.cache_manager.set(
                         prefix=self.__class__.__name__.lower(),
                         identifier=cache_key,
-                        data=data,
+                        data=api_response,  # 缓存从 API 返回的数据
                         metadata=metadata
                     )
+                    # --- 缓存写入日志 (Debug级别) ---
+                    self.logger.debug(f"数据已写入缓存: {self.__class__.__name__} - Key: {cache_key}")
                 except Exception as e:
-                    self.logger.error(f"更新缓存失败: {e}")
+                    # 记录错误，但不影响返回结果
+                    self.logger.error(f"更新缓存失败 ({cache_key}): {e}")
 
-            return data
+            # 3.3 返回从API获取的数据（可能是 None 如果请求失败）
+            return api_response
 
         except Exception as e:
-            self.logger.error(f"请求失败: {str(e)}")
-            return None
+            self.logger.error(f"API请求处理失败: {request_url} - {str(e)}")
+            return None  # 确保在请求异常时返回 None
 
-    # 新增内部方法，不影响原有接口
-    def _batch_fetch_internal(self,
-                              ids: List[Any],
-                              fetch_func: Callable[[Any], Dict],
-                              task_name: str,
-                              batch_size: int = 20,
-                              save_interval: int = 50) -> Dict[str, Any]:
+    def _batch_fetch(self,
+                     ids: List[Any],
+                     fetch_func: Callable[[Any], Dict],
+                     task_name: str,
+                     batch_size: int = 20,
+                     save_interval: int = 50) -> Dict[str, Any]:
         """
-        批量获取数据的内部实现，支持断点续传和整体速率控制
+        批量获取数据，专注于请求调度和断点续传
+
+        Args:
+            ids: 要获取的ID列表
+            fetch_func: 获取单个ID数据的函数(该函数内部应处理缓存逻辑)
+            task_name: 任务名称，用于跟踪进度
+            batch_size: 批处理大小
+            save_interval: 保存进度的间隔
+
+        Returns:
+            Dict: 所有ID的获取结果
         """
         # 创建进度跟踪器
         tracker = BatchRequestTracker(
@@ -480,23 +432,44 @@ class BaseNBAFetcher:
             cache_root=self.config.cache_config.root_path
         )
 
-        # 添加速率控制变量
+        # 速率控制变量
         window_start_time = time.time()
         window_duration = 60  # 60秒窗口期
         max_requests_per_window = 60  # 每分钟最大请求数
         window_request_count = 0
 
-        # 创建ID到类型的映射，以便在处理后恢复原始类型
+        # 创建ID到类型的映射，以便恢复原始类型
         id_type_map = {str(id_): type(id_) for id_ in ids}
 
         # 获取未处理的ID (字符串格式)
         pending_ids_str = tracker.get_pending_ids(ids)
         self.logger.info(f"总共 {len(ids)} 个ID，其中 {len(pending_ids_str)} 个待处理")
 
+        # 结果字典，最终会包含所有请求ID的结果
         results = {}
-        processed = 0
 
-        # 批量处理
+        # 处理所有请求的ID - 确保返回完整结果集
+        for id_ in ids:
+            id_str = str(id_)
+
+            # 如果ID已处理且已在tracker中标记为完成
+            if id_str in tracker.completed_ids:
+                # 让fetch_func负责获取数据(可能从缓存获取)
+                try:
+                    original_type = id_type_map.get(id_str, int)
+                    try:
+                        item_id = original_type(id_str) if original_type in (int, float) else id_str
+                    except (ValueError, TypeError):
+                        item_id = id_str
+
+                    data = fetch_func(item_id)
+                    if data:
+                        results[id_str] = data
+                except Exception as e:
+                    self.logger.error(f"获取已完成ID {id_str} 数据时出错: {str(e)}")
+
+        # 处理未完成的ID
+        processed = 0
         for i in range(0, len(pending_ids_str), batch_size):
             batch_ids_str = pending_ids_str[i:i + batch_size]
             self.logger.info(
@@ -604,7 +577,7 @@ class BaseNBAFetcher:
         if task_name is None:
             task_name = self.__class__.__name__.lower()
 
-        return self._batch_fetch_internal(
+        return self._batch_fetch(
             ids=ids,
             fetch_func=fetch_func,
             task_name=task_name,

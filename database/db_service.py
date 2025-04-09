@@ -257,6 +257,18 @@ class DatabaseService:
                 all_success = False
                 self.logger.error("新赛季同步球员信息失败")
 
+            # 在同步完球员基本信息后，添加球员详细信息同步
+            if self.sync_player_details and player_result.get("status") != "failed":
+                self.logger.info("开始同步球员详细信息...")
+                player_details_result = self.sync_manager.sync_player_details(
+                    force_update=force_update,
+                    only_active=True  # 只同步活跃球员
+                )
+                results["details"]["player_details"] = player_details_result
+                if player_details_result.get("status") != "success":
+                    self.logger.warning("新赛季同步球员详细信息部分失败，但将继续处理")
+                    # 不影响总体成功状态，因为这是可选功能
+
             # 3. 同步当前赛季赛程 (强制)
             self.logger.info("同步当前赛季赛程信息...")
             # 注意：all_seasons=False 表示只同步当前赛季
@@ -279,6 +291,30 @@ class DatabaseService:
         results["duration"] = (end_time - start_time).total_seconds()
         self.logger.info(f"新赛季核心数据同步完成，状态: {results['status']}, 耗时: {results['duration']:.2f}秒")
         return results
+
+    def sync_player_details(self, player_ids: Optional[List[int]] = None,
+                            force_update: bool = False,
+                            only_active: bool = True) -> Dict[str, Any]:
+        """
+        同步球员详细信息
+
+        Args:
+            player_ids: 指定的球员ID列表，不指定则同步所有符合条件的球员
+            force_update: 是否强制更新
+            only_active: 是否只同步可能活跃的球员
+
+        Returns:
+            Dict: 同步结果
+        """
+        if not self._initialized:
+            self.logger.error("数据库服务未初始化，无法同步球员详细信息")
+            return {"status": "failed", "error": "数据库服务未初始化"}
+
+        return self.sync_manager.sync_player_details(
+            player_ids=player_ids,
+            force_update=force_update,
+            only_active=only_active
+        )
 
     # --- Repository Access Methods ---
 

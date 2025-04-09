@@ -41,18 +41,70 @@ class Team(Base):
 
 
 class Player(Base):
-    """球员模型"""
+    """
+    球员模型
+
+    数据来源：
+    1. 基本列表信息来自 commonallplayers API:
+       https://stats.nba.com/stats/commonallplayers
+       获取全部球员的基础信息列表，但只有少数字段在此API中独有
+
+    2. 详细个人信息来自 commonplayerinfo API:
+       https://stats.nba.com/stats/commonplayerinfo
+       通过球员ID单独请求获取完整详细信息，包含准确的roster_status等数据
+    """
     __tablename__ = 'players'
 
+    # 基础标识信息 (两个API都有)
     person_id = Column(Integer, primary_key=True)
-    display_last_comma_first = Column(String)
+
+    # CommonAllPlayers API独有字段
+    otherleague_experience_ch = Column(String)
+
+    # 以下字段来自详细球员信息 (CommonPlayerInfo API)
+    # 基本信息
+    first_name = Column(String)
+    last_name = Column(String)
     display_first_last = Column(String, nullable=False, index=True)
-    roster_status = Column(Integer, index=True)
+    display_last_comma_first = Column(String)
+    player_slug = Column(String, index=True)
+
+
+    # 个人信息
+    birthdate = Column(String)
+    school = Column(String)
+    country = Column(String)
+    last_affiliation = Column(String)
+    height = Column(String)
+    weight = Column(String)
+    season_exp = Column(Integer)
+    position = Column(String)
+    jersey = Column(String)
+
+    # 职业信息
+    roster_status = Column(String, index=True)  # "Active"或"Inactive"
     from_year = Column(String)
     to_year = Column(String)
-    player_slug = Column(String, index=True)
+    draft_year = Column(String)
+    draft_round = Column(String)
+    draft_number = Column(String)
+    greatest_75_flag = Column(String)
+
+    # 球队相关信息
     team_id = Column(Integer, ForeignKey('teams.team_id'))
+    team_name = Column(String)
+    team_city = Column(String)
+    team_abbreviation = Column(String)
+    team_code = Column(String)
+
+    # 其他信息
+    dleague_flag = Column(String)
+    nba_flag = Column(String)
     games_played_flag = Column(String)
+
+    # 记录信息
+    is_active = Column(Boolean, default=False, index=True)  # 根据ROSTERSTATUS判断
+    last_synced = Column(DateTime)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     # 关系
