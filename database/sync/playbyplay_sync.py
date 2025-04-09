@@ -47,7 +47,6 @@ class PlayByPlaySync:
     def sync_playbyplay(self, game_id: str, force_update: bool = False) -> Dict[str, Any]:
         start_time = datetime.now()
         self.logger.info(f"开始同步比赛(ID:{game_id})的Play-by-Play数据...")
-
         try:
             # 获取playbyplay数据
             playbyplay_data = self.game_fetcher.get_playbyplay(game_id, force_update)

@@ -4,7 +4,6 @@ from typing import Dict, List, Optional
 from database.models.base_models import Team
 from nba.fetcher.team_fetcher import TeamFetcher
 from utils.logger_handler import AppLogger
-from utils.http_handler import HTTPRequestManager
 from database.db_session import DBSession
 
 
@@ -19,7 +18,7 @@ class TeamSync:
         """初始化球队数据同步器"""
         self.db_session = DBSession.get_instance()
         self.team_fetcher = team_fetcher or TeamFetcher()
-        self.logger = AppLogger.get_logger(__name__, app_name='nba')
+        self.logger = AppLogger.get_logger(__name__, app_name='sqlite')
 
     def sync_team_details(self, force_update: bool = True) -> bool:
         """同步所有球队的详细信息
@@ -63,11 +62,8 @@ class TeamSync:
             self.logger.error(f"同步球队详细信息失败: {e}")
             return False
 
-    def sync_team_logos(self, force_update: bool = False) -> bool:
+    def sync_team_logos(self) -> bool:
         """同步所有球队的Logo
-
-        Args:
-            force_update: 是否强制更新
 
         Returns:
             bool: 同步是否成功
@@ -81,7 +77,7 @@ class TeamSync:
             self.logger.info(f"开始同步{len(team_ids)}支球队Logo")
 
             # 使用TeamFetcher批量获取Logo
-            logos_data = self.team_fetcher.get_multiple_team_logos(team_ids, force_update)
+            logos_data = self.team_fetcher.get_multiple_team_logos(team_ids)
 
             # 处理获取的结果
             if not logos_data:
