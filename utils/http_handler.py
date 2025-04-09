@@ -1,4 +1,19 @@
-import logging
+#utils/http_handler.py
+"""
+本模块提供了一套完整的HTTP请求处理工具，包括：
+- 错误重试策略
+- 请求速率控制
+- 会话管理
+- 批量请求管理
+- HTTP请求客户端
+主要类:
+- RetryableErrorType: 可重试错误类型枚举
+- RetryConfig: 重试配置数据类
+- RetryStrategy: 重试策略类
+- RequestWindowManager: 请求窗口管理器
+- BatchRequestManager: 批量请求管理器
+- HTTPRequestManager: HTTP请求管理器主类
+"""
 import time
 import random
 from dataclasses import dataclass
@@ -6,7 +21,12 @@ import requests
 from enum import Enum
 from typing import List, Optional, Dict, Any, Union
 from requests.adapters import HTTPAdapter
+from utils.logger_handler import AppLogger
 
+
+#############################################################################
+# 1.错误处理和重试策略
+#############################################################################
 
 class RetryableErrorType(Enum):
     """可重试的错误类型枚举"""
@@ -48,7 +68,7 @@ class RetryStrategy:
     def __init__(self, config: RetryConfig):
         """初始化重试策略"""
         self.config = config
-        self.logger = logging.getLogger(__name__)
+        self.logger = AppLogger.get_logger(__name__, app_name='network')
 
     @staticmethod
     def _categorize_error(error: Exception, status_code: Optional[int] = None) -> Optional[RetryableErrorType]:
@@ -121,6 +141,10 @@ class RetryStrategy:
         return False, 0
 
 
+#############################################################################
+# 2.请求速率控制
+#############################################################################
+
 class RequestWindowManager:
     """请求窗口管理器 - 优化版
 
@@ -155,7 +179,7 @@ class RequestWindowManager:
         self.last_limit_time = 0  # 上次触发限制的时间
         self.last_action = None  # 上次执行的动作类型
 
-        self.logger = logging.getLogger(__name__)
+        self.logger = AppLogger.get_logger(__name__, app_name='network')
 
     def register_request(self) -> Dict[str, Union[float, str, None]]:
         """注册一次请求并检查是否需要限流
@@ -257,6 +281,192 @@ class RequestWindowManager:
         return result
 
 
+#############################################################################
+# 3.批量请求管理器
+#############################################################################
+
+class BatchRequestManager:
+    """批量请求管理器
+
+    专门处理批量请求的时间间隔、计数和统计功能。
+    与HTTPRequestManager协同工作，提供批量请求控制。
+    """
+
+    def __init__(self):
+        """初始化批量请求管理器"""
+        self.batch_count = 0  # 已处理批次数
+        self.last_batch_time = 0  # 上次批次处理时间
+        self.batch_interval = 60  # 默认批次间隔(秒)
+        self.adaptive_batch = True  # 是否启用自适应批次间隔
+        self.logger = AppLogger.get_logger(__name__, app_name='network')
+
+        # 批次间隔调整阈值
+        self.batch_interval_thresholds = {
+            10: 1.5,  # 10批后增加50%
+            15: 2.0,  # 15批后加倍
+            20: 3.0  # 20批后增加3倍
+        }
+
+        # 长暂停阈值 - 减少长暂停次数和时长
+        self.long_pause_thresholds = [
+            {"batch": 20, "pause": 120, "message": "完成20批处理，暂停120秒让API冷却"},
+            {"batch": 40, "pause": 180, "message": "完成40批处理，暂停180秒让API冷却"}
+        ]
+
+        # 记录延迟信息
+        self.last_long_wait_time = 0
+        self.last_long_wait_duration = 0
+
+    def record_delay(self, delay_recorder, source: str, duration: float):
+        """记录延迟信息
+
+        Args:
+            delay_recorder: 用于记录延迟的对象
+            source: 延迟来源标识
+            duration: 延迟时长(秒)
+        """
+        if delay_recorder and hasattr(delay_recorder, 'record_delay'):
+            delay_recorder.record_delay(source, duration)
+
+        # 如果是长时间等待，特别记录
+        if duration > 60:
+            self.last_long_wait_time = time.time()
+            self.last_long_wait_duration = duration
+
+    def wait_for_next_batch(self, delay_recorder=None, force_wait_info=None):
+        """等待直到可以处理下一批次
+
+        实现批量处理控制逻辑，根据批次数动态调整等待时间。
+
+        Args:
+            delay_recorder: 用于记录延迟的对象
+            force_wait_info: 强制等待相关信息
+
+        Returns:
+            float: 实际应用的间隔时间(秒)
+        """
+        force_wait_info = force_wait_info or {}
+        current_time = time.time()
+        elapsed = current_time - self.last_batch_time
+
+        # 计算应用的间隔时间
+        interval = self.batch_interval
+        delay_source = "batch_interval"
+
+        # 检查是否距离上次强制等待较近
+        last_long_wait_time = force_wait_info.get('last_long_wait_time', self.last_long_wait_time)
+        last_long_wait_duration = force_wait_info.get('last_long_wait_duration', self.last_long_wait_duration)
+
+        if time.time() - last_long_wait_time < 300:  # 5分钟内
+            reduction_factor = 0.3  # 减少至30%
+            original_interval = interval
+            interval = interval * reduction_factor
+            self.logger.info(
+                f"最近有长时间等待({last_long_wait_duration:.1f}秒)，"
+                f"批次间隔从{original_interval}秒减少到{interval}秒"
+            )
+
+        # 如果启用自适应模式，根据已处理批次数动态调整间隔
+        needs_long_pause = False
+        pause_time = 0
+
+        if self.adaptive_batch:
+            # 检查是否需要长暂停
+            for threshold in self.long_pause_thresholds:
+                if self.batch_count == threshold["batch"]:
+                    # 如果最近有强制等待，减少长暂停时间
+                    pause_time = threshold["pause"]
+                    if time.time() - last_long_wait_time < 600:  # 10分钟内
+                        pause_time = pause_time * 0.5  # 减少到一半
+                        self.logger.warning(
+                            f"{threshold['message']}(但由于最近有长等待，减半至{pause_time}秒)"
+                        )
+                    else:
+                        self.logger.warning(threshold["message"])
+
+                    delay_source = "batch_long_pause"
+                    self.record_delay(delay_recorder, delay_source, pause_time)
+                    time.sleep(pause_time)
+                    needs_long_pause = True
+                    break
+
+            # 如果需要长暂停，跳过普通间隔
+            if needs_long_pause:
+                self.batch_count += 1
+                self.last_batch_time = time.time()
+                return pause_time
+
+            # 应用批次阈值调整 - 按降序检查，找到第一个匹配的阈值
+            for batch_num, factor in sorted(self.batch_interval_thresholds.items(), reverse=True):
+                if self.batch_count >= batch_num:
+                    interval *= factor
+                    break
+
+        # 检查是否需要等待
+        if elapsed < interval and self.last_batch_time > 0:
+            wait_time = interval - elapsed
+
+            # 根据间隔长度决定日志级别
+            if wait_time > 60:
+                self.logger.warning(f"批次{self.batch_count}后等待较长时间: {wait_time:.1f}秒")
+            else:
+                self.logger.info(f"批次{self.batch_count}后等待: {wait_time:.1f}秒")
+
+            # 记录延迟来源
+            self.record_delay(delay_recorder, delay_source, wait_time)
+            time.sleep(wait_time)
+
+        # 更新计数和时间
+        self.batch_count += 1
+        self.last_batch_time = time.time()
+
+        # 添加一些随机性，避免完全规律的请求模式
+        if random.random() < 0.15:  # 降低到15%概率
+            extra_delay = random.uniform(0.5, 2.0)  # 降低上限
+            self.logger.debug(f"添加额外随机延迟: {extra_delay:.1f}秒")
+            time.sleep(extra_delay)
+
+        return interval  # 返回实际应用的间隔，便于调试
+
+    def reset_batch_count(self):
+        """重置批次计数器"""
+        self.batch_count = 0
+        self.last_batch_time = 0
+        self.logger.info("批次计数器已重置")
+
+    def set_batch_interval(self, interval: float, adaptive: bool = True):
+        """设置批次间隔和自适应模式
+
+        Args:
+            interval: 批次间隔时间(秒)
+            adaptive: 是否启用自适应模式
+        """
+        self.batch_interval = interval
+        self.adaptive_batch = adaptive
+        self.logger.info(f"批次间隔已设置为{interval}秒，自适应模式: {adaptive}")
+
+    def get_batch_stats(self):
+        """获取批次处理统计信息
+
+        Returns:
+            Dict: 批次处理统计信息
+        """
+        return {
+            "batch_count": self.batch_count,
+            "last_batch_time": self.last_batch_time,
+            "batch_interval": self.batch_interval,
+            "adaptive_mode": self.adaptive_batch,
+            "last_long_wait": {
+                "time": self.last_long_wait_time,
+                "duration": self.last_long_wait_duration,
+                "age": time.time() - self.last_long_wait_time if self.last_long_wait_time > 0 else None
+            }
+        }
+
+#############################################################################
+# 4.HTTP请求管理器
+#############################################################################
+
 class HTTPRequestManager:
     """增强版HTTP请求管理器
 
@@ -271,7 +481,7 @@ class HTTPRequestManager:
         self.headers = self._prepare_headers(headers)
         self.retry_strategy = RetryStrategy(RetryConfig())
         self.timeout = timeout or 30
-        self.logger = logging.getLogger(__name__)
+        self.logger = AppLogger.get_logger(__name__, app_name='network')
         self.session = self._create_session()
 
         # 请求间隔控制
@@ -305,24 +515,8 @@ class HTTPRequestManager:
             700: {"delay": 45, "message": "达到700请求阈值，显著增加等待时间"}
         }
 
-        # 批次管理相关属性
-        self.batch_count = 0  # 已处理批次数
-        self.last_batch_time = 0  # 上次批次处理时间
-        self.batch_interval = 60  # 默认批次间隔(秒)
-        self.adaptive_batch = True  # 是否启用自适应批次间隔
-
-        # 批次间隔调整阈值
-        self.batch_interval_thresholds = {
-            10: 1.5,  # 10批后增加50%
-            15: 2.0,  # 15批后加倍
-            20: 3.0  # 20批后增加3倍
-        }
-
-        # 长暂停阈值 - 减少长暂停次数和时长
-        self.long_pause_thresholds = [
-            {"batch": 20, "pause": 120, "message": "完成20批处理，暂停120秒让API冷却"},
-            {"batch": 40, "pause": 180, "message": "完成40批处理，暂停180秒让API冷却"}
-        ]
+        # 批次管理 - 内部使用BatchRequestManager
+        self._batch_manager = BatchRequestManager()
 
         # 协调控制参数
         self.recent_force_wait = False  # 最近是否执行了强制等待
@@ -349,22 +543,6 @@ class HTTPRequestManager:
         session.mount('https://', adapter)
         return session
 
-    @staticmethod
-    def _get_random_user_agent():
-        """获取随机用户代理"""
-        user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/95.0.4638.69 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.1 Safari/605.1.15",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36"
-        ]
-        return random.choice(user_agents)
-
-    def _refresh_headers(self):
-        """刷新请求头"""
-        self.headers['user-agent'] = HTTPRequestManager._get_random_user_agent()
-        self.headers['cache-control'] = f"no-cache, no-store, must-revalidate, max-age=0"
-
     def _reset_session(self):
         """重置会话"""
         if self.session:
@@ -372,9 +550,6 @@ class HTTPRequestManager:
                 self.session.close()
             except Exception as e:
                 self.logger.error(f"关闭session失败: {str(e)}")
-
-        # 刷新请求头
-        self._refresh_headers()
 
         # 创建新会话
         self.session = self._create_session()
@@ -520,9 +695,9 @@ class HTTPRequestManager:
         # 如果需要延迟，则等待
         if elapsed < base_delay:
             wait_time = base_delay - elapsed
-            if wait_time > 5:
-                self.logger.info(
-                    f"自适应延迟: {wait_time:.2f}秒 (失败:{failure_factor:.1f}, 会话:{session_age_factor:.1f})"
+            if wait_time > 10:
+                self.logger.debug(
+                    f"自适应延迟: {wait_time:.2f}秒 )"
                 )
 
             self._record_delay(delay_source, wait_time)
@@ -550,115 +725,38 @@ class HTTPRequestManager:
 
         self.last_request_time = time.time()
 
+    # 批量请求相关方法 - 保持原有公共接口，内部使用BatchRequestManager
     def wait_for_next_batch(self):
-        """等待直到可以处理下一批次
-
-        实现批量处理控制逻辑，根据批次数动态调整等待时间。
-        与单个请求的速率控制协调，避免重叠等待。
-
-        Returns:
-            float: 实际应用的间隔时间(秒)
-        """
-        current_time = time.time()
-        elapsed = current_time - self.last_batch_time
-
-        # 计算应用的间隔时间
-        interval = self.batch_interval
-        delay_source = "batch_interval"
-
-        # 检查是否距离上次强制等待较近
-        # 如果刚进行了强制等待，减少批次间隔
-        if time.time() - self.last_long_wait_time < 300:  # 5分钟内
-            reduction_factor = 0.3  # 减少至30%
-            original_interval = interval
-            interval = interval * reduction_factor
-            self.logger.info(
-                f"最近有长时间等待({self.last_long_wait_duration:.1f}秒)，"
-                f"批次间隔从{original_interval}秒减少到{interval}秒"
-            )
-
-        # 如果启用自适应模式，根据已处理批次数动态调整间隔
-        # 初始化变量，确保在任何情况下都有值
-        needs_long_pause = False
-        pause_time = 0
-
-        if self.adaptive_batch:
-            # 检查是否需要长暂停
-            for threshold in self.long_pause_thresholds:
-                if self.batch_count == threshold["batch"]:
-                    # 如果最近有强制等待，减少长暂停时间
-                    pause_time = threshold["pause"]
-                    if time.time() - self.last_long_wait_time < 600:  # 10分钟内
-                        pause_time = pause_time * 0.5  # 减少到一半
-                        self.logger.warning(
-                            f"{threshold['message']}(但由于最近有长等待，减半至{pause_time}秒)"
-                        )
-                    else:
-                        self.logger.warning(threshold["message"])
-
-                    delay_source = "batch_long_pause"
-                    self._record_delay(delay_source, pause_time)
-                    time.sleep(pause_time)
-                    needs_long_pause = True
-                    break
-
-            # 如果需要长暂停，跳过普通间隔
-            if needs_long_pause:
-                self.batch_count += 1
-                self.last_batch_time = time.time()
-                return pause_time
-
-            # 应用批次阈值调整 - 按降序检查，找到第一个匹配的阈值
-            for batch_num, factor in sorted(self.batch_interval_thresholds.items(), reverse=True):
-                if self.batch_count >= batch_num:
-                    interval *= factor
-                    break
-
-        # 检查是否需要等待
-        if elapsed < interval and self.last_batch_time > 0:
-            wait_time = interval - elapsed
-
-            # 根据间隔长度决定日志级别
-            if wait_time > 60:
-                self.logger.warning(f"批次{self.batch_count}后等待较长时间: {wait_time:.1f}秒")
-            else:
-                self.logger.info(f"批次{self.batch_count}后等待: {wait_time:.1f}秒")
-
-            # 记录延迟来源
-            self._record_delay(delay_source, wait_time)
-            time.sleep(wait_time)
-
-        # 更新计数和时间
-        self.batch_count += 1
-        self.last_batch_time = time.time()
-
-        # 添加一些随机性，避免完全规律的请求模式
-        # 降低概率和时间范围，避免过多的随机等待
-        if random.random() < 0.15:  # 降低到15%概率
-            extra_delay = random.uniform(0.5, 2.0)  # 降低上限
-            self.logger.debug(f"添加额外随机延迟: {extra_delay:.1f}秒")
-            time.sleep(extra_delay)
-        return interval  # 返回实际应用的间隔，便于调试
+        """等待直到可以处理下一批次"""
+        # 构建需要传递给批处理管理器的信息
+        force_wait_info = {
+            "last_force_wait_time": self.last_force_wait_time,
+            "last_long_wait_time": self.last_long_wait_time,
+            "last_long_wait_duration": self.last_long_wait_duration
+        }
+        return self._batch_manager.wait_for_next_batch(self, force_wait_info)
 
     def reset_batch_count(self):
-        """重置批次计数器
-
-        将批次计数和时间重置为初始状态，用于开始新的批量处理任务。
-        """
-        self.batch_count = 0
-        self.last_batch_time = 0
-        self.logger.info("批次计数器已重置")
+        """重置批次计数器"""
+        self._batch_manager.reset_batch_count()
 
     def set_batch_interval(self, interval: float, adaptive: bool = True):
-        """设置批次间隔和自适应模式
+        """设置批次间隔和自适应模式"""
+        self._batch_manager.set_batch_interval(interval, adaptive)
 
-        Args:
-            interval: 批次间隔时间(秒)
-            adaptive: 是否启用自适应模式
-        """
-        self.batch_interval = interval
-        self.adaptive_batch = adaptive
-        self.logger.info(f"批次间隔已设置为{interval}秒，自适应模式: {adaptive}")
+    def get_batch_stats(self):
+        """获取批次处理统计信息"""
+        # 获取批处理管理器的统计信息
+        stats = self._batch_manager.get_batch_stats()
+
+        # 添加HTTPRequestManager特有的统计信息
+        stats.update({
+            "total_requests": self.total_requests,
+            "consecutive_failures": self._consecutive_failures,
+            "session_age": self.session_age,
+            "session_lifetime": time.time() - self.last_session_reset
+        })
+        return stats
 
     def make_request(self, url: str, method: str = 'GET', params: Optional[Dict[str, Any]] = None,
                      data: Optional[Dict[str, Any]] = None) -> Optional[Dict]:
@@ -695,7 +793,7 @@ class HTTPRequestManager:
                         headers=self.headers
                     )
 
-                    self.logger.info(f"请求: {method} {response.request.url}")
+                    self.logger.info(f"正在请求: {method} {response.request.url}")
 
                     if response.ok:
                         # 请求成功，重置连续失败计数
@@ -787,7 +885,7 @@ class HTTPRequestManager:
                     )
 
                     # 添加完整URL日志记录（包含参数）
-                    self.logger.info(f"二进制请求: {method} {response.request.url}")
+                    self.logger.info(f"正在进行二进制请求: {method} {response.request.url}")
 
                     if response.ok:
                         # 请求成功，重置连续失败计数
@@ -838,39 +936,15 @@ class HTTPRequestManager:
             return None
 
     def close(self):
-        """关闭会话
-
-        清理和释放资源，应在不再需要请求管理器时调用。
-        """
+        """关闭会话"""
         if self.session:
             try:
                 self.session.close()
             except Exception as e:
                 self.logger.error(f"关闭session失败: {str(e)}")
 
-    def get_batch_stats(self):
-        """获取批次处理统计信息
-
-        返回当前批次处理的统计数据，用于监控和诊断。
-
-        Returns:
-            Dict: 批次处理统计信息
-        """
-        return {
-            "batch_count": self.batch_count,
-            "last_batch_time": self.last_batch_time,
-            "batch_interval": self.batch_interval,
-            "adaptive_mode": self.adaptive_batch,
-            "total_requests": self.total_requests,
-            "consecutive_failures": self._consecutive_failures,
-            "session_age": self.session_age,
-            "session_lifetime": time.time() - self.last_session_reset
-        }
-
     def get_delay_stats(self):
         """获取延迟统计信息
-
-        返回不同来源的延迟频率和时长统计，用于分析和优化策略。
 
         Returns:
             Dict: 延迟统计信息
@@ -902,8 +976,6 @@ class HTTPRequestManager:
     def set_retry_config(self, config: RetryConfig):
         """设置重试配置
 
-        更新重试策略的配置参数。
-
         Args:
             config: 新的RetryConfig配置对象
         """
@@ -913,8 +985,6 @@ class HTTPRequestManager:
     def adjust_request_rate(self, min_delay: float = None, max_delay: float = None,
                             min_interval: float = None):
         """调整请求速率参数
-
-        更新控制请求频率的关键参数。
 
         Args:
             min_delay: 最小延迟时间(秒)(可选)
