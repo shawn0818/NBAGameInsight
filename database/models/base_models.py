@@ -63,10 +63,10 @@ class Player(Base):
 
     # 以下字段来自详细球员信息 (CommonPlayerInfo API)
     # 基本信息
-    first_name = Column(String)
-    last_name = Column(String)
+    first_name = Column(String, index=True)
+    last_name = Column(String, index=True)
     display_first_last = Column(String, nullable=False, index=True)
-    display_last_comma_first = Column(String)
+    display_last_comma_first = Column(String, nullable=False, index=True)
     player_slug = Column(String, index=True)
 
 
@@ -91,7 +91,7 @@ class Player(Base):
     greatest_75_flag = Column(String)
 
     # 球队相关信息
-    team_id = Column(Integer, ForeignKey('teams.team_id'))
+    team_id = Column(Integer, ForeignKey('teams.team_id'), index=True)
     team_name = Column(String)
     team_city = Column(String)
     team_abbreviation = Column(String)
