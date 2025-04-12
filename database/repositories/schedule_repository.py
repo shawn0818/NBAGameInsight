@@ -178,23 +178,23 @@ class ScheduleRepository:
     def get_team_last_schedule(self, team_id: int) -> Optional[Dict]:
         """
         获取指定球队的上一场比赛
-
         Args:
             team_id: 球队ID
-
         Returns:
             Optional[Dict]: 上一场比赛信息，无上一场比赛时返回None
         """
         try:
             now = datetime.now(timezone.utc).isoformat()
-
             with self.db_session.session_scope('nba') as session:
                 game = session.query(Game).filter(
                     or_(Game.home_team_id == team_id, Game.away_team_id == team_id),
                     Game.game_date_time_utc < now
                 ).order_by(desc(Game.game_date_time_utc)).first()
-
-                return self._to_dict(game) if game else None
+                # 确保在会话内完成数据转换
+                result = None
+                if game:
+                    result = self._to_dict(game)
+                return result
 
         except Exception as e:
             self.logger.error(f"获取球队(ID:{team_id})上一场比赛失败: {e}")
@@ -245,4 +245,50 @@ class ScheduleRepository:
         except Exception as e:
             self.logger.error(f"获取赛季({season})赛程数量失败: {e}")
             return 0
+
+    def format_game_time(self, game_data: Dict) -> str:
+        """
+        格式化比赛时间为易读字符串
+
+        参数:
+            game_data: 包含时间信息的比赛数据字典
+
+        返回:
+            str: 格式化后的时间字符串
+        """
+        if 'game_date_time_bjs' in game_data and game_data['game_date_time_bjs']:
+            try:
+                import re
+                time_str = game_data['game_date_time_bjs']
+                # 尝试解析ISO格式的时间字符串
+                match = re.match(r'(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2}).*', time_str)
+                if match:
+                    date_part, time_part = match.groups()
+                    dt = datetime.strptime(f"{date_part} {time_part}", '%Y-%m-%d %H:%M:%S')
+                    return dt.strftime('%Y年%m月%d日 %H:%M')
+                else:
+                    dt = datetime.fromisoformat(time_str.replace('Z', '+00:00'))
+                    return dt.strftime('%Y年%m月%d日 %H:%M')
+            except Exception as e:
+                self.logger.debug(f"日期解析失败: {e}, 使用原始值: {game_data['game_date_time_bjs']}")
+                return game_data['game_date_time_bjs']
+        elif ('game_date_bjs' in game_data and game_data['game_date_bjs']) and \
+                ('game_time_bjs' in game_data and game_data['game_time_bjs']):
+            try:
+                # 使用分开存储的日期和时间
+                dt = datetime.strptime(f"{game_data['game_date_bjs']} {game_data['game_time_bjs']}",
+                                       '%Y-%m-%d %H:%M:%S')
+                return dt.strftime('%Y年%m月%d日 %H:%M')
+            except Exception:
+                return f"{game_data['game_date_bjs']} {game_data['game_time_bjs']}"
+        elif 'game_date_bjs' in game_data and game_data['game_date_bjs']:
+            try:
+                # 只有日期的情况
+                dt = datetime.strptime(game_data['game_date_bjs'], '%Y-%m-%d')
+                return dt.strftime('%Y年%m月%d日')
+            except Exception:
+                return game_data['game_date_bjs']
+        else:
+            # 没有北京时间，尝试使用原始game_date
+            return game_data.get('game_date', '未知日期')
 

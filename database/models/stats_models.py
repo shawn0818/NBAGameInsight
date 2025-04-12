@@ -65,9 +65,6 @@ class Statistics(Base):
     points = Column(Integer, default=0, index=True)
     plus_minus_points = Column(Float, default=0)
 
-    # 元数据
-    last_updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
-
     # 索引
     __table_args__ = (
         Index('idx_statistics_name', 'first_name', 'family_name'),
@@ -76,6 +73,56 @@ class Statistics(Base):
     def __repr__(self):
         return f"<Statistics {self.game_id} {self.person_id} {self.points}pts>"
 
+    # 添加有用的计算属性
+    @property
+    def full_name(self):
+        """获取球员全名"""
+        return f"{self.first_name} {self.family_name}"
+
+    @property
+    def team_name(self):
+        """获取球员所属队伍名称"""
+        if self.team_id == self.home_team_id:
+            return f"{self.home_team_city} {self.home_team_name}"
+        else:
+            return f"{self.away_team_city} {self.away_team_name}"
+
+    @property
+    def efficiency(self):
+        """计算球员效率值"""
+        return self.points + self.rebounds_total + self.assists + self.steals + self.blocks - self.turnovers
+
+    @property
+    def is_double_double(self):
+        """判断是否获得两双"""
+        categories = [
+            self.points,
+            self.rebounds_total,
+            self.assists,
+            self.steals,
+            self.blocks
+        ]
+        return sum(1 for c in categories if c >= 10) >= 2
+
+    @property
+    def is_triple_double(self):
+        """判断是否获得三双"""
+        categories = [
+            self.points,
+            self.rebounds_total,
+            self.assists,
+            self.steals,
+            self.blocks
+        ]
+        return sum(1 for c in categories if c >= 10) >= 3
+
+    def to_dict(self):
+        """转换为字典 - 为了兼容性或需要序列化的场景"""
+        result = {}
+        for column in self.__table__.columns:
+            result[column.name] = getattr(self, column.name)
+        return result
+
 
 class Event(Base):
     """比赛回合动作数据模型"""
@@ -83,7 +130,7 @@ class Event(Base):
 
     # 主键
     game_id = Column(String, primary_key=True, index=True)
-    action_number = Column(Integer, primary_key=True)
+    action_number = Column(Integer, primary_key=True)  #同样也是event_id
 
     # 回合动作信息
     clock = Column(String)
@@ -107,13 +154,56 @@ class Event(Base):
     sub_type = Column(String)
     video_available = Column(Integer, default=0)
     shot_value = Column(Integer, default=0)
-    action_id = Column(Integer)
+    action_id = Column(Integer)  #与aciton_number不同，也不是eventid，暂时未发现用处
 
     # 元数据
     last_updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     def __repr__(self):
         return f"<Event {self.game_id} #{self.action_number} {self.action_type}>"
+
+        # 添加有用的计算属性
+        @property
+        def time_remaining(self):
+            """计算该动作发生时的剩余时间（秒）"""
+            if not self.clock or ":" not in self.clock:
+                return None
+
+            try:
+                minutes, seconds = self.clock.split(":")
+                return int(minutes) * 60 + float(seconds)
+            except (ValueError, TypeError):
+                return None
+
+        @property
+        def is_three_pointer(self):
+            """判断是否为三分球"""
+            return self.is_field_goal == 1 and self.shot_value == 3
+
+        @property
+        def is_successful(self):
+            """判断动作是否成功"""
+            if self.is_field_goal == 1:
+                return self.shot_result == 'Made'
+            return None  # 非投篮动作没有成功/失败的概念
+
+        @property
+        def score_difference(self):
+            """计算该动作发生时的比分差距"""
+            if not self.score_home or not self.score_away:
+                return None
+
+            try:
+                return int(self.score_home) - int(self.score_away)
+            except (ValueError, TypeError):
+                return None
+
+        def to_dict(self):
+            """转换为字典 - 为了兼容性或需要序列化的场景"""
+            result = {}
+            for column in self.__table__.columns:
+                result[column.name] = getattr(self, column.name)
+            return result
 
 
 class GameStatsSyncHistory(Base):

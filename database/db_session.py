@@ -1,127 +1,168 @@
-# db_session.py
+# database/db_session.py
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, scoped_session
 from contextlib import contextmanager
-from typing import Dict, Generator, Optional
-from sqlalchemy.orm import Session, scoped_session
-from sqlalchemy.engine import Engine
 import threading
-import logging
-from database.connection_pool import ConnectionPool
+from utils.logger_handler import AppLogger
 from config import NBAConfig
-
-logger = logging.getLogger(__name__)
 
 
 class DBSession:
-    """数据库会话管理器 - 提供统一的会话访问接口"""
-
+    """数据库会话管理类，使用单例模式"""
     _instance = None
     _lock = threading.Lock()
 
     @classmethod
-    def get_instance(cls) -> 'DBSession':
-        """单例模式获取实例"""
-        if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:
-                    cls._instance = cls()
-        return cls._instance
+    def get_instance(cls):
+        """获取DBSession单例"""
+        with cls._lock:
+            if not cls._instance:
+                cls._instance = DBSession()
+            return cls._instance
 
     def __init__(self):
         """初始化数据库会话管理器"""
-        self.connection_pool = ConnectionPool()
-        self.scoped_sessions: Dict[str, scoped_session] = {}
+        self.engines = {}
+        self.session_factories = {}
+        self.scoped_sessions = {}  # 存储scoped_session实例
+        self._initialized = False
+        self.logger = AppLogger.get_logger(__name__, app_name='sqlite')
 
-    def initialize(self, env: str = "default", create_tables: bool = True) -> None:
-        """
-        初始化数据库连接
+    def initialize(self, env="default", create_tables=False):
+        """初始化数据库连接引擎和会话工厂
 
         Args:
-            env: 环境名称，可以是 "default", "test", "development", "production"
-            create_tables: 是否创建表结构
+            env: 环境配置名称，可以是"default", "development", "testing", "production"
+            create_tables: 是否创建不存在的表，默认为False
+
+        Returns:
+            bool: 初始化是否成功
         """
-        # 获取环境配置
-        echo_sql = False
-        if env == "development":
-            echo_sql = NBAConfig.DATABASE.DEVELOPMENT.ECHO_SQL
-        elif env == "test":
-            echo_sql = NBAConfig.DATABASE.TESTING.ECHO_SQL
-        elif env == "production":
-            echo_sql = False
+        if self._initialized:
+            return True
 
-        # 获取数据库路径
-        nba_db_path = NBAConfig.DATABASE.get_db_path(env)
-        game_db_path = NBAConfig.DATABASE.get_game_db_path(env)
+        try:
+            # 确保数据目录存在
+            NBAConfig.PATHS.ensure_directories()
 
-        # 设置引擎
-        self.connection_pool.setup_engine("nba", str(nba_db_path), echo=echo_sql)
-        self.connection_pool.setup_engine("game", str(game_db_path), echo=echo_sql)
+            # 获取数据库路径
+            nba_db_path = NBAConfig.DATABASE.get_db_path(env)
+            game_db_path = NBAConfig.DATABASE.get_game_db_path(env)
 
-        # 设置scoped_session
-        for db_name in ["nba", "game"]:
-            factory = self.connection_pool.get_session_factory(db_name)
-            if factory:
-                self.scoped_sessions[db_name] = scoped_session(factory)
+            # 配置数据库连接
+            db_config = {
+                'nba': f'sqlite:///{nba_db_path}',
+                'game': f'sqlite:///{game_db_path}',
+                'default': f'sqlite:///{nba_db_path}'  # 默认使用nba数据库
+            }
 
-        # 创建表结构
-        if create_tables:
-            # Import model bases
-            from database.models.base_models import Base as NBABase
-            from database.models.stats_models import Base as GameBase
+            # 配置SQLAlchemy引擎参数
+            connect_args = {
+                'timeout': NBAConfig.DATABASE.TIMEOUT,
+                'isolation_level': NBAConfig.DATABASE.ISOLATION_LEVEL,
+                'check_same_thread': False
+            }
 
-            # Create tables in respective databases
-            NBABase.metadata.create_all(self.connection_pool.get_engine("nba"))
-            GameBase.metadata.create_all(self.connection_pool.get_engine("game"))
+            # 根据环境设置echo参数
+            if env == "development":
+                echo = NBAConfig.DATABASE.DEVELOPMENT.ECHO_SQL
+            elif env == "testing":
+                echo = NBAConfig.DATABASE.TESTING.ECHO_SQL
+            elif env == "production":
+                echo = NBAConfig.DATABASE.PRODUCTION.ECHO_SQL
+            else:
+                echo = False
 
-        logger.info(f"已初始化数据库连接，环境: {env}")
+            # 为每个数据库创建引擎和会话工厂
+            for db_name, conn_str in db_config.items():
+                # 创建引擎
+                engine = create_engine(
+                    conn_str,
+                    echo=echo,
+                    connect_args=connect_args
+                )
+                self.engines[db_name] = engine
 
-    def get_engine(self, db_name: str) -> Optional[Engine]:
-        """获取指定数据库的引擎"""
-        return self.connection_pool.get_engine(db_name)
+                # 创建会话工厂
+                session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+                self.session_factories[db_name] = session_factory
 
-    def get_session(self, db_name: str) -> Optional[Session]:
-        """获取指定数据库的会话"""
-        scoped = self.scoped_sessions.get(db_name)
-        if scoped:
-            return scoped()
-        logger.error(f"数据库 '{db_name}' 未配置")
-        return None
+                # 创建scoped_session
+                self.scoped_sessions[db_name] = scoped_session(session_factory)
+
+                # 如果需要创建表
+                if create_tables:
+                    # 这里需要导入相应的Base
+                    from database.models.base_models import Base as BaseModels
+                    from database.models.stats_models import Base as StatsModels
+
+                    if db_name == 'nba':
+                        BaseModels.metadata.create_all(engine)
+                    elif db_name == 'game':
+                        StatsModels.metadata.create_all(engine)
+
+            self._initialized = True
+            self.logger.info(f"数据库会话初始化成功，环境: {env}")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"初始化数据库会话失败: {e}", exc_info=True)
+            return False
+
+    def get_scoped_session(self, db_name='default'):
+        """获取指定数据库的scoped_session实例"""
+        if not self._initialized:
+            raise Exception("DBSession not initialized")
+        if db_name not in self.scoped_sessions:
+            raise ValueError(f"未知数据库: {db_name}")
+        return self.scoped_sessions[db_name]
+
+    def remove_scoped_session(self, db_name='default'):
+        """移除当前线程的scoped_session绑定"""
+        if db_name in self.scoped_sessions:
+            self.scoped_sessions[db_name].remove()
 
     @contextmanager
-    def session_scope(self, db_name: str) -> Generator[Session, None, None]:
-        """
-        创建会话上下文管理器，自动处理提交和回滚
+    def session_scope(self, db_name='default'):
+        """创建数据库会话的上下文管理器
 
         Args:
-            db_name: 数据库名称
+            db_name: 数据库名称，可以是'nba', 'game', 'default'
 
         Yields:
-            Session: 数据库会话对象
-
-        Example:
-            with DBSession.get_instance().session_scope('nba') as session:
-                teams = session.query(Team).all()
+            SQLAlchemy会话对象
         """
-        session = self.get_session(db_name)
-        if not session:
-            raise ValueError(f"无法获取数据库 '{db_name}' 的会话")
+        if not self._initialized:
+            raise Exception("DBSession not initialized")
 
+        if db_name not in self.session_factories:
+            raise ValueError(f"未知数据库: {db_name}")
+
+        session = self.session_factories[db_name]()
         try:
             yield session
             session.commit()
         except Exception as e:
             session.rollback()
-            logger.error(f"会话操作失败: {e}", exc_info=True)
+            self.logger.error(f"数据库会话操作失败: {e}", exc_info=True)
             raise
         finally:
             session.close()
 
     def close_all(self):
         """关闭所有数据库连接"""
-        # 移除所有scoped_session
-        for name, scoped in self.scoped_sessions.items():
-            scoped.remove()
-            logger.info(f"已移除数据库 '{name}' 的scoped_session")
+        try:
+            # 移除所有scoped_session
+            for db_name in self.scoped_sessions:
+                self.remove_scoped_session(db_name)
 
-        # 关闭所有连接
-        self.connection_pool.close_all()
-        logger.info("所有数据库连接已关闭")
+            # 处理引擎
+            for engine in self.engines.values():
+                engine.dispose()
+
+            self._initialized = False
+            self.logger.info("所有数据库连接已关闭")
+            return True
+        except Exception as e:
+            self.logger.error(f"关闭数据库连接失败: {e}", exc_info=True)
+            return False
