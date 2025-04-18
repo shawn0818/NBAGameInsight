@@ -49,8 +49,8 @@ class NBAConfig:
         _ROOT = get_project_root()
 
         # 静态资源目录
-        STATIC_DIR = _ROOT / "static"
-        IMAGES_DIR = STATIC_DIR / "images"
+        #STATIC_DIR = _ROOT / "static"
+        #IMAGES_DIR = STATIC_DIR / "images"
 
         # 动态数据目录
         DATA_DIR = _ROOT / "data"
