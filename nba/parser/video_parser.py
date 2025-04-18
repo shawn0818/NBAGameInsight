@@ -230,7 +230,8 @@ class VideoParser:
             self.logger.error(f"创建视频资产失败: {e}", exc_info=True)
             return None
 
-    def _has_valid_quality(self, video_data: Dict[str, Any], dur_key: str, url_key: str, thumb_key: str) -> bool:
+    @staticmethod
+    def _has_valid_quality(video_data: Dict[str, Any], dur_key: str, url_key: str, thumb_key: str) -> bool:
         """检查视频数据是否包含有效的质量选项
 
         Args:

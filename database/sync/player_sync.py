@@ -344,36 +344,37 @@ class PlayerSync:
         return result
 
     def _get_player_ids_to_sync(self, specified_ids: Optional[List[int]], only_active: bool) -> List[int]:
-        """获取需要同步的球员ID列表"""
+        """获取需要同步的球员ID列表 - 优化版：排除已知 inactive 的球员"""
         if specified_ids:
+            self.logger.info(f"使用指定的 {len(specified_ids)} 个球员ID进行同步")
             return specified_ids
 
-        sync_player_ids = []
-        with self.db_session.session_scope('nba') as session:
-            # 查询条件
-            query = session.query(Player.person_id)
+        # 不再需要顶部初始化 sync_player_ids = []
+        try:
+            with self.db_session.session_scope('nba') as session:
+                query = session.query(Player.person_id)
 
+                if only_active:
+                    # 增量更新模式
+                    self.logger.info("筛选条件: 同步所有球员，排除数据库中明确标记为 is_active = False 的球员")
+                    query = query.filter(Player.is_active != False)
+                    sync_player_ids = [p[0] for p in query.all()]
+                    self.logger.info(f"根据 '非 False' 条件找到 {len(sync_player_ids)} 名球员需要同步/检查状态")
+                    return sync_player_ids  # 直接返回结果
+
+                else:
+                    # 强制更新模式
+                    self.logger.info("筛选条件: 同步数据库中所有球员的详细信息 (--force-update)")
+                    sync_player_ids = [p[0] for p in query.all()]
+                    self.logger.info(f"找到 {len(sync_player_ids)} 名球员需要同步详细信息")
+                    return sync_player_ids  # 直接返回结果
+
+        except Exception as e:
             if only_active:
-                # 优先使用is_active字段（最准确）
-                try:
-                    query = query.filter(Player.is_active == True)
-                    count = query.count()
-                    if count > 0:
-                        self.logger.info(f"使用is_active字段找到{count}名活跃球员")
-                    else:
-                        # 如果没有找到活跃球员，回退到使用to_year字段
-                        current_year = str(datetime.now().year)
-                        query = session.query(Player.person_id).filter(Player.to_year >= current_year)
-                        self.logger.info(f"is_active字段查询无结果，回退到使用to_year字段")
-                except Exception as e:
-                    # 如果is_active字段不存在或查询出错，回退到使用to_year字段
-                    current_year = str(datetime.now().year)
-                    query = session.query(Player.person_id).filter(Player.to_year >= current_year)
-                    self.logger.info(f"is_active字段查询失败: {e}，回退到使用to_year字段")
-
-            sync_player_ids = [p[0] for p in query.all()]
-
-        return sync_player_ids
+                self.logger.error(f"查询 is_active 字段失败: {e}。请确保数据库结构正确。将返回空列表。")
+            else:
+                self.logger.error(f"查询所有球员ID失败: {e}。将返回空列表。")
+            return []  # 异常时返回空列表
 
     def _process_batch_data(self, batch_ids: List[int], batch_data: Dict[int, Dict],
                             only_active: bool) -> List[Dict[str, Any]]:

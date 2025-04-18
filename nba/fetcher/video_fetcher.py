@@ -213,7 +213,8 @@ class VideoFetcher(BaseNBAFetcher):
         # 更新请求头
         self.http_manager.headers.update(self.video_config.VIDEO_SPECIFIC_HEADERS)
 
-    def _build_cache_key(self, prefix: str, **kwargs) -> str:
+    @staticmethod
+    def _build_cache_key(prefix: str, **kwargs) -> str:
         """构建一致的缓存键
 
         Args:

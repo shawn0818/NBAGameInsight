@@ -96,7 +96,17 @@ class SyncManager:
             return False  # 季前赛不同步
 
         # 3. 其他可能需要排除的类型
-        # 例如：if season_type_char == '3': return False  # 全明星赛不同步
+        # 检查是否在已知无数据白名单中
+        known_missing_playbyplay = [
+            '0020600975', '0020700753', '0030200001', '0030100001', '0030000001',
+            '0030600003', '0030700002', '0030400002', '0030600002', '0031400003',
+            '0031500003', '0031600003', '0031700003', '0039600001', '0039900001'
+            # 可以继续添加其他已知缺失数据的比赛ID
+        ]
+
+        if game_id in known_missing_playbyplay:
+            #self.logger.info(f"比赛ID {game_id} 在已知无PlayByPlay数据白名单中，标记为无需同步")
+            return False
 
         return True  # 默认需要同步
 

@@ -40,7 +40,6 @@ class GameDataResponse:
     """比赛数据响应类"""
     boxscore: Dict[str, Any]  # 比赛统计数据
     playbyplay: Dict[str, Any]  # 比赛回放数据
-    boxscore_summary: Optional[Dict[str, Any]] = None  # 添加比赛摘要数据，包含对抗历史信息
 
     @property
     def status(self) -> GameStatusEnum:
@@ -368,23 +367,10 @@ class GameFetcher(BaseNBAFetcher):
                 )
                 playbyplay_data = {'game': {}}
 
-            # 3. 获取boxscore_summary数据
-            # 同样根据比赛状态决定是否强制更新
-            summary_force_update = force_update
-            if game_status != GameStatusEnum.FINISHED:
-                summary_force_update = True
-
-            boxscore_summary_data = self.get_boxscore_summary(
-                game_id,
-                summary_force_update,
-                game_status
-            )
-
-            # 4. 构建响应
+            # 3. 构建响应
             return GameDataResponse(
                 boxscore=boxscore_data['game'],
                 playbyplay=playbyplay_data['game'],
-                boxscore_summary=boxscore_summary_data
             )
 
         except Exception as e:

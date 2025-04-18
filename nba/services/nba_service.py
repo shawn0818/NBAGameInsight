@@ -8,10 +8,10 @@ from typing import List, Optional, Dict, Any, Union, Set
 from pathlib import Path
 
 from database.db_service import DatabaseService
-from nba.services.game_data_provider import GameDataProvider
-from nba.services.game_data_adapter import GameDataAdapter
+from nba.services.game_data_service import GameDataService
+from nba.services.game_details_service import GameDetailsProvider
 from nba.services.game_video_service import GameVideoService, VideoConfig
-from nba.services.game_charts_service import GameChartsService, ChartConfig
+from nba.visualization.visualization_service import VisualizationService
 from nba.models.video_model import ContextMeasure
 from config import NBAConfig
 from utils.logger_handler import AppLogger
@@ -254,6 +254,12 @@ def validate_output_format(value):
         return f"must be one of: video, gif, both, got {value}"
     return True
 
+# 添加新的验证函数
+def validate_court_type(value):
+    """验证court_type参数"""
+    if value not in ["half", "full"]:
+        return f"must be one of: half, full, got {value}"
+    return True
 
 # =======4. NBA服务主类====================
 
@@ -270,10 +276,8 @@ class NBAService(BaseService):
             self,
             config: Optional[NBAServiceConfig] = None,
             video_config: Optional[VideoConfig] = None,
-            chart_config: Optional[ChartConfig] = None,
             video_process_config: Optional[VideoProcessConfig] = None,
-            env: str = "default",
-            create_tables: bool = True
+            env: str = "default"
     ):
         """初始化NBA服务
         这是服务的主要入口点，负责初始化所有子服务和配置。
@@ -282,10 +286,8 @@ class NBAService(BaseService):
         Args:
             config: NBA服务主配置，控制全局行为
             video_config: 视频下载服务配置
-            chart_config: 图表生成服务配置
             video_process_config: 视频合并转化gif配置
             env: 环境名称，可以是 "default", "test", "development", "production"
-            create_tables: 是否创建数据表结构，默认为True
         """
         self.config = config or NBAServiceConfig()
         self.logger = AppLogger.get_logger(__name__, app_name='nba')
@@ -297,36 +299,30 @@ class NBAService(BaseService):
         self._services: Dict[str, Any] = {}
         self._service_status: Dict[str, ServiceHealth] = {}
 
-        # 环境和表创建配置保存
+        # 环境保存
         self.env = env
-        self.create_tables = create_tables
 
         # 初始化服务
         self._init_all_services(
             video_config=video_config,
-            chart_config=chart_config,
             video_process_config=video_process_config
         )
 
     def _init_all_services(
             self,
             video_config: Optional[VideoConfig] = None,
-            chart_config: Optional[ChartConfig] = None,
             video_process_config: Optional[VideoProcessConfig] = None
     ) -> None:
         """初始化所有子服务
 
         按照依赖顺序初始化各个子服务：
-        1. 数据库服务（核心服务，提供统一入口）
-        2. 数据适配器服务
-        3. 视频处理器
-        4. 数据提供服务
-        5. 图表服务
-        6. 视频服务
+        1. 数据服务 (核心服务)
+        2. 视频处理器 (独立服务)
+        3. 数据可视化服务 (依赖数据服务)
+        4. 视频服务 (依赖数据服务和视频处理器)
 
         Args:
             video_config: 视频服务配置
-            chart_config: 图表服务配置
             video_process_config: 视频处理器配置
 
         Raises:
@@ -335,38 +331,24 @@ class NBAService(BaseService):
         # 定义初始化服务列表 - 包含初始化顺序和依赖关系
         services_to_init = [
             {
-                'name': 'db_service',
-                'init_func': self._init_db_service,
+                'name': 'data',
+                'init_func': self._init_data_service,
                 'args': {},
                 'required': True,  # 核心服务，必须成功初始化
-                'depends_on': []
-            },
-            {
-                'name': 'adapter',
-                'init_func': self._init_adapter_service,
-                'args': {},
-                'required': True,  # 核心服务，必须成功初始化
-                'depends_on': ['db_service']
+                'depends_on': []  # 无依赖
             },
             {
                 'name': 'video_processor',
                 'init_func': self._init_video_processor,
                 'args': {'video_process_config': video_process_config},
                 'required': False,  # 非核心服务，初始化失败不影响整体功能
-                'depends_on': []
+                'depends_on': []  # 无依赖
             },
             {
-                'name': 'data',
-                'init_func': self._init_data_service,
-                'args': {},
-                'required': True,  # 核心服务，必须成功初始化
-                'depends_on': ['db_service', 'adapter']
-            },
-            {
-                'name': 'chart',
-                'init_func': self._init_chart_service,
-                'args': {'chart_config': chart_config},
-                'required': False,  # 非核心服务，初始化失败不影响整体功能
+                'name': 'visualization',
+                'init_func': self._init_visualization_service,
+                'args': {},  # 完全不需要传递配置
+                'required': False,
                 'depends_on': ['data']
             },
             {
@@ -374,7 +356,7 @@ class NBAService(BaseService):
                 'init_func': self._init_video_service,
                 'args': {'video_config': video_config, 'video_processor': 'video_processor'},
                 'required': False,  # 非核心服务，初始化失败不影响整体功能
-                'depends_on': ['data']
+                'depends_on': ['data', 'video_processor']  # 依赖数据服务和视频处理器
             }
         ]
 
@@ -434,39 +416,37 @@ class NBAService(BaseService):
             self.logger.error(error_msg)
             raise InitializationError(error_msg)
 
-    def _init_db_service(self) -> bool:
-        """初始化数据库服务
+
+    def _init_data_service(self) -> bool:
+        """初始化数据服务
 
         Returns:
             bool: 初始化是否成功
         """
         try:
-            # 创建数据库服务实例
-            self._services['db_service'] = DatabaseService(env=self.env)
+            # 创建数据库服务 (仅用于获取数据，不在NBAService中管理)
+            db_service = DatabaseService(env=self.env)
+            db_init_success = db_service.initialize(create_tables=True)  # 修改为True允许创建表
 
-            # 初始化数据库连接
-            db_init_success = self._services['db_service'].initialize(create_tables=self.create_tables)
+            if not db_init_success:
+                self.logger.error("数据库服务初始化失败")
+                return False
 
-            return db_init_success
-        except Exception as e:
-            self.logger.error(f"数据库服务初始化失败: {str(e)}", exc_info=True)
-            raise  # 重新抛出异常，由调用者处理
+            # 创建比赛详细数据提供者
+            data_provider = GameDetailsProvider()
 
-    def _init_adapter_service(self) -> bool:
-        """初始化数据适配器服务
-
-        Returns:
-            bool: 初始化是否成功
-        """
-        try:
-            self._services['adapter'] = GameDataAdapter()
+            # 创建GameDataService
+            self._services['data'] = GameDataService(
+                db_service=db_service,
+                detail_service=data_provider
+            )
             return True
         except Exception as e:
-            self.logger.error(f"数据适配器初始化失败: {str(e)}", exc_info=True)
+            self.logger.error(f"数据服务初始化失败: {str(e)}", exc_info=True)
             raise  # 重新抛出异常，由调用者处理
 
     def _init_video_processor(self, video_process_config: Optional[VideoProcessConfig] = None) -> bool:
-        """初始化视频处理器
+        """初始化视频处理器,负责视频转化合并等操作
 
         Args:
             video_process_config: 视频处理配置
@@ -481,34 +461,15 @@ class NBAService(BaseService):
             self.logger.error(f"视频处理器初始化失败: {str(e)}", exc_info=True)
             return False  # 非核心服务，初始化失败不抛出异常
 
-    def _init_data_service(self) -> bool:
-        """初始化数据服务
-
-        Returns:
-            bool: 初始化是否成功
-        """
+    def _init_visualization_service(self) -> bool:
+        """初始化可视化服务"""
         try:
-            self._services['data'] = GameDataProvider()
+            # 无需配置参数，直接实例化
+            self._services['visualization'] = VisualizationService()
             return True
         except Exception as e:
-            self.logger.error(f"数据服务初始化失败: {str(e)}", exc_info=True)
-            raise  # 重新抛出异常，由调用者处理
-
-    def _init_chart_service(self, chart_config: Optional[ChartConfig] = None) -> bool:
-        """初始化图表服务
-
-        Args:
-            chart_config: 图表配置
-
-        Returns:
-            bool: 初始化是否成功
-        """
-        try:
-            self._services['chart'] = GameChartsService(chart_config or ChartConfig())
-            return True
-        except Exception as e:
-            self.logger.error(f"图表服务初始化失败: {str(e)}", exc_info=True)
-            return False  # 非核心服务，初始化失败不抛出异常
+            self.logger.error(f"可视化服务初始化失败: {str(e)}", exc_info=True)
+            return False
 
     def _init_video_service(self, video_config: Optional[VideoConfig] = None,
                             video_processor: Optional[VideoProcessor] = None) -> bool:
@@ -532,40 +493,22 @@ class NBAService(BaseService):
             return False  # 非核心服务，初始化失败不抛出异常
 
     @property
-    def data_service(self) -> Optional[GameDataProvider]:
+    def data_service(self) -> Optional[GameDataService]:
         """获取数据服务实例
 
         Returns:
-            Optional[GameDataProvider]: 数据服务实例，如果服务不可用则返回None
+            Optional[GameDataService]: 数据服务实例，如果服务不可用则返回None
         """
         return self._get_service('data')
 
     @property
-    def adapter_service(self) -> Optional[GameDataAdapter]:
-        """获取数据适配器服务实例
+    def visualization_service(self) -> Optional[VisualizationService]:
+        """获取数据可视化服务实例
 
         Returns:
-            Optional[GameDataAdapter]: 数据适配器实例，如果服务不可用则返回None
+            Optional[VisualizationService]: 数据可视化服务实例，如果服务不可用则返回None
         """
-        return self._get_service('adapter')
-
-    @property
-    def db_service(self) -> Optional[DatabaseService]:
-        """获取数据库服务实例
-
-        Returns:
-            Optional[DatabaseService]: 数据库服务实例，如果服务不可用则返回None
-        """
-        return self._get_service('db_service')
-
-    @property
-    def chart_service(self) -> Optional[GameChartsService]:
-        """获取图表服务实例
-
-        Returns:
-            Optional[GameChartsService]: 图表服务实例，如果服务不可用则返回None
-        """
-        return self._get_service('chart')
+        return self._get_service('visualization')
 
     @property
     def video_service(self) -> Optional[GameVideoService]:
@@ -609,14 +552,10 @@ class NBAService(BaseService):
 
                 # 根据服务类型选择恢复方法
                 recovery_success = False
-                if name == 'db_service':
-                    recovery_success = self._init_db_service()
-                elif name == 'adapter':
-                    recovery_success = self._init_adapter_service()
-                elif name == 'data':
+                if name == 'data':
                     recovery_success = self._init_data_service()
-                elif name == 'chart':
-                    recovery_success = self._init_chart_service()
+                elif name == 'visualization':
+                    recovery_success = self._init_visualization_service()
                 elif name == 'videodownloader':
                     recovery_success = self._init_video_service()
                 elif name == 'video_processor':
@@ -700,50 +639,16 @@ class NBAService(BaseService):
 
     ## =======4.2 基础数据查询API ====================
 
-    def get_game(self, team: Optional[str] = None, date: Optional[str] = "last", force_update: bool = False) -> \
-            Optional[Any]:
-        """获取比赛数据
-
-        Args:
-            team: 球队名称
-            date: 日期字符串，默认获取最近一场比赛
-            force_update: 是否强制更新
-
-        Returns:
-            Optional[Any]: 比赛数据对象
-        """
+    def get_game(self, team: Optional[str] = None, date: Optional[str] = "last", force_update: bool = False):
         try:
             # 使用默认球队，如果未提供
             team_name = team or self.config.default_team
             self.logger.info(f"尝试获取球队 {team_name} 的比赛数据，日期参数: {date}")
 
             # 使用上下文管理器确保服务可用
-            with self._ensure_service('db_service') as db_service:
-                # 获取team_id
-                team_id = db_service.get_team_id_by_name(team_name)
-                if not team_id:
-                    self.logger.error(f"未找到球队: {team_name}")
-                    return None
-
-                self.logger.info(f"获取到球队ID: {team_id}")
-
-                # 获取game_id
-                game_id = db_service.get_game_id(team_id, date)
-                if not game_id:
-                    self.logger.error(f"未找到比赛ID，球队: {team_name}, 日期: {date}")
-                    return None
-
-                self.logger.info(f"获取到比赛ID: {game_id}")
-
-            # 使用game_id获取比赛数据
             with self._ensure_service('data') as data_service:
-                game = data_service.get_game(game_id, force_update=force_update)
-                if not game:
-                    self.logger.error(f"未找到比赛数据，比赛ID: {game_id}")
-                    return None
-
+                game = data_service.get_game(team_name, date, force_update)
                 return game
-
         except ServiceNotAvailableError as e:
             self.logger.error(f"获取比赛数据失败: {str(e)}")
             return None
@@ -764,16 +669,20 @@ class NBAService(BaseService):
             Optional[int]: 球队ID，如果未找到则返回None
         """
         try:
-            with self._ensure_service('db_service') as db_service:
-                return db_service.get_team_id_by_name(team_name)
+            # 如果未提供，使用默认球队
+            if not team_name:
+                team_name = self.config.default_team
+
+            with self._ensure_service('data') as data_service:
+                return data_service.get_team_id_by_name(team_name)
         except ServiceNotAvailableError:
-            self.logger.error("获取球队ID失败: 数据库服务不可用")
+            self.logger.error("获取球队ID失败: 数据服务不可用")
             return None
         except Exception as e:
             self.logger.error(f"获取球队ID失败: {str(e)}", exc_info=True)
             return None
 
-    def get_player_id_by_name(self, player_name: str) -> Optional[Union[int, List[int]]]:
+    def get_player_id_by_name(self, player_name: str) -> Optional[Union[int, List[Dict[str, Any]]]]:
         """获取球员ID
 
         基础API：将球员名称转换为系统内部使用的唯一ID。
@@ -783,93 +692,135 @@ class NBAService(BaseService):
             player_name: 球员名称
 
         Returns:
-            Optional[Union[int, List[int]]]: 球员ID或ID列表，如果未找到则返回None
+            Optional[Union[int, List[Dict[str, Any]]]]:
+                - 整数: 唯一匹配时返回球员ID
+                - 列表: 多个候选时返回候选列表
+                - None: 未找到匹配
         """
         try:
-            with self._ensure_service('db_service') as db_service:
-                return db_service.get_player_id_by_name(player_name)
+            # 如果未提供，使用默认球员
+            if not player_name:
+                player_name = self.config.default_player
+
+            with self._ensure_service('data') as data_service:
+                return data_service.get_player_id_by_name(player_name)
         except ServiceNotAvailableError:
-            self.logger.error("获取球员ID失败: 数据库服务不可用")
+            self.logger.error("获取球员ID失败: 数据服务不可用")
             return None
         except Exception as e:
             self.logger.error(f"获取球员ID失败: {str(e)}", exc_info=True)
             return None
 
-    def sync_remaining_data_parallel(self, force_update: bool = False, max_workers: int = 2,
-                                     batch_size: int = 6, reverse_order: bool = False) -> Dict[str, Any]:
-        """并行增量同步剩余未同步的比赛统计数据 (gamedb)
-
-        这是日常/手动更新比赛统计数据的主要方法。
-
-        Args:
-            force_update: 是否强制更新已同步过的数据。
-            max_workers: 最大工作线程数。
-            batch_size: 每批处理的比赛数量。
-            reverse_order: 是否优先处理最新的比赛。
-
-        Returns:
-            Dict[str, Any]: 同步结果摘要。
-        """
-        try:
-            with self._ensure_service('db_service') as db_service:
-                # Directly call the corresponding method in DatabaseService
-                return db_service.sync_remaining_data_parallel(
-                    force_update=force_update,
-                    max_workers=max_workers,
-                    batch_size=batch_size,
-                    reverse_order=reverse_order
-                )
-        except ServiceNotAvailableError as e:
-            self.logger.error(f"并行增量同步数据失败: {str(e)}")
-            return {"status": "failed", "error": str(e)}
-        except Exception as e:
-            self.logger.error(f"并行增量同步数据失败: {str(e)}", exc_info=True)
-            return {"status": "failed", "error": str(e)}
-
-    def sync_new_season_core_data(self, force_update: bool = True) -> Dict[str, Any]:
-        """同步新赛季的核心数据 (nba.db)
-
-        用于赛季开始时，强制更新球队、球员信息，并同步当前赛季的赛程。
-
-        Args:
-            force_update: 是否强制更新，对于新赛季同步，通常应为True。
-
-        Returns:
-            Dict[str, Any]: 同步结果摘要。
-        """
-        try:
-            with self._ensure_service('db_service') as db_service:
-                # Directly call the corresponding method in DatabaseService
-                return db_service.sync_new_season_core_data(force_update=force_update)
-        except ServiceNotAvailableError as e:
-            self.logger.error(f"同步新赛季核心数据失败: {str(e)}")
-            return {"status": "failed", "error": str(e)}
-        except Exception as e:
-            self.logger.error(f"同步新赛季核心数据失败: {str(e)}", exc_info=True)
-            return {"status": "failed", "error": str(e)}
-
     ## =============4.3 简化的API，委托到各专业服务=================
 
+    @validate_input(
+        chart_type=validate_chart_type,
+        court_type=validate_court_type,
+        shot_outcome=validate_shot_outcome
+    )
+    def generate_shot_charts(
+            self,
+            team: Optional[str] = None,
+            player_name: Optional[str] = None,
+            court_type: str = "half",  # "half"或"full"
+            chart_type: str = "both",  # "team", "player", "both"
+            output_dir: Optional[Path] = None,
+            force_reprocess: bool = False,
+            shot_outcome: str = "made_only"  # "made_only", "all"
+    ) -> Dict[str, Path]:
+        """生成投篮分布图 - 支持半场和全场视图"""
+        try:
+            # 获取基础数据
+            team = team or self.config.default_team
+
+            # 获取比赛数据
+            game = self.get_game(team)
+            if not game:
+                self.logger.error(f"未找到{team}的比赛数据")
+                return {}
+
+            # 准备输出目录
+            if output_dir is None:
+                output_dir = self.config.base_output_dir / "pictures"
+                output_dir.mkdir(parents=True, exist_ok=True)
+
+            # 根据court_type选择处理流程
+            with self._ensure_service('visualization') as vis_service:
+                if court_type == "full":
+                    # --- 全场图处理修改 ---
+                    # 准备全场图所需参数
+                    # 获取主客队名称用于文件名和标题
+                    home_team_name = game.game_data.home_team.team_name if hasattr(game.game_data, 'home_team') else "Home"
+                    away_team_name = game.game_data.away_team.team_name if hasattr(game.game_data, 'away_team') else "Away"
+                    # 构建输出文件名
+                    output_filename = f"{home_team_name}_vs_{away_team_name}_full_court_shots.png"
+                    output_path = output_dir / output_filename
+
+                    # 调用 VisualizationService 的通用生成方法
+                    path = vis_service.generate_visualization(
+                        vis_type="full_court", # 指定类型为全场图
+                        game=game,             # 传递 Game 对象
+                        output_path=output_path, # 传递输出路径
+                        shot_outcome=shot_outcome, # 传递投篮结果筛选条件
+                        force_reprocess=force_reprocess # 传递强制处理标志
+                    )
+                    # --- 修改结束 ---
+
+                    return {"full_court_chart": path} if path else {} # 返回字典，键名统一
+                else:
+                    # 半场图处理逻辑 (保持不变)
+                    team_id = self.get_team_id_by_name(team)
+                    if not team_id:
+                        self.logger.error(f"未找到球队: {team}")
+                        return {}
+
+                    player_id = None
+                    if chart_type in ["player", "both"]:
+                        player_name_to_use = player_name or self.config.default_player
+                        player_id_result = self.get_player_id_by_name(player_name_to_use)
+                        # 处理 get_player_id_by_name 可能返回列表或None的情况
+                        if isinstance(player_id_result, int):
+                             player_id = player_id_result
+                        elif player_id_result is None:
+                             self.logger.error(f"未找到球员: {player_name_to_use}")
+                             if chart_type == "player":
+                                 return {}
+                        else: # player_id_result 是列表
+                             self.logger.error(f"找到多个球员匹配 '{player_name_to_use}'，无法生成球员图表。")
+                             if chart_type == "player":
+                                 return {}
+
+                    # 调用图表服务生成半场图 - 使用通用接口
+                    return vis_service.generate_visualization(
+                        vis_type="shot_chart", # 指定类型为半场图
+                        game=game,
+                        team_id=team_id,
+                        player_id=player_id, # 可能为 None
+                        team_name=team,
+                        player_name=player_name or self.config.default_player if player_id else None, # 只有找到 player_id 才传递 player_name
+                        chart_type=chart_type,
+                        output_dir=output_dir,
+                        force_reprocess=force_reprocess,
+                        shot_outcome=shot_outcome
+                    )
+
+        except ServiceNotAvailableError as e:
+            self.logger.error(f"可视化服务不可用: {e}")
+            return {}
+        except Exception as e:
+            self.logger.error(f"生成投篮图失败: {e}", exc_info=True)
+            return {}
+
     @validate_input(impact_type=validate_impact_type)
-    def generate_player_scoring_impact_charts(self,
-                                              player_name: str,
-                                              team: Optional[str] = None,
-                                              output_dir: Optional[Path] = None,
-                                              force_reprocess: bool = False,
-                                              impact_type: str = "full_impact") -> Dict[str, Path]:
-        """生成球员得分影响力图 - 委托给图表服务
-
-        Args:
-            player_name: 球员名称
-            team: 球队名称，不提供则使用默认球队
-            output_dir: 输出目录，默认使用配置中的图片目录
-            force_reprocess: 是否强制重新处理已存在的文件
-            impact_type: 图表类型，可选 "scoring_only"(仅显示球员自己的投篮)
-                        或 "full_impact"(同时显示球员投篮和助攻队友投篮)
-
-        Returns:
-            Dict[str, Path]: 图表路径字典，键包含"impact_chart"或"scoring_chart"
-        """
+    def generate_player_scoring_impact_charts(
+            self,
+            player_name: str,
+            team: Optional[str] = None,
+            output_dir: Optional[Path] = None,
+            force_reprocess: bool = False,
+            impact_type: str = "full_impact"  # "scoring_only", "full_impact"
+    ) -> Dict[str, Path]:
+        """生成球员得分影响力图 - 委托给可视化服务"""
         try:
             # 获取必要的ID和数据
             player_name = player_name or self.config.default_player
@@ -887,9 +838,14 @@ class NBAService(BaseService):
                 self.logger.error(f"未找到{team}的比赛数据")
                 return {}
 
-            # 调用图表服务
-            with self._ensure_service('chart') as chart_service:
-                return chart_service.generate_player_scoring_impact_charts(
+            # 准备输出目录
+            if output_dir is None:
+                output_dir = self.config.base_output_dir / "pictures"
+                output_dir.mkdir(parents=True, exist_ok=True)
+
+            # 调用可视化服务
+            with self._ensure_service('visualization') as vis_service:
+                return vis_service.generate_player_scoring_impact_charts(
                     game=game,
                     player_id=player_id,
                     player_name=player_name,
@@ -898,70 +854,10 @@ class NBAService(BaseService):
                     impact_type=impact_type
                 )
         except ServiceNotAvailableError as e:
-            self.logger.error(f"图表服务不可用: {e}")
+            self.logger.error(f"可视化服务不可用: {e}")
             return {}
         except Exception as e:
-            self.logger.error(f"生成球员图表失败: {e}", exc_info=True)
-            return {}
-
-    @validate_input(
-        chart_type=validate_chart_type,
-        shot_outcome=validate_shot_outcome,
-        impact_type=validate_impact_type
-    )
-    def generate_shot_charts(self,
-                             team: Optional[str] = None,
-                             player_name: Optional[str] = None,
-                             chart_type: str = "both",  # "team", "player", "both"
-                             output_dir: Optional[Path] = None,
-                             force_reprocess: bool = False,
-                             shot_outcome: str = "made_only",  # "made_only", "all"
-                             impact_type: str = "full_impact") -> Dict[str, Path]:
-        """生成投篮分布图 - 委托给图表服务"""
-        try:
-            # 获取基础数据
-            team = team or self.config.default_team
-            if (chart_type in ["player", "both"]) and not player_name:
-                player_name = self.config.default_player
-
-            # 获取相关ID
-            team_id = self.get_team_id_by_name(team)
-            if not team_id:
-                self.logger.error(f"未找到球队: {team}")
-                return {}
-
-            player_id = None
-            if player_name:
-                player_id = self.get_player_id_by_name(player_name)
-                if not player_id and chart_type in ["player", "both"]:
-                    self.logger.error(f"未找到球员: {player_name}")
-                    return {}
-
-            # 获取比赛数据
-            game = self.get_game(team)
-            if not game:
-                self.logger.error(f"未找到{team}的比赛数据")
-                return {}
-
-            # 调用图表服务
-            with self._ensure_service('chart') as chart_service:
-                return chart_service.generate_shot_charts(
-                    game=game,
-                    team_id=team_id,
-                    player_id=player_id,
-                    team_name=team,
-                    player_name=player_name,
-                    chart_type=chart_type,
-                    output_dir=output_dir,
-                    force_reprocess=force_reprocess,
-                    shot_outcome=shot_outcome,
-                    impact_type=impact_type
-                )
-        except ServiceNotAvailableError as e:
-            self.logger.error(f"图表服务不可用: {e}")
-            return {}
-        except Exception as e:
-            self.logger.error(f"生成投篮图失败: {e}", exc_info=True)
+            self.logger.error(f"生成球员影响力图表失败: {e}", exc_info=True)
             return {}
 
     def get_team_highlights(self, team: Optional[str] = None, merge: bool = True,
@@ -1129,10 +1025,9 @@ class NBAService(BaseService):
         # 定义关闭顺序 - 先关闭高级服务，再关闭基础服务（依赖倒序）
         closing_order = [
             'videodownloader',  # 先关闭视频服务
-            'chart',  # 再关闭图表服务
+            'visualization',  # 再关闭图表服务
             'video_processor',  # 关闭视频处理器
             'data',  # 关闭数据服务
-            'adapter',  # 关闭适配器
             'db_service'  # 最后关闭数据库服务
         ]
 
@@ -1199,14 +1094,10 @@ class NBAService(BaseService):
 
         # 重新初始化服务
         try:
-            if service_name == 'db_service':
-                success = self._init_db_service()
-            elif service_name == 'adapter':
-                success = self._init_adapter_service()
-            elif service_name == 'data':
+            if service_name == 'data':
                 success = self._init_data_service()
-            elif service_name == 'chart':
-                success = self._init_chart_service()
+            elif service_name == 'visualization':
+                success = self._init_visualization_service()
             elif service_name == 'videodownloader':
                 success = self._init_video_service()
             elif service_name == 'video_processor':

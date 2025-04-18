@@ -25,15 +25,17 @@ class PlayerStatus(str, Enum):
 
 class NotPlayingReason(str, Enum):
     """球员缺阵原因"""
-    INJURY = "INACTIVE_INJURY"
-    PERSONAL = "INACTIVE_PERSONAL"
-    GLEAGUE = "INACTIVE_GLEAGUE_TWOWAY"
-    CONDITIONING = "DND_RETURN_TO_COMPETITION_RECONDITIONING"
+    INJURY = "INACTIVE_INJURY"   # 受伤
+    PERSONAL = "INACTIVE_PERSONAL" # 个人原因
+    GLEAGUE = "INACTIVE_GLEAGUE_TWOWAY"  # G联盟/双向合同
+    CONDITIONING = "DND_RETURN_TO_COMPETITION_RECONDITIONING" # DND - 恢复训练
     DND_INJURY = "DND_INJURY"  # 添加 DND_INJURY
     DNP_INJURY = "DNP_INJURY"  # 添加 DNP_INJURY
-    GLEAGUE_ASSIGNMENT = "INACTIVE_GLEAGUE_ON_ASSIGNMENT"
-    COACH = "INACTIVE_COACH"  # 添加这一行
-    LEAGUE_SUSPENSION = "INACTIVE_LEAGUE_SUSPENSION"
+    GLEAGUE_ASSIGNMENT = "INACTIVE_GLEAGUE_ON_ASSIGNMENT"  # G联盟
+    COACH = "INACTIVE_COACH"  # 教练决定
+    LEAGUE_SUSPENSION = "INACTIVE_LEAGUE_SUSPENSION"  # 联盟禁赛
+    REST = "INACTIVE_REST" # 轮休
+    CONCUSSION_PROTOCOL = "DND_CONCUSSION_PROTOCOL"  # DND - 脑震荡协议
 
 
 class ShotResult(str, Enum):
@@ -702,88 +704,7 @@ class SubstitutionEvent(BaseEvent):
     description: str = Field(..., description="事件描述")
 
 # ===========================
-# 5. 双方本赛季交手信息模型
-# ===========================
-
-class TeamRivalryInfo(BaseModel):
-    """球队本赛季交手历史信息"""
-    game_id: str = Field(..., description="当前比赛ID", alias="gameId")
-
-    # 基本对阵信息
-    home_team_id: int = Field(..., description="主队ID", alias="homeTeamId")
-    visitor_team_id: int = Field(..., description="客队ID", alias="visitorTeamId")
-    game_date_est: datetime = Field(..., description="比赛日期(EST)", alias="gameDateEst")
-
-    # 赛季系列赛信息
-    home_team_wins: int = Field(..., description="主队在本赛季常规赛双方交手中的胜场数", alias="homeTeamWins")
-    home_team_losses: int = Field(..., description="主队在本赛季常规赛双方交手中的负场数", alias="homeTeamLosses")
-    series_leader: Optional[str] = Field(None, description="本赛季常规赛双方交手中的领先方", alias="seriesLeader")
-
-    # 上次交手信息
-    last_game_id: str = Field(..., description="上次比赛ID", alias="lastGameId")
-    last_game_date_est: datetime = Field(..., description="上次比赛日期(EST)", alias="lastGameDateEst")
-    last_game_home_team_id: int = Field(..., description="上次比赛主队ID", alias="lastGameHomeTeamId")
-    last_game_home_team_city: str = Field(..., description="上次比赛主队城市", alias="lastGameHomeTeamCity")
-    last_game_home_team_name: str = Field(..., description="上次比赛主队名称", alias="lastGameHomeTeamName")
-    last_game_home_team_abbreviation: str = Field(..., description="上次比赛主队缩写",
-                                                  alias="lastGameHomeTeamAbbreviation")
-    last_game_home_team_points: int = Field(..., description="上次比赛主队得分", alias="lastGameHomeTeamPoints")
-    last_game_visitor_team_id: int = Field(..., description="上次比赛客队ID", alias="lastGameVisitorTeamId")
-    last_game_visitor_team_city: str = Field(..., description="上次比赛客队城市", alias="lastGameVisitorTeamCity")
-    last_game_visitor_team_name: str = Field(..., description="上次比赛客队名称", alias="lastGameVisitorTeamName")
-    last_game_visitor_team_abbreviation: str = Field(..., description="上次比赛客队缩写",
-                                                     alias="lastGameVisitorTeamAbbreviation")
-    last_game_visitor_team_points: int = Field(..., description="上次比赛客队得分", alias="lastGameVisitorTeamPoints")
-
-    model_config = ConfigDict(from_attributes=True)
-
-    # 一些辅助属性和方法
-    @property
-    def last_meeting_winner(self) -> str:
-        """获取上次比赛的获胜方"""
-        return "home" if self.last_game_home_team_points > self.last_game_visitor_team_points else "visitor"
-
-    @property
-    def season_status(self) -> str:
-        """获取本赛季常规赛双方交手状态的描述"""
-        if self.home_team_wins == self.home_team_losses:
-            return "平局"
-        return f"{self.series_leader}领先"  # 保留原变量名，但意义是常规赛领先方
-
-    def get_last_meeting_summary(self) -> Dict[str, Any]:
-        """获取上次比赛的简要概述"""
-        winner = self.last_meeting_winner
-        winner_name = self.last_game_home_team_name if winner == "home" else self.last_game_visitor_team_name
-        winner_points = self.last_game_home_team_points if winner == "home" else self.last_game_visitor_team_points
-        loser_name = self.last_game_visitor_team_name if winner == "home" else self.last_game_home_team_name
-        loser_points = self.last_game_visitor_team_points if winner == "home" else self.last_game_home_team_points
-
-        return {
-            "date": self.last_game_date_est.strftime("%Y-%m-%d"),
-            "winner": {
-                "name": winner_name,
-                "points": winner_points
-            },
-            "loser": {
-                "name": loser_name,
-                "points": loser_points
-            },
-            "summary": f"{winner_name} {winner_points}-{loser_points} {loser_name}"
-        }
-
-    def get_series_summary(self, home_team_name: str, away_team_name: str) -> Dict[str, Any]:
-        """获取双方本赛季常规赛交手的简要概述"""
-        return {
-            "home_team": home_team_name,
-            "visitor_team": away_team_name,
-            "home_team_wins": self.home_team_wins,
-            "home_team_losses": self.home_team_losses,
-            "series_leader": self.series_leader,  # 变量名保持一致，意义为常规赛领先方
-            "series_summary": f"{home_team_name} {self.home_team_wins}-{self.home_team_losses} {away_team_name}"
-        }
-
-# ===========================
-# 6. 比赛核心数据模型
+# 5. 比赛核心数据模型
 # ===========================
 
 class GameData(BaseModel):
@@ -810,7 +731,6 @@ class GameData(BaseModel):
     home_team: TeamInGame = Field(..., description="主队数据", alias="homeTeam")
     away_team: TeamInGame = Field(..., description="客队数据", alias="awayTeam")
     statistics: Optional[Dict[str, Any]] = Field(None, description="比赛统计数据")
-    rivalry_info: Optional[TeamRivalryInfo] = Field(None, description="球队对抗历史信息", alias="rivalryInfo")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -955,66 +875,6 @@ class Game(BaseModel):
             })
 
         return result
-
-    def get_season_matchup_history(self) -> Dict[str, Any]:
-        """获取球队本赛季常规赛过往交手信息"""
-        # 首先检查必要数据是否存在
-        if not self.game_data or not hasattr(self.game_data, 'rivalry_info') or not self.game_data.rivalry_info:
-            return {"available": False}
-
-        try:
-            rivalry = self.game_data.rivalry_info
-            home_team_name = self.game_data.home_team.team_name
-            away_team_name = self.game_data.away_team.team_name
-
-            # 获取上次交手信息
-            try:
-                last_meeting = rivalry.get_last_meeting_summary()
-            except (AttributeError, ValueError, KeyError) as e:
-                logger.warning(f"获取上次交手信息失败: {str(e)}")
-                last_meeting = {
-                    "date": "未知",
-                    "winner": {"name": "未知", "points": 0},
-                    "loser": {"name": "未知", "points": 0},
-                    "summary": "数据不完整"
-                }
-
-            # 获取常规赛交手信息
-            try:
-                season_record = rivalry.get_series_summary(home_team_name, away_team_name)
-                # 修改键名以避免使用"系列赛"
-                season_record["season_summary"] = season_record.pop("series_summary")
-                season_record["leading_team"] = season_record.pop("series_leader")
-            except (AttributeError, ValueError, KeyError) as e:
-                logger.warning(f"获取常规赛交手记录失败: {str(e)}")
-                season_record = {
-                    "home_team": home_team_name,
-                    "visitor_team": away_team_name,
-                    "home_team_wins": 0,
-                    "home_team_losses": 0,
-                    "leading_team": "未知",
-                    "season_summary": "数据不完整"
-                }
-
-            # 生成对抗历史的文本描述
-            context_parts = []
-            if "未知" not in last_meeting["date"]:
-                context_parts.append(f"两队上次交手是在{last_meeting['date']}，结果是{last_meeting['summary']}。")
-
-            if season_record["leading_team"] and "未知" not in season_record["leading_team"]:
-                context_parts.append(f"本赛季常规赛交手记录为{season_record['season_summary']}，"
-                                     f"{('目前' + season_record['leading_team'] + '领先') if season_record['leading_team'] else '双方战成平手'}。")
-
-            return {
-                "available": True,
-                "last_meeting": last_meeting,
-                "season_record": season_record,
-                "context": " ".join(context_parts) if context_parts else "两队历史交手数据暂不完整。"
-            }
-
-        except Exception as e:
-            logger.warning(f"获取球队对抗历史信息时出错: {str(e)}")
-            return {"available": False}
 
     ##=========== 投篮分布图数据准备方法 ===========##
 
