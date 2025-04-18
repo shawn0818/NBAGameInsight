@@ -1,3 +1,4 @@
+#weibo/weibo_picture_publisher.py
 from typing import Dict, Any, List, Union
 import os, time, json, hashlib, random
 import requests, base64, zlib
