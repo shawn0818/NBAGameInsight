@@ -1,4 +1,4 @@
-# game_data_provider.py
+# game_details_service.py
 from typing import Optional
 from functools import lru_cache
 
@@ -9,10 +9,20 @@ from nba.models.game_model import Game
 from utils.logger_handler import AppLogger
 
 
-class GameDataProvider:
+class GameDetailsProvider:
     """
-    GameDataProvider的核心职责是：数据获取和解析。
-    负责从外部数据源获取原始数据，并将其解析成系统内部的Game对象。
+    提供单场比赛的详细数据模型对象。
+
+    核心职责：
+    1.  **获取特定比赛数据**: 根据提供的 `game_id`，从专门的外部 API（支持实时和赛后查询）获取单场比赛的原始详细数据。
+        (此 API 不同于用于历史统计数据同步的 API)
+    2.  **数据解析与构建**: 将获取到的原始数据解析并构建成系统内部统一的 `Game` 对象。
+
+    关键特性：
+    -   **聚焦单场**: 处理特定一场比赛的完整细节，无论是比赛进行中还是结束后。
+    -   **数据源特定**: 使用独立于历史统计同步 (`DatabaseService`) 的数据源 API。
+    -   **提供模型**: 向上层服务提供结构化的 `Game` 对象，用于生成报告、图表、视频等基于该场比赛内容的场景。
+    -   **非持久化导向**: 其产出的 `Game` 对象本身通常不直接持久化到主数据库（历史统计数据的持久化由 `DatabaseService` 负责）。
     """
 
     def __init__(
