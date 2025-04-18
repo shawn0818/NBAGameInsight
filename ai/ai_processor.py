@@ -1,3 +1,4 @@
+#ai/ai_processor.py
 import logging
 from enum import Enum
 from typing import  Optional,  Callable
@@ -19,7 +20,7 @@ class AIModel(Enum):
     # OpenRouter 模型
     GPT4 = "openai/gpt-4"
     CLAUDE = "anthropic/claude-3.7-sonnet"
-    GEMINI = "google/gemini-2.5-pro-exp-03-25:free"
+    GEMINI_PRO = "google/gemini-2.5-pro-exp-03-25:free"
     GEMINI_FLASH = "google/gemini-2.0-flash-001"
     # Deepseek 模型
     DEEPSEEK_CHAT = "deepseek-chat"

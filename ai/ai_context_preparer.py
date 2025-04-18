@@ -1,7 +1,9 @@
-from typing import Dict, Any, Optional, List,  Protocol
+#ai/ai_context_preparer.py
+from typing import Dict, Any, Optional, List, Protocol
 from pydantic import BaseModel
 from nba.models.game_model import Game
 from utils.logger_handler import AppLogger
+from nba.services.game_data_service import GameDataService
 
 
 # 定义领域数据提取器协议
@@ -866,13 +868,18 @@ class RivalryInfoExtractor:
         return game.get_season_matchup_history()
 
 
-# 增强版GameDataAdapter实现
-class GameDataAdapter:
-    """增强版游戏数据适配器 - 充分利用所有Game模型数据"""
+class AIContextPreparer:
+    """AI上下文准备器 - 处理和组织NBA数据用于AI分析"""
 
-    def __init__(self, logger=None):
-        """初始化适配器"""
-        self.logger = logger or AppLogger.get_logger(__name__, app_name='nba')
+    def __init__(self, game_data_service: GameDataService, logger: Optional[Any] = None):
+        """初始化AI上下文准备器
+
+        Args:
+            game_data_service: 游戏数据服务实例，用于获取比赛数据
+            logger: 可选的日志记录器
+        """
+        self.logger = logger or AppLogger.get_logger(__name__, app_name='ai_services')
+        self.game_data_service = game_data_service  # 保存GameDataService依赖
 
         # 初始化所有数据提取器
         self.extractors = {
@@ -889,137 +896,37 @@ class GameDataAdapter:
             "rivalry_info": RivalryInfoExtractor()
         }
 
-    def adapt_for_team_content(self, game: 'Game', team_id: int) -> Dict[str, Any]:
-        """为球队内容生成适配数据 - 包含增强数据"""
+    def prepare_ai_data(self, team_id: Optional[int] = None,
+                        game_id: Optional[str] = None,
+                        player_id: Optional[int] = None,
+                        force_update: bool = False) -> Dict[str, Any]:
+        """为AI分析准备完整的结构化数据
+
+        Args:
+            team_id: 球队ID
+            game_id: 比赛ID，如果提供则直接使用此ID获取数据
+            player_id: 球员ID，如果提供则会添加球员特定数据
+            force_update: 是否强制更新数据
+
+        Returns:
+            Dict[str, Any]: 结构化的数据字典
+        """
         try:
-            # 1. 提取核心数据
-            data = self._extract_core_data(game, team_id=team_id)
+            # 1. 获取比赛数据
+            game = self._get_game(team_id, game_id, force_update)
+            if not game:
+                return {"error": "无法获取比赛数据"}
 
-            # 2. 提取增强数据
-            data["officials"] = self.extractors["officials"].extract(game)
-            data["game_pace"] = self.extractors["game_pace"].extract(game)
-            data["lineup"] = self.extractors["lineup"].extract(game)
-            data["periods"] = self.extractors["periods"].extract(game)
-            data["scoring_details"] = self.extractors["scoring_details"].extract(game, team_id=team_id)
-
-            # 3. 处理球队特定信息
-            self._enhance_team_specific_data(data, game, team_id)
-
-            return data
-        except Exception as e:
-            self.logger.error(f"适配球队内容数据失败: {str(e)}", exc_info=True)
-            return {"error": f"适配失败: {str(e)}"}
-
-    def adapt_for_player_content(self, game: 'Game', player_id: int) -> Dict[str, Any]:
-        """为球员内容生成适配数据 - 包含增强数据"""
-        try:
-            # 1. 获取球员状态
-            player_status = self.extractors["player_status"].extract(game, player_id=player_id)
-
-            # 2. 检查球员是否存在
-            if player_status.get("not_found", False):
-                return {"error": f"找不到ID为 {player_id} 的球员"}
-
-            # 3. 提取基础数据
-            data = self._extract_core_data(game)
-
-            # 4. 提取球员详细数据
-            player_stats = self.extractors["player_stats"].extract(game, player_id=player_id)
-            if player_stats:
-                data["player_info"] = player_stats
-
-            # 5. 提取得分详情
-            data["scoring_details"] = self.extractors["scoring_details"].extract(game, player_id=player_id)
-
-            # 6. 提取球员相关事件
-            data["events"] = self.extractors["events"].extract(game, player_id=player_id)
-
-            # 7. 根据球员是否有伤病情况进行专门处理
-            if not player_status.get("is_active", True):
-                data = self._enhance_injured_player_data(data, game, player_id, player_status)
-            else:
-                data = self._enhance_active_player_data(data, game, player_id, player_status)
-
-            return data
-        except Exception as e:
-            self.logger.error(f"适配球员内容数据失败: {str(e)}", exc_info=True)
-            return {"error": f"适配失败: {str(e)}"}
-
-    def adapt_for_shot_chart(self, game: 'Game', entity_id: int, is_team: bool = False) -> Dict[str, Any]:
-        """为投篮图内容生成适配数据"""
-        try:
-            # 确定目标ID是球队还是球员
-            team_id = entity_id if is_team else None
-            player_id = entity_id if not is_team else None
-
-            # 1. 提取基础数据
-            data = self._extract_core_data(game, team_id=team_id, player_id=player_id)
-
-            # 2. 获取投篮数据
-            if is_team:
-                shot_data = game.get_team_shot_data(entity_id)
-                data["shot_data"] = shot_data
-                data["is_team_chart"] = True
-
-                # 添加球队得分详情
-                data["scoring_details"] = self.extractors["scoring_details"].extract(game, team_id=entity_id)
-            else:
-                shot_data = game.get_shot_data(entity_id)
-                assisted_shots = game.get_assisted_shot_data(entity_id)
-                data["shot_data"] = shot_data
-                data["assisted_shots"] = assisted_shots
-                data["is_team_chart"] = False
-
-                # 添加球员得分详情
-                data["scoring_details"] = self.extractors["scoring_details"].extract(game, player_id=entity_id)
-
-            return data
-        except Exception as e:
-            self.logger.error(f"适配投篮图数据失败: {str(e)}", exc_info=True)
-            return {"error": f"适配失败: {str(e)}"}
-
-    def adapt_for_round_analysis(self, game: 'Game', player_id: int, round_ids: List[int]) -> Dict[str, Any]:
-        """为回合分析生成适配数据"""
-        try:
-            # 1. 提取基础数据
-            data = self._extract_core_data(game, player_id=player_id)
-
-            # 2. 提取回合数据
-            events_data = self.extractors["events"].extract(game, player_id=player_id)
-            rounds = []
-
-            # 3. 筛选指定回合并添加上下文
-            all_events = events_data.get("data", [])
-            for round_id in round_ids:
-                round_data = self._find_round_event(all_events, round_id)
-                if round_data:
-                    # 添加相邻回合作为上下文
-                    context = self._get_round_context(all_events, round_id)
-                    round_data["context"] = context
-                    rounds.append(round_data)
-
-            data["rounds"] = rounds
-            data["round_ids"] = round_ids
-
-            return data
-        except Exception as e:
-            self.logger.error(f"适配回合分析数据失败: {str(e)}", exc_info=True)
-            return {"error": f"适配失败: {str(e)}"}
-
-    def prepare_ai_data(self, game: 'Game', player_id: Optional[int] = None) -> Dict[str, Any]:
-        """为AI分析准备完整的结构化数据"""
-        try:
-            # 获取团队ID（如果有球员ID，则使用球员所在团队ID）
-            team_id = None
-            if player_id:
+            # 2. 获取团队ID（如果有球员ID，则使用球员所在团队ID）
+            if player_id and not team_id:
                 player_status = self.extractors["player_status"].extract(game, player_id=player_id)
                 if not player_status.get("not_found", False):
                     team_id = player_status.get("team_id")
 
-            # 提取所有核心数据
+            # 3. 提取所有核心数据
             data = self._extract_core_data(game, player_id=player_id, team_id=team_id)
 
-            # 添加增强数据
+            # 4. 添加增强数据
             if team_id:
                 data["scoring_details"] = self.extractors["scoring_details"].extract(
                     game, team_id=team_id, player_id=player_id
@@ -1027,7 +934,7 @@ class GameDataAdapter:
                 data["game_pace"] = self.extractors["game_pace"].extract(game)
                 data["periods"] = self.extractors["periods"].extract(game)
 
-            # 添加球员特定数据（如果有指定球员）
+            # 5. 添加球员特定数据（如果有指定球员）
             if player_id:
                 player_status = self.extractors["player_status"].extract(game, player_id=player_id)
 
@@ -1037,16 +944,45 @@ class GameDataAdapter:
                 else:
                     data = self._enhance_active_player_data(data, game, player_id, player_status)
 
+            # 6. 添加数据库补充信息
+            self._enrich_with_db_data(data, game, team_id, player_id)
+
             return data
         except Exception as e:
             self.logger.error(f"准备AI数据失败: {str(e)}", exc_info=True)
             return {"error": f"准备AI数据失败: {str(e)}"}
 
-    # 内部辅助方法
+    def _get_game(self, team_id: Optional[int], game_id: Optional[str], force_update: bool) -> Optional['Game']:
+        """获取游戏数据
+
+        Args:
+            team_id: 球队ID
+            game_id: 游戏ID
+            force_update: 是否强制更新
+
+        Returns:
+            Optional[Game]: 游戏对象，如果获取失败则返回None
+        """
+        try:
+            if game_id:
+                return self.game_data_service.get_game_by_id(game_id, force_update=force_update)
+            elif team_id:
+                # 获取球队名称
+                team_name = self.game_data_service.get_team_name_by_id(team_id)
+                if not team_name:
+                    self.logger.error(f"无法找到ID为 {team_id} 的球队名称")
+                    return None
+                # 使用"last"作为默认日期获取最近的比赛
+                return self.game_data_service.get_game(team_name, "last", force_update=force_update)
+            else:
+                self.logger.error("必须提供 team_id 或 game_id 参数")
+                return None
+        except Exception as e:
+            self.logger.error(f"获取比赛数据失败: {str(e)}", exc_info=True)
+            return None
 
     def _extract_core_data(self, game: 'Game', **kwargs) -> Dict[str, Any]:
         """提取并组合所有核心数据"""
-
         result = {}
 
         # 1. 获取比赛基本信息
@@ -1070,57 +1006,6 @@ class GameDataAdapter:
         result["injuries"] = status_data.get("injuries", {})
 
         return result
-
-    def _enhance_team_specific_data(self, data: Dict[str, Any], game: 'Game', team_id: int) -> None:
-        """增强球队特定数据"""
-        # 1. 查找团队在数据中的位置（主队或客队）
-        is_home = game.game_data.home_team.team_id == team_id
-        team = game.game_data.home_team if is_home else game.game_data.away_team
-        opponent = game.game_data.away_team if is_home else game.game_data.home_team
-
-        # 2. 添加球队基本信息
-        data["team_info"] = {
-            "team_id": team_id,
-            "team_name": team.team_name,
-            "team_city": team.team_city,
-            "team_tricode": team.team_tricode,
-            "is_home": is_home,
-            "score": int(team.score)
-        }
-
-        # 3. 添加对手信息
-        data["opponent_info"] = {
-            "team_id": opponent.team_id,
-            "team_name": opponent.team_name,
-            "team_city": opponent.team_city,
-            "team_tricode": opponent.team_tricode,
-            "is_home": not is_home,
-            "score": int(opponent.score)
-        }
-
-        # 4. 添加比赛结果分析
-        data["game_result"] = self._determine_game_result(game, team_id)
-
-        # 5. 提取表现最好的球员
-        top_players = []
-        for player in team.players:
-            if player.has_played:
-                stats = player.statistics
-                top_players.append({
-                    "id": player.person_id,
-                    "name": player.name,
-                    "position": player.position,
-                    "jersey_num": player.jersey_num,
-                    "points": stats.points,
-                    "rebounds": stats.rebounds_total,
-                    "assists": stats.assists,
-                    "plus_minus": stats.plus_minus_points,
-                    "minutes": stats.minutes_calculated
-                })
-
-        # 按得分排序
-        top_players.sort(key=lambda x: x["points"], reverse=True)
-        data["top_players"] = top_players[:5]  # 前5名
 
     def _enhance_injured_player_data(self, data: Dict[str, Any], game: 'Game', player_id: int,
                                      status: Dict[str, Any]) -> Dict[str, Any]:
@@ -1247,30 +1132,35 @@ class GameDataAdapter:
             "description": f"{'胜' if is_win else '负'} {team_score}-{opponent_score}"
         }
 
-    def _find_round_event(self, events: List[Dict[str, Any]], round_id: int) -> Optional[Dict[str, Any]]:
-        """在事件列表中查找指定回合ID的事件"""
-        for event in events:
-            if event.get("action_number") == round_id:
-                return event
-        return None
+    def _enrich_with_db_data(self, data: Dict[str, Any], game: 'Game',
+                             team_id: Optional[int] = None, player_id: Optional[int] = None) -> None:
+        """从数据库获取补充数据
 
-    def _get_round_context(self, events: List[Dict[str, Any]], round_id: int, context_size: int = 3) -> List[
-        Dict[str, Any]]:
-        """获取回合的上下文事件"""
-        # 查找回合在事件列表中的位置
-        event_index = -1
-        for i, event in enumerate(events):
-            if event.get("action_number") == round_id:
-                event_index = i
-                break
+        Args:
+            data: 要补充的数据字典
+            game: 游戏对象
+            team_id: 球队ID
+            player_id: 球员ID
+        """
+        try:
+            # 获取球队历史数据
+            if team_id:
+                try:
+                    team_history = self.game_data_service.db_service.team_repo.get_team_history(team_id)
+                    if team_history:
+                        data["team_history"] = team_history
+                except Exception as e:
+                    self.logger.warning(f"获取球队历史数据失败: {e}")
 
-        if event_index == -1:
-            return []
+            # 获取球员历史数据
+            if player_id:
+                try:
+                    player_history = self.game_data_service.db_service.player_repo.get_player_history(player_id)
+                    if player_history:
+                        data["player_history"] = player_history
+                except Exception as e:
+                    self.logger.warning(f"获取球员历史数据失败: {e}")
 
-        # 获取前后各context_size个事件
-        start = max(0, event_index - context_size)
-        end = min(len(events), event_index + context_size + 1)
-
-        # 不包含当前回合本身
-        context = events[start:event_index] + events[event_index + 1:end]
-        return context
+            # 可以根据需要添加更多数据库补充数据
+        except Exception as e:
+            self.logger.warning(f"从数据库获取补充数据失败: {e}")
